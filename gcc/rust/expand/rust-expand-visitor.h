@@ -21,11 +21,45 @@
 
 #include "rust-ast-pointer-visitor.h"
 #include "rust-ast-visitor.h"
+#include "rust-diagnostics.h"
 #include "rust-item.h"
 #include "rust-macro-expand.h"
 #include "rust-proc-macro.h"
 
 namespace Rust {
+
+namespace detail {
+
+/* Map list splice extractors (see expand_macro_children) to the
+   SingleASTNode::Kind we require from macro output.  */
+template <typename U> struct MacroListExtractorTraits;
+
+template <> struct MacroListExtractorTraits<std::unique_ptr<AST::Item>>
+{
+  static constexpr AST::SingleASTNode::Kind kind
+    = AST::SingleASTNode::Kind::Item;
+};
+
+template <> struct MacroListExtractorTraits<std::unique_ptr<AST::Stmt>>
+{
+  static constexpr AST::SingleASTNode::Kind kind
+    = AST::SingleASTNode::Kind::Stmt;
+};
+
+template <>
+struct MacroListExtractorTraits<std::unique_ptr<AST::AssociatedItem>>
+{
+  static constexpr AST::SingleASTNode::Kind kind
+    = AST::SingleASTNode::Kind::Assoc;
+};
+
+template <> struct MacroListExtractorTraits<std::unique_ptr<AST::ExternalItem>>
+{
+  static constexpr AST::SingleASTNode::Kind kind
+    = AST::SingleASTNode::Kind::Extern;
+};
+
+} // namespace detail
 
 /**
  * Whether or not an attribute is builtin
@@ -144,6 +178,8 @@ public:
   void expand_macro_children (T &values,
 			      U (AST::SingleASTNode::*extractor) (void))
   {
+    constexpr auto expected_kind = detail::MacroListExtractorTraits<U>::kind;
+
     for (auto it = values.begin (); it != values.end ();)
       {
 	auto &value = *it;
@@ -156,18 +192,33 @@ public:
 
 	auto final_fragment = expander.take_expanded_fragment ();
 
-	// FIXME: Is that correct? It seems *extremely* dodgy
+	/* Fragment::should_expand means "not the error sentinel fragment"
+	   (see AST::Fragment::should_expand).  Before erasing the list slot
+	   we require that every fragment node matches this list's expected
+	   kind (so we never splice with silent nullptr drops).  */
 	if (final_fragment.should_expand ())
 	  {
+	    location_t slot_locus = (*it)->get_locus ();
+	    auto &nodes = final_fragment.get_nodes ();
+	    for (const auto &node : nodes)
+	      {
+		if (node.get_kind () != expected_kind)
+		  rust_internal_error_at (
+		    slot_locus,
+		    "macro expansion produced an AST fragment whose node kind "
+		    "does not match the list context");
+		if (node.is_error ())
+		  rust_internal_error_at (
+		    slot_locus,
+		    "macro expansion produced an erroneous AST fragment node");
+	      }
 	    it = values.erase (it);
-	    for (auto &node : final_fragment.get_nodes ())
+	    for (auto &node : nodes)
 	      {
 		U new_node = (node.*extractor) ();
-		if (new_node != nullptr)
-		  {
-		    it = values.insert (it, std::move (new_node));
-		    it++;
-		  }
+		rust_assert (new_node != nullptr);
+		it = values.insert (it, std::move (new_node));
+		it++;
 	      }
 	  }
 	else

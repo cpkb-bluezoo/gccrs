@@ -1,3 +1,11 @@
+2026-03-23  Chris Burdess  <dog@gnu.org>
+
+	* expand/rust-expand-visitor.h (ExpandVisitor::expand_macro_children):
+	Validate macro fragment nodes before splicing.
+	* util/rust-base62.cc (rust_base62_integer_test): New selftest.
+	* util/rust-base62.h (rust_base62_integer_test): Declare.
+	* rust-lang.cc (run_rust_tests): Call rust_base62_integer_test.
+
 2026-02-27  Islam-Imad  <islamimad404@gmail.com>
 
 	* typecheck/rust-hir-type-check-struct.cc: enhance missing fields error message

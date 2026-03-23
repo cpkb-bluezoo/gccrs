@@ -43,4 +43,26 @@ base62_integer (uint64_t value)
 
 } // namespace Rust
 
-// FIXME: Add unit testing using the selftest framework
+#if CHECKING_P
+
+#include "selftest.h"
+
+namespace selftest {
+
+void
+rust_base62_integer_test ()
+{
+  ASSERT_EQ (Rust::base62_integer (0), "0");
+  ASSERT_EQ (Rust::base62_integer (1), "1");
+  ASSERT_EQ (Rust::base62_integer (10), "a");
+  ASSERT_EQ (Rust::base62_integer (61), "Z");
+  ASSERT_EQ (Rust::base62_integer (62), "10");
+  ASSERT_EQ (Rust::base62_integer (62 * 62), "100");
+  ASSERT_EQ (Rust::base62_integer (61 * 62 + 61), "ZZ");
+  ASSERT_EQ (Rust::base62_integer (UINT64_C (18446744073709551615)),
+	     "lYGhA16ahyf");
+}
+
+} // namespace selftest
+
+#endif // CHECKING_P

@@ -38,6 +38,7 @@
 #include "optional.h"
 #include "rust-unicode.h"
 #include "rust-punycode.h"
+#include "rust-base62.h"
 
 #include <mpfr.h>
 // note: header files must be in this order or else forward declarations don't
@@ -437,6 +438,7 @@ run_rust_tests ()
   rust_nfc_qc_test ();
   rust_utf8_normalize_test ();
   rust_punycode_encode_test ();
+  rust_base62_integer_test ();
   rust_cfg_parser_test ();
   rust_privacy_ctx_test ();
   rust_crate_name_validation_test ();

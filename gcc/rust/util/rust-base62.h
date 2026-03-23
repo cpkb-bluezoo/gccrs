@@ -30,4 +30,14 @@ std::string base62_integer (uint64_t value);
 
 } // namespace Rust
 
+#if CHECKING_P
+
+namespace selftest {
+
+void rust_base62_integer_test ();
+
+} // namespace selftest
+
+#endif // CHECKING_P
+
 #endif /* !RUST_BASE62_H */
