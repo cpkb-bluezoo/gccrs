@@ -976,6 +976,12 @@ operands_scanner::parse_ssa_operands ()
       append_vuse (gimple_vop (fn));
       goto do_default;
 
+    /* Switch index is the only operand that matters.  */
+    case GIMPLE_SWITCH:
+      get_expr_operands (gimple_switch_index_ptr (as_a <gswitch*> (stmt)),
+			 opf_use);
+      break;
+
     case GIMPLE_CALL:
       /* Add call-clobbered operands, if needed.  */
       maybe_add_call_vops (as_a <gcall *> (stmt));
@@ -1020,6 +1026,7 @@ operands_scanner::verify_ssa_operands ()
   unsigned i;
   tree def;
   bool volatile_p = gimple_has_volatile_ops (stmt);
+  gcc_assert (!cfun->gimple_df->ssa_renaming_needed);
 
   /* build_ssa_operands w/o finalizing them.  */
   gimple_set_has_volatile_ops (stmt, false);
@@ -1092,6 +1099,12 @@ operands_scanner::verify_ssa_operands ()
   if (gimple_has_volatile_ops (stmt) != volatile_p)
     {
       error ("statement volatile flag not up to date");
+      return true;
+    }
+
+  if (cfun->gimple_df->ssa_renaming_needed)
+    {
+      error ("statement contains unrenamed symbols");
       return true;
     }
 

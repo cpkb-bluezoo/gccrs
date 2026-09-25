@@ -620,7 +620,7 @@ default_floatn_mode (int n, bool extended)
    should implicitly enable the built-in function without the __builtin_ prefix
    in addition to the normal built-in function with the __builtin_ prefix.  The
    default is to only enable built-in functions without the __builtin_ prefix
-   for the GNU C langauge.  The argument FUNC is the enum builtin_in_function
+   for the GNU C language.  The argument FUNC is the enum builtin_in_function
    id of the function to be enabled.  */
 
 bool
@@ -638,7 +638,7 @@ default_floatn_builtin_p (int func ATTRIBUTE_UNUSED)
   return c_or_objective_c;
 }
 
-/* Make some target macros useable by target-independent code.  */
+/* Make some target macros usable by target-independent code.  */
 bool
 targhook_words_big_endian (void)
 {
@@ -777,6 +777,7 @@ default_builtin_vectorization_cost (enum vect_cost_for_stmt type_of_cost,
         return 3;
 
       case vec_construct:
+      case vec_deconstruct:
 	return estimated_poly_value (TYPE_VECTOR_SUBPARTS (vectype)) - 1;
 
       default:
@@ -941,9 +942,13 @@ default_stack_protect_guard (void)
     {
       rtx x;
 
+      if (UINTPTR_TYPE && targetm.stack_protect_guard_symbol_p ())
+	/* Get unsigned integer type for uintptr_t.  */
+	t = unsigned_integer_tree_node_for_type (UINTPTR_TYPE);
+      else
+	t = ptr_type_node;
       t = build_decl (UNKNOWN_LOCATION,
-		      VAR_DECL, get_identifier ("__stack_chk_guard"),
-		      ptr_type_node);
+		      VAR_DECL, get_identifier ("__stack_chk_guard"), t);
       TREE_STATIC (t) = 1;
       TREE_PUBLIC (t) = 1;
       DECL_EXTERNAL (t) = 1;
@@ -954,8 +959,14 @@ default_stack_protect_guard (void)
 
       /* Do not share RTL as the declaration is visible outside of
 	 current function.  */
-      x = DECL_RTL (t);
-      RTX_FLAG (x, used) = 1;
+      if (mode_mem_attrs[(int) DECL_MODE (t)])
+	{
+	  /* NB: Don't call make_decl_rtl when mode_mem_attrs isn't
+	     initialized.  -save-temps won't initialize mode_mem_attrs
+	     and make_decl_rtl will fail.  */
+	  x = DECL_RTL (t);
+	  RTX_FLAG (x, used) = 1;
+	}
 
       stack_chk_guard_decl = t;
     }
@@ -1564,7 +1575,7 @@ default_builtin_vector_alignment_reachable (const_tree /*type*/, bool is_packed)
 }
 
 /* By default, assume that a target supports any factor of misalignment
-   memory access if it supports movmisalign patten.
+   memory access if it supports movmisalign pattern.
    is_packed is true if the memory access is defined in a packed struct.  */
 bool
 default_builtin_support_vector_misalignment (machine_mode mode,
@@ -1818,7 +1829,7 @@ default_addr_space_for_artificial_rodata (tree, artificial_rodata)
 }
 
 
-/* The defualt implementation of TARGET_HARD_REGNO_NREGS.  */
+/* The default implementation of TARGET_HARD_REGNO_NREGS.  */
 
 unsigned int
 default_hard_regno_nregs (unsigned int, machine_mode mode)
@@ -2937,6 +2948,13 @@ default_memtag_untagged_pointer (rtx tagged_pointer, rtx target)
 					   OPTAB_DIRECT);
   gcc_assert (untagged_base);
   return untagged_base;
+}
+
+/* The default implementation of TARGET_SCHED_REASSOCIATION_WIDTH.  */
+int
+default_reassociation_width (tree_code, machine_mode)
+{
+  return 1;
 }
 
 #include "gt-targhooks.h"

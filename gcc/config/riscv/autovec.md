@@ -1071,7 +1071,7 @@
 [(set_attr "type" "vfncvtitof")])
 
 ;; This operation can be performed in the loop vectorizer but unfortunately
-;; not applicable for now. We can remove this pattern after loop vectorizer
+;; not applicable for now.  We can remove this pattern after loop vectorizer
 ;; is able to take care of INT64 to FP16 conversion.
 (define_expand "<float_cvt><mode><vnnconvert>2"
   [(set (match_operand:<VNNCONVERT>  0 "register_operand")
@@ -1115,17 +1115,30 @@
 [(set_attr "type" "vialu")])
 
 ;; -------------------------------------------------------------------------------
-;; - [INT] ABS expansion to vneg and vmax.
+;; - [INT] ABS expansion
 ;; -------------------------------------------------------------------------------
 
 (define_expand "abs<mode>2"
   [(set (match_operand:V_VLSI 0 "register_operand")
-    (smax:V_VLSI
-     (match_dup 0)
-     (neg:V_VLSI
-       (match_operand:V_VLSI 1 "register_operand"))))]
+	(abs:V_VLSI
+	  (match_operand:V_VLSI 1 "register_operand")))]
   "TARGET_VECTOR"
 {
+  if (TARGET_ZVABD)
+    {
+      riscv_vector::emit_vlmax_insn (CODE_FOR_pred_abs<mode>,
+				     riscv_vector::UNARY_OP, operands);
+      DONE;
+    }
+
+  rtx neg = gen_reg_rtx (<MODE>mode);
+  rtx ops1[] = {neg, operands[1]};
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_neg<mode>,
+				 riscv_vector::UNARY_OP, ops1);
+
+  rtx ops2[] = {operands[0], operands[1], neg};
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_smax<mode>,
+				 riscv_vector::BINARY_OP, ops2);
   DONE;
 })
 
@@ -1241,10 +1254,9 @@
 
 (define_insn_and_split "fma<mode>4"
   [(set (match_operand:V_VLSF 0 "register_operand")
-        (plus:V_VLSF
-	  (mult:V_VLSF
-	    (match_operand:V_VLSF 1 "register_operand")
-	    (match_operand:V_VLSF 2 "register_operand"))
+	(fma:V_VLSF
+	  (match_operand:V_VLSF 1 "register_operand")
+	  (match_operand:V_VLSF 2 "register_operand")
 	  (match_operand:V_VLSF 3 "register_operand")))]
   "TARGET_VECTOR && can_create_pseudo_p ()"
   "#"
@@ -1269,11 +1281,10 @@
 
 (define_insn_and_split "fnma<mode>4"
   [(set (match_operand:V_VLSF 0 "register_operand")
-        (minus:V_VLSF
-          (match_operand:V_VLSF 3 "register_operand")
-	  (mult:V_VLSF
-	    (match_operand:V_VLSF 1 "register_operand")
-	    (match_operand:V_VLSF 2 "register_operand"))))]
+	(fma:V_VLSF
+	  (neg:V_VLSF (match_operand:V_VLSF 1 "register_operand"))
+	  (match_operand:V_VLSF 2 "register_operand")
+	  (match_operand:V_VLSF 3 "register_operand")))]
   "TARGET_VECTOR && can_create_pseudo_p ()"
   "#"
   "&& 1"
@@ -1297,11 +1308,10 @@
 
 (define_insn_and_split "fms<mode>4"
   [(set (match_operand:V_VLSF 0 "register_operand")
-        (minus:V_VLSF
-	  (mult:V_VLSF
-	    (match_operand:V_VLSF 1 "register_operand")
-	    (match_operand:V_VLSF 2 "register_operand"))
-	  (match_operand:V_VLSF 3 "register_operand")))]
+	(fma:V_VLSF
+	  (match_operand:V_VLSF 1 "register_operand")
+	  (match_operand:V_VLSF 2 "register_operand")
+	  (neg:V_VLSF (match_operand:V_VLSF 3 "register_operand"))))]
   "TARGET_VECTOR && can_create_pseudo_p ()"
   "#"
   "&& 1"
@@ -1325,12 +1335,10 @@
 
 (define_insn_and_split "fnms<mode>4"
   [(set (match_operand:V_VLSF 0 "register_operand")
-        (minus:V_VLSF
-          (neg:V_VLSF
-	    (mult:V_VLSF
-	      (match_operand:V_VLSF 1 "register_operand")
-	      (match_operand:V_VLSF 2 "register_operand")))
-	  (match_operand:V_VLSF 3 "register_operand")))]
+	(fma:V_VLSF
+	  (neg:V_VLSF (match_operand:V_VLSF 1 "register_operand"))
+	  (match_operand:V_VLSF 2 "register_operand")
+	  (neg:V_VLSF (match_operand:V_VLSF 3 "register_operand"))))]
   "TARGET_VECTOR && can_create_pseudo_p ()"
   "#"
   "&& 1"
@@ -1369,7 +1377,7 @@
    (match_operand	     2 "nonmemory_operand")]
   "TARGET_VECTOR"
 {
-  /* If we set the first element, emit an v(f)mv.s.[xf].  */
+  /* If we set the first element, emit a v(f)mv.s.[xf].  */
   if (operands[2] == const0_rtx)
     {
       rtx ops[] = {operands[0], operands[0], operands[1]};
@@ -1383,7 +1391,7 @@
 
       /* Here we set VL = offset + 1.  */
       rtx length = gen_reg_rtx (Pmode);
-      operands[2] = gen_lowpart (Pmode, operands[2]);
+      operands[2] = convert_to_mode (Pmode, operands[2], true);
       if (CONST_INT_P (operands[2]))
 	  emit_move_insn (length, GEN_INT (INTVAL (operands[2]) + 1));
       else
@@ -1439,7 +1447,7 @@
 
     /* Emit the slide down to index 0 in a new vector.  */
     tmp = gen_reg_rtx (<MODE>mode);
-    operands[2] = gen_lowpart (Pmode, operands[2]);
+    operands[2] = convert_to_mode (Pmode, operands[2], true);
     rtx ops[] = {tmp, operands[1], operands[2]};
     riscv_vector::emit_vlmax_insn
       (code_for_pred_slide (UNSPEC_VSLIDEDOWN, <MODE>mode),
@@ -2423,7 +2431,7 @@
   "TARGET_VECTOR && !HONOR_SNANS (<MODE>mode)"
 {
   REAL_VALUE_TYPE rv;
-  real_inf (&rv, true);
+  real_nan (&rv, "", 1, VOIDmode);
   rtx f = const_double_from_real_value (rv, <VEL>mode);
   riscv_vector::expand_reduction (UNSPEC_REDUC_MAX,
 				  UNSPEC_REDUC_MAX_VL0_SAFE,
@@ -2438,7 +2446,7 @@
   "TARGET_VECTOR && !HONOR_SNANS (<MODE>mode)"
 {
   REAL_VALUE_TYPE rv;
-  real_inf (&rv, false);
+  real_nan (&rv, "", 1, VOIDmode);
   rtx f = const_double_from_real_value (rv, <VEL>mode);
   riscv_vector::expand_reduction (UNSPEC_REDUC_MIN,
 				  UNSPEC_REDUC_MIN_VL0_SAFE,
@@ -3017,83 +3025,6 @@
   }
 )
 
-;; Implement cond_len_vec_cbranch_any and cond_len_vec_cbranch_all
-;; Vector comparison with length and mask, then branch for integer types.
-(define_expand "<cbranch_optab><mode>"
-  [(set (pc)
-	(unspec:V_VLSI
-	  [(if_then_else
-	    (match_operator 0 "riscv_cbranch_comparison_operator"
-	      [(match_operand:<VM> 1 "register_operand")
-	       (match_operand:V_VLSI 2 "register_operand")
-	       (match_operand:V_VLSI 3 "nonmemory_operand")
-	       (match_operand 4 "autovec_length_operand")
-	       (match_operand 5 "const_0_operand")])
-	    (label_ref (match_operand 6 ""))
-	    (pc))]
-	 COND_LEN_CBRANCH_CMP))]
-  "TARGET_VECTOR"
-{
-  rtx_code code = GET_CODE (operands[0]);
-  rtx mask = gen_reg_rtx (<VM>mode);
-
-  /* Generate the masked comparison.  */
-  rtx maskoff = CONST0_RTX (<VM>mode);
-  riscv_vector::expand_vec_cmp (mask, code, operands[2], operands[3],
-				operands[1], maskoff);
-
-  /* Use vcpop to count the number of active elements.  */
-  rtx count = gen_reg_rtx (Pmode);
-  rtx cpop_ops[] = {count, mask};
-  riscv_vector::emit_vlmax_insn (code_for_pred_popcount (<VM>mode, Pmode),
-				 riscv_vector::CPOP_OP, cpop_ops);
-
-  /* Branch based on whether count is zero or non-zero.  */
-  riscv_expand_conditional_branch (operands[6], <cbranch_op>, count,
-				   const0_rtx);
-  DONE;
-})
-
-;; Floating-point version with length and mask
-(define_expand "<cbranch_optab><mode>"
-  [(set (pc)
-	(unspec:V_VLSF
-	  [(if_then_else
-	    (match_operator 0 "riscv_cbranch_comparison_operator"
-	      [(match_operand:<VM> 1 "register_operand")
-	       (match_operand:V_VLSF 2 "register_operand")
-	       (match_operand:V_VLSF 3 "register_operand")
-	       (match_operand 4 "autovec_length_operand")
-	       (match_operand 5 "const_0_operand")])
-	    (label_ref (match_operand 6 ""))
-	    (pc))]
-	 COND_LEN_CBRANCH_CMP))]
-  "TARGET_VECTOR"
-{
-  rtx_code code = GET_CODE (operands[0]);
-  rtx mask = gen_reg_rtx (<VM>mode);
-
-  rtx tmp = gen_reg_rtx (<VM>mode);
-  riscv_vector::expand_vec_cmp_float (tmp, code, operands[2], operands[3],
-				      false);
-
-  /* Combine with the incoming mask using AND.  */
-  rtx ops[] = {mask, operands[1], tmp};
-  riscv_vector::emit_vlmax_insn (code_for_pred (AND, <VM>mode),
-				 riscv_vector::BINARY_MASK_OP, ops);
-
-  /* Use vcpop to count the number of active elements.  */
-  rtx count = gen_reg_rtx (Pmode);
-  rtx cpop_ops[] = {count, mask};
-  riscv_vector::emit_vlmax_insn (code_for_pred_popcount (<VM>mode, Pmode),
-				 riscv_vector::CPOP_OP, cpop_ops);
-
-  /* Branch based on whether count is zero or non-zero.  */
-  riscv_expand_conditional_branch (operands[6], <cbranch_op>, count,
-				   const0_rtx);
-  DONE;
-})
-
 ;; -------------------------------------------------------------------------
 ;; - vrol.vv vror.vv
 ;; -------------------------------------------------------------------------
@@ -3143,26 +3074,19 @@
 ; ========
 ; == Absolute difference (not including sum)
 ; ========
-(define_expand "uabd<mode>3"
-  [(match_operand:V_VLSI 0 "register_operand")
-   (match_operand:V_VLSI 1 "register_operand")
-   (match_operand:V_VLSI 2 "register_operand")]
-  ;; Disabled until PR119224 is resolved
-  "TARGET_VECTOR && 0"
-  {
-    rtx max = gen_reg_rtx (<MODE>mode);
-    insn_code icode = code_for_pred (UMAX, <MODE>mode);
-    rtx ops1[] = {max, operands[1], operands[2]};
-    riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops1);
-
-    rtx min = gen_reg_rtx (<MODE>mode);
-    icode = code_for_pred (UMIN, <MODE>mode);
-    rtx ops2[] = {min, operands[1], operands[2]};
-    riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops2);
-
-    icode = code_for_pred (MINUS, <MODE>mode);
-    rtx ops3[] = {operands[0], max, min};
-    riscv_vector::emit_vlmax_insn (icode, riscv_vector::BINARY_OP, ops3);
-
-    DONE;
-  });
+(define_insn_and_split "<su>abd<mode>3"
+  [(set (match_operand:VI_QH 0 "register_operand" "=vr")
+	(unspec:VI_QH
+	 [(match_operand:VI_QH 1 "register_operand" "vr")
+	  (match_operand:VI_QH 2 "register_operand" "vr")]
+	 UNSPEC_VABD))]
+  "TARGET_ZVABD && can_create_pseudo_p ()"
+  "#"
+  "&& 1"
+  [(const_int 0)]
+{
+  riscv_vector::emit_vlmax_insn (CODE_FOR_pred_vabd<su><mode>,
+				 riscv_vector::BINARY_OP, operands);
+  DONE;
+}
+[(set_attr "type" "vialu")])

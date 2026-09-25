@@ -818,6 +818,7 @@ ospace_frag'
 ac_user_opts='
 enable_option_checking
 with_build_libsubdir
+with_long_double_64
 with_system_zlib
 with_zstd
 enable_as_accelerator_for
@@ -1626,6 +1627,7 @@ Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
   --without-PACKAGE       do not use PACKAGE (same as --with-PACKAGE=no)
   --with-build-libsubdir=DIR  Directory where to find libraries for build system
+
   --with-system-zlib      use installed libz
   --with-zstd             Support zstd compressed debug sections
                           (default=auto)
@@ -3026,6 +3028,20 @@ if test x$with_gnu_as = xno ; then
   noconfigdirs="$noconfigdirs gas"
 fi
 
+# Catch an invalid use of --with-long-double-64 early.
+
+# Check whether --with-long-double-64 was given.
+if test "${with_long_double_64+set}" = set; then :
+  withval=$with_long_double_64;
+if test x$with_long_double_64 = xyes ; then
+  as_fn_error $? "found --with-long-double-64 but use --without-long-double-128 instead" "$LINENO" 5
+else
+  as_fn_error $? "found --without-long-double-64 but use --with-long-double-128 instead" "$LINENO" 5
+fi
+
+fi
+
+
 use_included_zlib=
 
 # Check whether --with-system-zlib was given.
@@ -4318,7 +4334,6 @@ if test "${build}" != "${host}" ; then
   AR_FOR_BUILD=${AR_FOR_BUILD-ar}
   AS_FOR_BUILD=${AS_FOR_BUILD-as}
   CC_FOR_BUILD=${CC_FOR_BUILD-gcc}
-  CPP_FOR_BUILD="${CPP_FOR_BUILD-\$(CC_FOR_BUILD) -E}"
   CXX_FOR_BUILD=${CXX_FOR_BUILD-g++}
   DLLTOOL_FOR_BUILD=${DLLTOOL_FOR_BUILD-dlltool}
   DSYMUTIL_FOR_BUILD=${DSYMUTIL_FOR_BUILD-dsymutil}
@@ -4333,23 +4348,24 @@ if test "${build}" != "${host}" ; then
   WINDRES_FOR_BUILD=${WINDRES_FOR_BUILD-windres}
   WINDMC_FOR_BUILD=${WINDMC_FOR_BUILD-windmc}
 else
-  AR_FOR_BUILD="\$(AR)"
-  AS_FOR_BUILD="\$(AS)"
-  CC_FOR_BUILD="\$(CC)"
-  CXX_FOR_BUILD="\$(CXX)"
-  DLLTOOL_FOR_BUILD="\$(DLLTOOL)"
-  DSYMUTIL_FOR_BUILD="\$(DSYMUTIL)"
-  GFORTRAN_FOR_BUILD="\$(GFORTRAN)"
-  A68_FOR_BUILD="\$(A68)"
-  GOC_FOR_BUILD="\$(GOC)"
-  GDC_FOR_BUILD="\$(GDC)"
-  GNATMAKE_FOR_BUILD="\$(GNATMAKE)"
-  LD_FOR_BUILD="\$(LD)"
-  NM_FOR_BUILD="\$(NM)"
-  RANLIB_FOR_BUILD="\$(RANLIB)"
-  WINDRES_FOR_BUILD="\$(WINDRES)"
-  WINDMC_FOR_BUILD="\$(WINDMC)"
+  AR_FOR_BUILD="${AR_FOR_BUILD-\$(AR)}"
+  AS_FOR_BUILD="${AS_FOR_BUILD-\$(AS)}"
+  CC_FOR_BUILD="${CC_FOR_BUILD-\$(CC)}"
+  CXX_FOR_BUILD="${CXX_FOR_BUILD-\$(CXX)}"
+  DLLTOOL_FOR_BUILD="${DLLTOOL_FOR_BUILD-\$(DLLTOOL)}"
+  DSYMUTIL_FOR_BUILD="${DSYMUTIL_FOR_BUILD-\$(DSYMUTIL)}"
+  GFORTRAN_FOR_BUILD="${GFORTRAN_FOR_BUILD-\$(GFORTRAN)}"
+  A68_FOR_BUILD="${A68_FOR_BUILD-\$(A68)}"
+  GOC_FOR_BUILD="${GOC_FOR_BUILD-\$(GOC)}"
+  GDC_FOR_BUILD="${GDC_FOR_BUILD-\$(GDC)}"
+  GNATMAKE_FOR_BUILD="${GNATMAKE_FOR_BUILD-\$(GNATMAKE)}"
+  LD_FOR_BUILD="${LD_FOR_BUILD-\$(LD)}"
+  NM_FOR_BUILD="${NM_FOR_BUILD-\$(NM)}"
+  RANLIB_FOR_BUILD="${RANLIB_FOR_BUILD-\$(RANLIB)}"
+  WINDRES_FOR_BUILD="${WINDRES_FOR_BUILD-\$(WINDRES)}"
+  WINDMC_FOR_BUILD="${WINDMC_FOR_BUILD-\$(WINDMC)}"
 fi
+CPP_FOR_BUILD="${CPP_FOR_BUILD-\$(CC_FOR_BUILD) -E}"
 
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
@@ -5637,8 +5653,6 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 fi
 
 
-
-
 if test -n "$ac_tool_prefix"; then
   # Extract the first word of "${ac_tool_prefix}gnatbind", so it can be a program name with args.
 set dummy ${ac_tool_prefix}gnatbind; ac_word=$2
@@ -5860,7 +5874,6 @@ else
 fi
 
 
-
 if test -n "$ac_tool_prefix"; then
   # Extract the first word of "${ac_tool_prefix}ga68", so it can be a program name with args.
 set dummy ${ac_tool_prefix}ga68; ac_word=$2
@@ -5952,7 +5965,6 @@ esac
 else
   A68="$ac_cv_prog_A68"
 fi
-
 
 
 if test -n "$ac_tool_prefix"; then
@@ -6127,7 +6139,15 @@ if ${gcc_cv_prog_cmp_skip+:} false; then :
 else
    echo abfoo >t1
   echo cdfoo >t2
-  gcc_cv_prog_cmp_skip='tail -c +17 $$f1 > tmp-foo1; tail -c +17 $$f2 > tmp-foo2; cmp tmp-foo1 tmp-foo2'
+  gcc_cv_prog_cmp_skip='(trap ":; rm -f tmp-foo1.$$$$ '
+  gcc_cv_prog_cmp_skip="$gcc_cv_prog_cmp_skip"'tmp-foo2.$$$$" 0; '
+  gcc_cv_prog_cmp_skip="$gcc_cv_prog_cmp_skip"'trap "exit 2" 1 2 3 15; '
+  gcc_cv_prog_cmp_skip="$gcc_cv_prog_cmp_skip"'tail -c +17 $$f1 '
+  gcc_cv_prog_cmp_skip="$gcc_cv_prog_cmp_skip"'> tmp-foo1.$$$$ || exit 2; '
+  gcc_cv_prog_cmp_skip="$gcc_cv_prog_cmp_skip"'tail -c +17 $$f2 '
+  gcc_cv_prog_cmp_skip="$gcc_cv_prog_cmp_skip"'> tmp-foo2.$$$$ || exit 2; '
+  gcc_cv_prog_cmp_skip="$gcc_cv_prog_cmp_skip"'cmp tmp-foo1.$$$$ '
+  gcc_cv_prog_cmp_skip="$gcc_cv_prog_cmp_skip"'tmp-foo2.$$$$; exit $$?)'
   if cmp t1 t2 2 2 > /dev/null 2>&1; then
     if cmp t1 t2 1 1 > /dev/null 2>&1; then
       :
@@ -11756,22 +11776,6 @@ case "$target:$have_compiler:$host:$target:$enable_multilib" in
     ;;
 esac
 
-# For s390, -m31 is deprecated.  Emit a warning if --enable-multilib and
-# --enable-obsolete are explicitly specified.  If --enable-multilib is
-# specified implicitly or --enable-obsolete is missing, error out.
-case "$target:$enable_multilib:$enable_obsolete" in
-  s390*:yes:yes)
-    { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Support for -m31 is deprecated and will be removed." >&5
-$as_echo "$as_me: WARNING: Support for -m31 is deprecated and will be removed." >&2;}
-    ;;
-  s390*::*)
-    as_fn_error $? "Support for -m31 is deprecated and will be removed. Explicitly specify --disable-multilib or --enable-multilib --enable-obsolete to build it anyway." "$LINENO" 5
-    ;;
-  s390*:yes:*)
-    as_fn_error $? "Support for -m31 is deprecated and will be removed. Specify --enable-obsolete to build it anyway." "$LINENO" 5
-    ;;
-esac
-
 # Default to --enable-multilib.
 if test x${enable_multilib} = x ; then
   target_configargs="--enable-multilib ${target_configargs}"
@@ -16502,6 +16506,11 @@ rm conftest.c
 
 
 
+if test -n "$AR_FOR_TARGET"; then
+  ac_cv_path_AR_FOR_TARGET=$AR_FOR_TARGET
+elif test -n "$ac_cv_path_AR_FOR_TARGET"; then
+  AR_FOR_TARGET=$ac_cv_path_AR_FOR_TARGET
+fi
 if test -z "$ac_cv_path_AR_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ar in $with_build_time_tools" >&5
@@ -16732,6 +16741,11 @@ fi
 
 
 
+if test -n "$AS_FOR_TARGET"; then
+  ac_cv_path_AS_FOR_TARGET=$AS_FOR_TARGET
+elif test -n "$ac_cv_path_AS_FOR_TARGET"; then
+  AS_FOR_TARGET=$ac_cv_path_AS_FOR_TARGET
+fi
 if test -z "$ac_cv_path_AS_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for as in $with_build_time_tools" >&5
@@ -16962,6 +16976,11 @@ fi
 
 
 
+if test -n "$DLLTOOL_FOR_TARGET"; then
+  ac_cv_path_DLLTOOL_FOR_TARGET=$DLLTOOL_FOR_TARGET
+elif test -n "$ac_cv_path_DLLTOOL_FOR_TARGET"; then
+  DLLTOOL_FOR_TARGET=$ac_cv_path_DLLTOOL_FOR_TARGET
+fi
 if test -z "$ac_cv_path_DLLTOOL_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for dlltool in $with_build_time_tools" >&5
@@ -17192,6 +17211,11 @@ fi
 
 
 
+if test -n "$DSYMUTIL_FOR_TARGET"; then
+  ac_cv_path_DSYMUTIL_FOR_TARGET=$DSYMUTIL_FOR_TARGET
+elif test -n "$ac_cv_path_DSYMUTIL_FOR_TARGET"; then
+  DSYMUTIL_FOR_TARGET=$ac_cv_path_DSYMUTIL_FOR_TARGET
+fi
 if test -z "$ac_cv_path_DSYMUTIL_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for dsymutil in $with_build_time_tools" >&5
@@ -17422,6 +17446,11 @@ fi
 
 
 
+if test -n "$LD_FOR_TARGET"; then
+  ac_cv_path_LD_FOR_TARGET=$LD_FOR_TARGET
+elif test -n "$ac_cv_path_LD_FOR_TARGET"; then
+  LD_FOR_TARGET=$ac_cv_path_LD_FOR_TARGET
+fi
 if test -z "$ac_cv_path_LD_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ld in $with_build_time_tools" >&5
@@ -17652,6 +17681,11 @@ fi
 
 
 
+if test -n "$LIPO_FOR_TARGET"; then
+  ac_cv_path_LIPO_FOR_TARGET=$LIPO_FOR_TARGET
+elif test -n "$ac_cv_path_LIPO_FOR_TARGET"; then
+  LIPO_FOR_TARGET=$ac_cv_path_LIPO_FOR_TARGET
+fi
 if test -z "$ac_cv_path_LIPO_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for lipo in $with_build_time_tools" >&5
@@ -17882,6 +17916,11 @@ fi
 
 
 
+if test -n "$NM_FOR_TARGET"; then
+  ac_cv_path_NM_FOR_TARGET=$NM_FOR_TARGET
+elif test -n "$ac_cv_path_NM_FOR_TARGET"; then
+  NM_FOR_TARGET=$ac_cv_path_NM_FOR_TARGET
+fi
 if test -z "$ac_cv_path_NM_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for nm in $with_build_time_tools" >&5
@@ -18112,6 +18151,11 @@ fi
 
 
 
+if test -n "$OBJCOPY_FOR_TARGET"; then
+  ac_cv_path_OBJCOPY_FOR_TARGET=$OBJCOPY_FOR_TARGET
+elif test -n "$ac_cv_path_OBJCOPY_FOR_TARGET"; then
+  OBJCOPY_FOR_TARGET=$ac_cv_path_OBJCOPY_FOR_TARGET
+fi
 if test -z "$ac_cv_path_OBJCOPY_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for objcopy in $with_build_time_tools" >&5
@@ -18342,6 +18386,11 @@ fi
 
 
 
+if test -n "$OBJDUMP_FOR_TARGET"; then
+  ac_cv_path_OBJDUMP_FOR_TARGET=$OBJDUMP_FOR_TARGET
+elif test -n "$ac_cv_path_OBJDUMP_FOR_TARGET"; then
+  OBJDUMP_FOR_TARGET=$ac_cv_path_OBJDUMP_FOR_TARGET
+fi
 if test -z "$ac_cv_path_OBJDUMP_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for objdump in $with_build_time_tools" >&5
@@ -18572,6 +18621,11 @@ fi
 
 
 
+if test -n "$OTOOL_FOR_TARGET"; then
+  ac_cv_path_OTOOL_FOR_TARGET=$OTOOL_FOR_TARGET
+elif test -n "$ac_cv_path_OTOOL_FOR_TARGET"; then
+  OTOOL_FOR_TARGET=$ac_cv_path_OTOOL_FOR_TARGET
+fi
 if test -z "$ac_cv_path_OTOOL_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for otool in $with_build_time_tools" >&5
@@ -18802,6 +18856,11 @@ fi
 
 
 
+if test -n "$RANLIB_FOR_TARGET"; then
+  ac_cv_path_RANLIB_FOR_TARGET=$RANLIB_FOR_TARGET
+elif test -n "$ac_cv_path_RANLIB_FOR_TARGET"; then
+  RANLIB_FOR_TARGET=$ac_cv_path_RANLIB_FOR_TARGET
+fi
 if test -z "$ac_cv_path_RANLIB_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ranlib in $with_build_time_tools" >&5
@@ -19032,6 +19091,11 @@ fi
 
 
 
+if test -n "$READELF_FOR_TARGET"; then
+  ac_cv_path_READELF_FOR_TARGET=$READELF_FOR_TARGET
+elif test -n "$ac_cv_path_READELF_FOR_TARGET"; then
+  READELF_FOR_TARGET=$ac_cv_path_READELF_FOR_TARGET
+fi
 if test -z "$ac_cv_path_READELF_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for readelf in $with_build_time_tools" >&5
@@ -19262,6 +19326,11 @@ fi
 
 
 
+if test -n "$STRIP_FOR_TARGET"; then
+  ac_cv_path_STRIP_FOR_TARGET=$STRIP_FOR_TARGET
+elif test -n "$ac_cv_path_STRIP_FOR_TARGET"; then
+  STRIP_FOR_TARGET=$ac_cv_path_STRIP_FOR_TARGET
+fi
 if test -z "$ac_cv_path_STRIP_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for strip in $with_build_time_tools" >&5
@@ -19492,6 +19561,11 @@ fi
 
 
 
+if test -n "$WINDRES_FOR_TARGET"; then
+  ac_cv_path_WINDRES_FOR_TARGET=$WINDRES_FOR_TARGET
+elif test -n "$ac_cv_path_WINDRES_FOR_TARGET"; then
+  WINDRES_FOR_TARGET=$ac_cv_path_WINDRES_FOR_TARGET
+fi
 if test -z "$ac_cv_path_WINDRES_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for windres in $with_build_time_tools" >&5
@@ -19722,6 +19796,11 @@ fi
 
 
 
+if test -n "$WINDMC_FOR_TARGET"; then
+  ac_cv_path_WINDMC_FOR_TARGET=$WINDMC_FOR_TARGET
+elif test -n "$ac_cv_path_WINDMC_FOR_TARGET"; then
+  WINDMC_FOR_TARGET=$ac_cv_path_WINDMC_FOR_TARGET
+fi
 if test -z "$ac_cv_path_WINDMC_FOR_TARGET" ; then
   if test -n "$with_build_time_tools"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for windmc in $with_build_time_tools" >&5

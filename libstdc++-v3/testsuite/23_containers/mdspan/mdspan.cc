@@ -404,6 +404,24 @@ template<typename CustomInt, bool ValidForPacks, bool ValidForArrays>
     return true;
   }
 
+void
+test_from_volatile_ptr_and_accessor()
+{
+  constexpr size_t n = 3*5*7;
+  std::array<double, n> storage{};
+  double* volatile vptr = storage.data();
+  using Extents = std::extents<int, 3, 5, 7>;
+
+  auto exts = Extents{};
+  auto m = std::layout_left::mapping(exts);
+  auto a = std::default_accessor<double>{};
+  auto md = std::mdspan(vptr, m, a);
+
+  assert_deduced_typedefs<double, Extents, std::layout_left>(md);
+  VERIFY(md.data_handle() == storage.data());
+  VERIFY(md.mapping() == m);
+}
+
 template<typename T, bool NothrowConstructible = true,
 	 bool NothrowAssignable = true>
   class OpaqueAccessor
@@ -702,9 +720,9 @@ template<typename Layout, bool Expected>
     static_assert(noexcept(MDSpan::is_always_exhaustive()) == Expected);
     static_assert(noexcept(MDSpan::is_always_strided()) == Expected);
 
-    static_assert(noexcept(std::declval<MDSpan>().is_unique()) == Expected);
-    static_assert(noexcept(std::declval<MDSpan>().is_exhaustive()) == Expected);
-    static_assert(noexcept(std::declval<MDSpan>().is_strided()) == Expected);
+    static_assert(noexcept(std::declval<const MDSpan>().is_unique()) == Expected);
+    static_assert(noexcept(std::declval<const MDSpan>().is_exhaustive()) == Expected);
+    static_assert(noexcept(std::declval<const MDSpan>().is_strided()) == Expected);
   }
 
 int
@@ -757,6 +775,7 @@ main()
   test_from_int_like<RValueInt, true, false>();
   test_from_int_like<ConstLValueInt, false, true>();
 
+  test_from_volatile_ptr_and_accessor();
   test_from_opaque_accessor();
   test_from_base_class_accessor();
   test_from_mapping_like();

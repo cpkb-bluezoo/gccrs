@@ -313,7 +313,7 @@ determine_global_memory_access (gcall *stmt,
   cgraph_node *node;
   modref_summary *summary;
 
-  /* We need to detrmine reads to set uses.  */
+  /* We need to determine reads to set uses.  */
   gcc_assert (!uses_global_memory || reads_global_memory);
 
   if ((callee = gimple_call_fndecl (stmt)) != NULL_TREE
@@ -745,12 +745,15 @@ static void
 set_uids_in_ptset (bitmap into, bitmap from, struct pt_solution *pt,
 		   tree fndecl)
 {
+  const varinfo_t escaped_vi = get_varinfo (var_rep[escaped_id]);
+  const varinfo_t escaped_return_vi = get_varinfo (var_rep[escaped_return_id]);
+  const bool everything_escaped
+    = escaped_vi->solution && bitmap_bit_p (escaped_vi->solution, anything_id);
+  const bool everything_escaped_return
+    = escaped_return_vi->solution
+      && bitmap_bit_p (escaped_return_vi->solution, anything_id);
   unsigned int i;
   bitmap_iterator bi;
-  varinfo_t escaped_vi = get_varinfo (var_rep[escaped_id]);
-  varinfo_t escaped_return_vi = get_varinfo (var_rep[escaped_return_id]);
-  bool everything_escaped
-    = escaped_vi->solution && bitmap_bit_p (escaped_vi->solution, anything_id);
 
   EXECUTE_IF_SET_IN_BITMAP (from, 0, i, bi)
     {
@@ -766,8 +769,10 @@ set_uids_in_ptset (bitmap into, bitmap from, struct pt_solution *pt,
 	  pt->vars_contains_escaped = true;
 	  pt->vars_contains_escaped_heap |= vi->is_heap_var;
 	}
-      if (escaped_return_vi->solution
-	  && bitmap_bit_p (escaped_return_vi->solution, i))
+
+      if (everything_escaped_return
+	  || (escaped_return_vi->solution
+	      && bitmap_bit_p (escaped_return_vi->solution, i)))
 	pt->vars_contains_escaped_heap |= vi->is_heap_var;
 
       if (vi->is_restrict_var)
@@ -800,6 +805,13 @@ set_uids_in_ptset (bitmap into, bitmap from, struct pt_solution *pt,
 		  && fndecl
 		  && ! auto_var_in_fn_p (vi->decl, fndecl)))
 	    pt->vars_contains_nonlocal = true;
+
+	  /* If the variable is an automatic in the local stack frame, record
+	     that.  Note this does not include PARM_DECL and RESULT_DECL which
+	     are managed by the caller.  */
+	  if (VAR_P (vi->decl)
+	      && auto_var_in_fn_p (vi->decl, fndecl))
+	    pt->vars_contains_auto = true;
 
 	  /* If we have a variable that is interposable record that fact
 	     for pointer comparison simplification.  */
@@ -922,7 +934,7 @@ find_what_p_points_to (tree fndecl, tree p)
   varinfo_t vi;
   prange vr;
   get_range_query (DECL_STRUCT_FUNCTION (fndecl))->range_of_expr (vr, p);
-  bool nonnull = vr.nonzero_p ();
+  bool nonnull = !vr.contains_zero_p ();
 
   /* For parameters, get at the points-to set for the actual parm
      decl.  */
@@ -1119,6 +1131,27 @@ pt_solution_includes_global (struct pt_solution *pt, bool escaped_local_p)
 
   return false;
 }
+
+/* Return true if the points-to solution *PT includes local automatic
+   storage.  */
+
+bool
+pt_solution_includes_auto (struct pt_solution *pt)
+{
+  if (pt->anything
+      || pt->vars_contains_auto)
+    return true;
+
+  /* 'escaped' is also a placeholder so we have to look into it.  */
+  if (pt->escaped)
+    return pt_solution_includes_auto (&cfun->gimple_df->escaped);
+
+  if (pt->ipa_escaped)
+    return pt_solution_includes_auto (&ipa_escaped_pt);
+
+  return false;
+}
+
 
 /* Return true if the points-to solution *PT includes the variable
    declaration DECL.  */
@@ -1555,7 +1588,7 @@ clear_dependence_clique (gimple *, tree base, tree, void *data)
   return false;
 }
 
-/* Compute the set of independend memory references based on restrict
+/* Compute the set of independent memory references based on restrict
    tags and their conservative propagation to the points-to sets.  */
 
 static void
@@ -1803,7 +1836,7 @@ make_pass_build_ealias (gcc::context *ctxt)
 /* IPA PTA solutions for ESCAPED.  */
 struct pt_solution ipa_escaped_pt
   = { true, false, false, false, false, false,
-      false, false, false, false, false, NULL };
+      false, false, false, false, false, false, NULL };
 
 
 /* Execute the driver for IPA PTA.  */

@@ -224,7 +224,7 @@ ptr_deref_may_alias_global_p (tree ptr, bool escaped_local_p)
 
   /* If we end up with a pointer constant here that may point
      to global memory.  */
-  if (TREE_CODE (ptr) != SSA_NAME)
+  if (TREE_CODE (ptr) != SSA_NAME || !POINTER_TYPE_P (TREE_TYPE (ptr)))
     return true;
 
   pi = SSA_NAME_PTR_INFO (ptr);
@@ -237,6 +237,30 @@ ptr_deref_may_alias_global_p (tree ptr, bool escaped_local_p)
   /* ???  This does not use TBAA to prune globals ptr may not access.  */
   return pt_solution_includes_global (&pi->pt, escaped_local_p);
 }
+
+/* Return true, if dereferencing PTR may alias with a local automatic
+   variable.  */
+
+bool
+ptr_deref_may_alias_auto_p (tree ptr)
+{
+  struct ptr_info_def *pi;
+
+  /* If we end up with a pointer constant here that may point
+     to local stack memory.  */
+  if (TREE_CODE (ptr) != SSA_NAME || !POINTER_TYPE_P (TREE_TYPE (ptr)))
+    return true;
+
+  pi = SSA_NAME_PTR_INFO (ptr);
+
+  /* If we do not have points-to information for this variable,
+     we have to punt.  */
+  if (!pi)
+    return true;
+
+  return pt_solution_includes_auto (&pi->pt);
+}
+
 
 /* Return true if dereferencing PTR may alias DECL.
    The caller is responsible for applying TBAA to see if PTR
@@ -251,7 +275,7 @@ ptr_deref_may_alias_decl_p (tree ptr, tree decl)
      data-dependence analysis can feed us those.  */
   STRIP_NOPS (ptr);
 
-  /* Anything we do not explicilty handle aliases.  */
+  /* Anything we do not explicitly handle aliases.  */
   if ((TREE_CODE (ptr) != SSA_NAME
        && TREE_CODE (ptr) != ADDR_EXPR
        && TREE_CODE (ptr) != POINTER_PLUS_EXPR)
@@ -854,7 +878,7 @@ ao_ref_alignment (ao_ref *ref, unsigned int *align,
     return get_object_alignment_1 (ref->ref, align, bitpos);
 
   /* When we just have ref->base we cannot use get_object_alignment since
-     that will eventually use the type of the appearant access while for
+     that will eventually use the type of the apparent access while for
      example ao_ref_init_from_ptr_and_range is not careful to adjust that.  */
   *align = BITS_PER_UNIT;
   HOST_WIDE_INT offset;
@@ -1124,7 +1148,7 @@ component_ref_to_zero_sized_trailing_array_p (tree ref)
    (which is a start of possibly aliasing access path REF1).
    If match is found, try to disambiguate.
 
-   Return 0 for sucessful disambiguation.
+   Return 0 for successful disambiguation.
    Return 1 if match was found but disambiguation failed
    Return -1 if there is no match.
    In this case MAYBE_MATCH is set to 0 if there is no type matching TYPE1
@@ -1232,7 +1256,7 @@ access_path_may_continue_p (tree ref_type1, bool end_struct_past_end1,
     {
       if (compare_type_sizes (ref_type1, base_type2) < 0)
 	return false;
-      /* If the path2 contains trailing array access we can strenghten the check
+      /* If the path2 contains trailing array access we can strengthen the check
 	 to verify that also the size of element of the trailing array fits.
 	 In fact we could check for offset + type_size, but we do not track
 	 offsets and this is quite side case.  */
@@ -1462,7 +1486,7 @@ nonoverlapping_component_refs_p_1 (const_tree field1, const_tree field2)
   /* In common case the offsets and bit offsets will be the same.
      However if frontends do not agree on the alignment, they may be
      different even if they actually represent same address.
-     Try the common case first and if that fails calcualte the
+     Try the common case first and if that fails calculate the
      actual bit offset.  */
   if (tree_int_cst_equal (DECL_FIELD_OFFSET (field1),
 			  DECL_FIELD_OFFSET (field2))
@@ -1546,7 +1570,7 @@ nonoverlapping_array_refs_p (tree ref1, tree ref2)
   /* If type sizes are different, give up.
 
      Avoid expensive array_ref_element_size.
-     If operand 3 is present it denotes size in the alignmnet units.
+     If operand 3 is present it denotes size in the alignment units.
      Otherwise size is TYPE_SIZE of the element type.
      Handle only common cases where types are of the same "kind".  */
   if ((TREE_OPERAND (ref1, 3) == NULL) != (TREE_OPERAND (ref2, 3) == NULL))
@@ -2458,7 +2482,7 @@ refs_may_alias_p_2 (ao_ref *ref1, ao_ref *ref2, bool tbaa_p)
     ref2ref = TREE_OPERAND (ref2ref, 0);
 
   /* Defer to simple offset based disambiguation if we have
-     references based on two decls.  Do this before defering to
+     references based on two decls.  Do this before deferring to
      TBAA to handle must-alias cases in conformance with the
      GCC extension of allowing type-punning through unions.  */
   var1_p = DECL_P (base1);
@@ -2788,7 +2812,6 @@ check_fnspec (gcall *call, ao_ref *ref, bool clobber)
 	      }
 	  if (clobber
 	      && fnspec.errno_maybe_written_p ()
-	      && flag_errno_math
 	      && targetm.ref_may_alias_errno (ref))
 	    return 1;
 	  return 0;
@@ -2808,6 +2831,8 @@ check_fnspec (gcall *call, ao_ref *ref, bool clobber)
 #undef DEF_SYNC_BUILTIN
       case BUILT_IN_GOMP_ATOMIC_START:
       case BUILT_IN_GOMP_ATOMIC_END:
+      case BUILT_IN_GOMP_REDUCTION_START:
+      case BUILT_IN_GOMP_REDUCTION_END:
       case BUILT_IN_GOMP_BARRIER:
       case BUILT_IN_GOMP_BARRIER_CANCEL:
       case BUILT_IN_GOMP_TASKWAIT:
@@ -2892,7 +2917,7 @@ ref_maybe_used_by_call_p_1 (gcall *call, ao_ref *ref, bool tbaa_p)
   if (callee != NULL_TREE)
     {
       struct cgraph_node *node = cgraph_node::get (callee);
-      /* We can not safely optimize based on summary of calle if it does
+      /* We can not safely optimize based on summary of callee if it does
 	 not always bind to current def: it is possible that memory load
 	 was optimized out earlier and the interposed variant may not be
 	 optimized this way.  */
@@ -3555,7 +3580,7 @@ stmt_kills_ref_p (gimple *stmt, ao_ref *ref)
 	  && node->binds_to_current_def_p ()
 	  && (summary = get_modref_function_summary (node)) != NULL
 	  && summary->kills.length ()
-	  /* Check that we can not trap while evaulating function
+	  /* Check that we can not trap while evaluating function
 	     parameters.  This check is overly conservative.  */
 	  && (!cfun->can_throw_non_call_exceptions
 	      || (!stmt_can_throw_internal (cfun, stmt)

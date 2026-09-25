@@ -21,17 +21,15 @@
 #include "rust-hir-expr.h"
 #include "rust-hir-stmt.h"
 #include "rust-hir-item.h"
+#include "rust-rib.h"
 #include "rust-system.h"
-#include "rust-immutable-name-resolution-context.h"
-
-// for flag_name_resolution_2_0
-#include "options.h"
+#include "rust-finalized-name-resolution-context.h"
 
 namespace Rust {
 namespace HIR {
 
 ConstChecker::ConstChecker ()
-  : resolver (*Resolver::Resolver::get ()),
+  : resolver (Resolver2_0::FinalizedNameResolutionContext::get ()),
     mappings (Analysis::Mappings::get ())
 {}
 
@@ -311,7 +309,7 @@ ConstChecker::check_function_call (HirId fn_id, location_t locus)
   if (!const_context.is_in_context ())
     return;
 
-  auto maybe_fn = mappings.lookup_hir_item (fn_id);
+  auto maybe_fn = mappings.hir.items.lookup (fn_id);
   if (maybe_fn
       && maybe_fn.value ()->get_item_kind () != Item::ItemKind::Function)
     return;
@@ -358,18 +356,9 @@ ConstChecker::visit (CallExpr &expr)
   NodeId ast_node_id = expr.get_fnexpr ().get_mappings ().get_nodeid ();
   NodeId ref_node_id;
 
-  if (flag_name_resolution_2_0)
-    {
-      auto &nr_ctx
-	= Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
-
-      if (auto id = nr_ctx.lookup (ast_node_id))
-	ref_node_id = *id;
-      else
-	return;
-    }
-  // We don't care about types here
-  else if (!resolver.lookup_resolved_name (ast_node_id, &ref_node_id))
+  if (auto id = resolver.lookup (ast_node_id, Resolver2_0::Namespace::Values))
+    ref_node_id = *id;
+  else
     return;
 
   if (auto definition_id = mappings.lookup_node_to_hir (ref_node_id))
@@ -471,16 +460,15 @@ ConstChecker::visit (RangeFullExpr &)
 {}
 
 void
-ConstChecker::visit (RangeFromToInclExpr &expr)
-{
-  expr.get_from_expr ().accept_vis (*this);
-  expr.get_to_expr ().accept_vis (*this);
-}
-
-void
 ConstChecker::visit (RangeToInclExpr &)
 {
   // FIXME: Visit to_expr
+}
+
+void
+ConstChecker::visit (BoxExpr &expr)
+{
+  expr.get_expr ().accept_vis (*this);
 }
 
 void

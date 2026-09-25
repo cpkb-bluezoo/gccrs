@@ -261,7 +261,7 @@ inline void
 ipcp_vr_lattice::init (tree type)
 {
   if (type)
-    m_vr.set_type (type);
+    m_vr.set_range_class (type);
 
   // Otherwise m_vr will default to unsupported_range.
   m_recipient_only = false;
@@ -323,6 +323,7 @@ bool ipa_vr_operation_and_type_effects (vrange &dst_vr,
 					const ipa_vr &src_vr,
 					enum tree_code operation,
 					tree dst_type, tree src_type);
+tree ipacp_value_safe_for_type (tree param_type, tree value);
 
 
 

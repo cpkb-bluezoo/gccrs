@@ -1,3 +1,4 @@
+// { dg-additional-options "-frust-compat-version=1.50" }
 #![feature(rustc_attrs)]
 #![feature(lang_items)]
 #![feature(no_core)]
@@ -5,6 +6,11 @@
 
 #[rustc_builtin_macro]
 macro_rules! concat {
+    () => {{}};
+}
+
+#[rustc_builtin_macro]
+macro_rules! stringify {
     () => {{}};
 }
 

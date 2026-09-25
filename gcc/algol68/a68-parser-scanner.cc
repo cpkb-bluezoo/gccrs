@@ -334,7 +334,7 @@ read_source_file (const char *filename)
   bool ret = true;
 
   /* First open the given file.  */
-  if (!(FILE_SOURCE_FD (&A68_JOB) = fopen (filename, "r")))
+  if (!(FILE_SOURCE_FD (&A68_JOB) = fopen (filename, "rb")))
     fatal_error (UNKNOWN_LOCATION, "could not open source file %s",
 		 filename);
   FILE_SOURCE_NAME (&A68_JOB) = ggc_strdup (filename);
@@ -1076,7 +1076,7 @@ include_files (LINE_T *top)
 	      t = NO_LINE;
 
 	      /* Access the file.  */
-	      fp = fopen (fn, "r");
+	      fp = fopen (fn, "rb");
 	      SCAN_ERROR (fp == NULL, start_l, start_c,
 			  "error opening included file");
 	      ssize = a68_file_size (fileno (fp));
@@ -1679,6 +1679,17 @@ get_next_token (bool in_format,
 	  uint64_t radix = strtoul (A68_PARSER (scan_buf), &end, 10);
 	  gcc_assert (errno == 0 && end != A68_PARSER (scan_buf) && *end == 'r');
 
+	  /* Validate radix.  */
+	  if (radix != 2
+	      && radix != 4
+	      && radix != 8
+	      && (OPTION_STRICT (&A68_JOB) || radix != 10)
+	      && radix != 16)
+	    {
+	      SCAN_ERROR (true, *start_l, *ref_s,
+			  "invalid radix in %<bits%> denotation");
+	    }
+
 	  /* Get the rest of the bits literal.  Typographical display features
 	     are allowed in the reference language between the digit symbols
 	     composing the denotation.  However, in SUPPER stropping this could
@@ -1698,6 +1709,7 @@ get_next_token (bool in_format,
 	  while (((radix == 2 && (c == '0' || c == '1'))
 		  || (radix == 4 && (c >= '0' && c <= '3'))
 		  || (radix == 8 && (c >= '0' && c <= '7'))
+		  || (!OPTION_STRICT (&A68_JOB) && radix == 10 && ISDIGIT (c))
 		  || (radix == 16 && (ISDIGIT (c) || strchr ("abcdef", c) != NO_TEXT))))
 	    {
 	      (sym++)[0] = c;
@@ -2331,7 +2343,7 @@ a68_lexical_analyser (const char *filename, bool *empty_program)
     s = STRING (l);
   tokenise_source (&root, 0, false, &l, &s, &start_l, &start_c);
 
-  /* Detemine whether the actual file contents resulted in some token.  This is
+  /* Determine whether the actual file contents resulted in some token.  This is
      used in order to provide better diagnostics for empty source files or
      files containing only comments or pragmats.  These are not valid Algol 68
      packets.  */

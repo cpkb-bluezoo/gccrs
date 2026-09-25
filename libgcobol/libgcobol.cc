@@ -40,6 +40,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cwctype>
+#include <limits>
 
 #include <dirent.h>
 #include <dlfcn.h>
@@ -64,6 +65,7 @@
 #include "common-defs.h"
 #include "io.h"
 #include "gcobolio.h"
+#include "cobol-endian.h"
 #include "libgcobol.h"
 #include "gfileio.h"
 #include "charmaps.h"
@@ -78,6 +80,64 @@
 #include "stringbin.h"
 
 #define NO_RDIGITS (0)
+
+
+static inline char *
+as_chars(unsigned char *p)
+  {
+  return reinterpret_cast<char *>(p);
+  }
+
+static inline const char *
+as_chars(const unsigned char *p)
+  {
+  return reinterpret_cast<const char *>(p);
+  }
+
+static inline unsigned char *
+as_unsigned_chars(char *p)
+  {
+  return reinterpret_cast<unsigned char *>(p);
+  }
+
+static inline const unsigned char *
+as_unsigned_chars(const char *p)
+  {
+  return reinterpret_cast<const unsigned char *>(p);
+  }
+
+template <typename T>
+static T
+load_unaligned(const void *p)
+  {
+  T value;
+  memcpy(&value, p, sizeof(value));
+  return value;
+  }
+
+template <typename T>
+static void
+store_unaligned(void *p, T value)
+  {
+  memcpy(p, &value, sizeof(value));
+  }
+
+static __int128
+signed_int128_max()
+  {
+  unsigned __int128 value = ~static_cast<unsigned __int128>(0);
+  value >>= 1;
+  return static_cast<__int128>(value);
+  }
+
+static void *
+checked_realloc(void *ptr, size_t size)
+  {
+  void *new_ptr = realloc(ptr, size);
+  massert(new_ptr);
+  return new_ptr;
+  }
+
 
 // Forward reference:
 extern "C"
@@ -152,59 +212,16 @@ const char *__gg__exception_source_file       = NULL ;
 int         __gg__exception_line_number       = 0    ;
 const char *__gg__exception_statement         = NULL ;
 int         __gg__default_compute_error       = 0    ;
-int         __gg__rdigits                     = 0    ;
+int         __gg__fracdigits                     = 0    ;
 int         __gg__nop                         = 0    ;
 int         __gg__main_called                 = 0    ;
-void       *__gg__entry_label                 = NULL ;
+size_t      __gg__entry_index                 = 0    ;
+int         __gg__dialects                    = 0    ;
 
 // During SORT operations, we don't want the end-of-file condition, which
 // happens as a matter of course, from setting the EOF exception condition.
 // Setting this variable to 'true' suppresses the error condition.
 static bool sv_suppress_eof_ec = false;
-
-// What follows are arrays that are used by features like INSPECT, STRING,
-// UNSTRING, and, particularly, arithmetic_operation.  These features are
-// characterized by having unknown, and essentially unlimited, numbers of
-// variables. Consider, for example, ADD A B C D ... TO L M N O ...
-
-// Although originally implemented with malloc/free, that's terribly inefficient
-// on its face; arithmetic is done frequently.  The next step was to malloc
-// buffers just once, and have them grow as needed, but that resulted in a lot
-// of code being laid down, because it meant checking each buffer size at
-// run-time, and laying down the code to be executed if the size was inadequate.
-//
-// The current solution is to make the pointers to the arrays of values global,
-// and initialize them with space for MIN_FIELD_BLOCK_SIZE values.  Thus, at
-// compile time, we can ignore all tests for fewer than MIN_FIELD_BLOCK_SIZE
-// (which is generally the case).  Only when N is greater than the MIN do we
-// have to check the current run-time size and, if necessary, expand the buffer
-// with realloc.
-size_t       __gg__arithmetic_rounds_size      = 0     ;
-int *        __gg__arithmetic_rounds           = NULL  ;
-
-size_t       __gg__fourplet_flags_size         = 0     ;
-int *        __gg__fourplet_flags              = NULL  ;
-
-static size_t         treeplet_1_size          = 0     ;
-cblc_field_t ** __gg__treeplet_1f              = NULL  ;
-size_t       *  __gg__treeplet_1o              = NULL  ;
-size_t       *  __gg__treeplet_1s              = NULL  ;
-
-static size_t         treeplet_2_size          = 0     ;
-cblc_field_t ** __gg__treeplet_2f              = NULL  ;
-size_t       *  __gg__treeplet_2o              = NULL  ;
-size_t       *  __gg__treeplet_2s              = NULL  ;
-
-static size_t         treeplet_3_size          = 0     ;
-cblc_field_t ** __gg__treeplet_3f              = NULL  ;
-size_t       *  __gg__treeplet_3o              = NULL  ;
-size_t       *  __gg__treeplet_3s              = NULL  ;
-
-static size_t         treeplet_4_size          = 0     ;
-cblc_field_t ** __gg__treeplet_4f              = NULL  ;
-size_t       *  __gg__treeplet_4o              = NULL  ;
-size_t       *  __gg__treeplet_4s              = NULL  ;
-
 
 // This value is increased every time PROCEDURE DIVISION is processed.  It is
 // used to keep track of local variables.
@@ -212,7 +229,8 @@ size_t      __gg__unique_prog_id              = 0    ;
 
 // Whenever an exception status is set, a snapshot of the current statement
 // location information are established in the "last_exception..." variables.
-// This is in accordance with the ISO requirements of "14.6.13.1.1 General" that
+// This is in accordance with the ISO requirements of "14.6.13.1.1 General"
+// that
 // describe how a "last exception status" is maintained.
 // other "location" information
 static int         last_exception_code;
@@ -222,6 +240,10 @@ static const char *last_exception_paragraph;
 static const char *last_exception_source_file;
 static int         last_exception_line_number;
 static const char *last_exception_statement;
+// last_exception_call is a special case.  It gets set immediately before the
+// default_exception_handler is invoked, so it's followed immediately by an
+// abort().
+static const char *last_exception_call;
 // These variables are similar, and are established when an exception is
 // raised for a file I-O operation.
 static cblc_file_prior_op_t last_exception_file_operation;
@@ -245,7 +267,8 @@ void       *__gg__entry_location = NULL;
 // This is the current value at the back of the PERFORM <PROC> stack of
 // procedure signatures.  Said another way:  When the exit address at
 // the end of a paragraph matches this value address, then it is time to pop
-// the return address off of the stack.  It's in this fashion that we implements
+// the return address off of the stack.  It's in this fashion that we
+// implements
 // nested PERFORM PROC statements.
 void       *__gg__exit_address = NULL;
 
@@ -271,7 +294,8 @@ static cbl_encoding_t encoding_for_sort;
  *  1. sets isection to record the declarative
  *  2. for a nonfatal EC, sets handled, indication no further action is needed
  *
- * A Declarative may use RESUME, which clears ec_status, which is a "handled" state.
+ * A Declarative may use RESUME, which clears ec_status, which is a "handled"
+ * state.
  *
  * Default processing ensures return to initial state.
  */
@@ -535,7 +559,8 @@ struct program_state
   };
 
 static std::vector<program_state> program_states;
-#define collated(a)          (program_states.back().rt_collation[(unsigned int)(a&0xFF)])
+#define collated(a) \
+        (program_states.back().rt_collation[(unsigned int)(a&0xFF)])
 #define program_name         (program_states.back().rt_program_name)
 #define currency_signs(a)    (__gg__currency_signs[(a)])
 
@@ -588,86 +613,25 @@ __gg__get_default_currency_string()
   return currency_signs(__gg__default_currency_sign).c_str();
   }
 
-extern "C"
-void
-__gg__resize_int_p( size_t *size,
-                    int    **block,
-                    size_t  new_size)
-  {
-  if( new_size > *size )
-    {
-    *size = new_size;
-    *block = static_cast<int *>(realloc(*block, new_size * sizeof(int)));
-    }
-  }
+static void
+console_init() {
+  const char *ctype = setlocale(LC_CTYPE, "");
+  const char *lc_ctype =  nl_langinfo(CODESET);
 
-extern "C"
-void
-__gg__resize_treeplet(int     ngroup,
-                      size_t  new_size)
-  {
-  switch( ngroup )
-    {
-    case 1:
-      if( new_size > treeplet_1_size )
-        {
-        treeplet_1_size = new_size;
-        __gg__treeplet_1f = static_cast<cblc_field_t **>(realloc(__gg__treeplet_1f, new_size * sizeof(cblc_field_t *)));
-        __gg__treeplet_1o = static_cast<size_t *>(realloc(__gg__treeplet_1o, new_size * sizeof(size_t)));
-        __gg__treeplet_1s = static_cast<size_t *>(realloc(__gg__treeplet_1s, new_size * sizeof(size_t)));
-        }
-    break;
-    case 2:
-      if( new_size > treeplet_2_size )
-        {
-        treeplet_2_size = new_size;
-        __gg__treeplet_2f = static_cast<cblc_field_t **>(realloc(__gg__treeplet_2f, new_size * sizeof(cblc_field_t *)));
-        __gg__treeplet_2o = static_cast<size_t *>(realloc(__gg__treeplet_2o, new_size * sizeof(size_t)));
-        __gg__treeplet_2s = static_cast<size_t *>(realloc(__gg__treeplet_2s, new_size * sizeof(size_t)));
-        }
-    break;
-    case 3:
-      if( new_size > treeplet_3_size )
-        {
-        treeplet_3_size = new_size;
-        __gg__treeplet_3f = static_cast<cblc_field_t **>(realloc(__gg__treeplet_3f, new_size * sizeof(cblc_field_t *)));
-        __gg__treeplet_3o = static_cast<size_t *>(realloc(__gg__treeplet_3o, new_size * sizeof(size_t)));
-        __gg__treeplet_3s = static_cast<size_t *>(realloc(__gg__treeplet_3s, new_size * sizeof(size_t)));
-        }
-    break;
-    case 4:
-      if( new_size > treeplet_4_size )
-        {
-        treeplet_4_size = new_size;
-        __gg__treeplet_4f = static_cast<cblc_field_t **>(realloc(__gg__treeplet_4f, new_size * sizeof(cblc_field_t *)));
-        __gg__treeplet_4o = static_cast<size_t *>(realloc(__gg__treeplet_4o, new_size * sizeof(size_t)));
-        __gg__treeplet_4s = static_cast<size_t *>(realloc(__gg__treeplet_4s, new_size * sizeof(size_t)));
-        }
-    break;
-    }
-  }
+  // Establish the codeset used by the system console:
+  auto encoding = strstr(ctype, "UTF-8") ?
+    iconv_UTF_8_e : __gg__encoding_iconv_type(lc_ctype);
+  __gg__console_encoding = encoding;
+}
 
 static void
 initialize_program_state()
   {
   // This routine gets called exactly once for a COBOL executable
+  console_init();
   program_state initial_value = {};
   program_states.push_back(initial_value);
   __gg__currency_signs = program_states.back().rt_currency_signs;
-
-  // This is where we initialize the various tables that have
-  // MIN_FIELD_BLOCK_SIZE elements:
-
-  __gg__resize_int_p(&__gg__arithmetic_rounds_size,
-                     &__gg__arithmetic_rounds,
-                      MIN_FIELD_BLOCK_SIZE );
-  __gg__resize_int_p(&__gg__fourplet_flags_size,
-                     &__gg__fourplet_flags,
-                      MIN_FIELD_BLOCK_SIZE );
-  __gg__resize_treeplet(1, MIN_FIELD_BLOCK_SIZE);
-  __gg__resize_treeplet(2, MIN_FIELD_BLOCK_SIZE);
-  __gg__resize_treeplet(3, MIN_FIELD_BLOCK_SIZE);
-  __gg__resize_treeplet(4, MIN_FIELD_BLOCK_SIZE);
   }
 
 extern "C"
@@ -716,13 +680,10 @@ __gg__decimal_point_is_comma()
 
 static __int128
 edited_to_binary( const cblc_field_t *field,
-                  char *ps_,
-                  int length,
-                  int *rdigits)
+                  const char         *ps_,
+                        size_t        length,
+                        int          *rdigits)
   {
-  charmap_t *charmap = __gg__get_charmap(field->encoding);
-
-  const unsigned char *ps = const_cast<const unsigned char *>(PTRCAST(unsigned char, ps_));
   // This routine is used for converting NumericEdited strings to
   // binary.
 
@@ -734,62 +695,75 @@ edited_to_binary( const cblc_field_t *field,
   // result as negative.  We are going to look for a decimal point and count up
   // the numerical digits to the right of it.  And we are going to pretend
   // that nothing else matters.
-
+  size_t nbytes;
+  const unsigned char *ps = reinterpret_cast<unsigned char *>
+                                             (__gg__iconverter(field->encoding,
+                                                      DEFAULT_SOURCE_ENCODING,
+                                                      ps_,
+                                                      length,
+                                                      &nbytes));
   int hyphen = 0;
   *rdigits = 0;
 
   // index into the ps string
-  int index = 0;
+  size_t index = 0;
 
   // Create a delta_r for counting digits to the right of
   // any decimal point.  If and when we encounter a decimal point,
   // we'll set this to one, otherwise it'll stay zero.
-  int delta_r = 0;
 
+  int delta_r = 0;
   __int128 result = 0;
 
-  // We need to check the last two characters.  If CR or DB, then the result
-  // is negative:
-  if( length >= 2)
-    {
-    if(         ((ps[length-2]&0xFF) == charmap->mapped_character(ascii_D)
-              || (ps[length-2]&0xFF) == charmap->mapped_character(ascii_d))
-            &&  ((ps[length-1]&0xFF) == charmap->mapped_character(ascii_B)
-              || (ps[length-1]&0xFF) == charmap->mapped_character(ascii_b)) )
-      {
-      hyphen = 1;
-      }
-    else if(    ((ps[length-2]&0xFF) == charmap->mapped_character(ascii_C)
-              || (ps[length-2]&0xFF) == charmap->mapped_character(ascii_c))
-            &&  ((ps[length-1]&0xFF) == charmap->mapped_character(ascii_R)
-              || (ps[length-1]&0xFF) == charmap->mapped_character(ascii_r)) )
-      {
-      hyphen = 1;
-      }
-    }
+  cbl_char_t chm2 = 0;
+  cbl_char_t chm1 = 0;
 
   while( index < length )
     {
-    unsigned char ch = ps[index++] & 0xFF;
-    if( ch == charmap->mapped_character(__gg__decimal_point) )
+    unsigned char ch = ps[index++];
+
+    // Save the last two characters for the DB/CR test:
+    chm2 = chm1;
+    chm1 = ch;
+
+    if( ch == __gg__decimal_point )
       {
       delta_r = 1;
       continue;
       }
-    if( ch == charmap->mapped_character(ascii_minus)  )
+    if( ch == ascii_minus  )
       {
       hyphen = 1;
       continue;
       }
 
-    if(  charmap->mapped_character(ascii_0) <= ch
-      && ch <= charmap->mapped_character(ascii_9) )
+    if(  ch >= ascii_0
+      && ch <= ascii_9 )
       {
       result *= 10;
-      // In both EBCDIC and ASCII, this works:
       result += ch & 0x0F ;
       *rdigits += delta_r ;
       continue;
+      }
+    }
+
+  // We need to check the last two characters.  If CR or DB, then the result
+  // is negative:
+  if( !hyphen && length >= 2)
+    {
+    if(        (   chm2 == ascii_D
+                || chm2 == ascii_d)
+            && (   chm1 == ascii_B
+                || chm1 == ascii_b) )
+      {
+      hyphen = 1;
+      }
+    else if(   (   chm2 == ascii_C
+                || chm2 == ascii_c)
+            && (   chm1 == ascii_R
+                || chm1 == ascii_r) )
+      {
+      hyphen = 1;
       }
     }
 
@@ -802,96 +776,240 @@ edited_to_binary( const cblc_field_t *field,
 
 static
 __int128
-big_endian_to_binary_signed(
-  const unsigned char *psource,
-  int   capacity
-)
-  {
-  // This subroutine takes a big-endian value of "capacity" bytes and
-  // converts it to a signed INT128.  The highest order bit of the big-endian
-  // value determines whether or not the highest-order bits of the INT128
-  // return value are off or on.
-
-  __int128 retval;
-  if( *psource >= 128 )
-    {
-    retval = -1;
-    }
-  else
-    {
-    retval = 0;
-    }
-
-  // move the bytes of psource into retval, flipping them end-to-end
-  unsigned char *dest = PTRCAST(unsigned char, &retval);
-  while(capacity > 0)
-    {
-    *dest++ = psource[--capacity];
-    }
-  return retval;
-  }
-
-static
-__int128
-little_endian_to_binary_signed(
-  const unsigned char *psource,
-  int capacity
-)
-  {
-  // This subroutine takes a little-endian value of "capacity" bytes and
-  // converts it to a signed INT128.  The highest order bit of the little-endian
-  // value determines whether or not the highest-order bits of the INT128
-  // return value are off or on.
-
-  __int128 result;
-
-  // Set all the bits of the result based on the sign of the source:
-  if( psource[capacity-1] >= 128 )
-    {
-    result = -1;
-    }
-  else
-    {
-    result = 0;
-    }
-
-  // Copy the low-order bytes into place:
-  memcpy(&result, psource, capacity);
-  return result;
-  }
-
-static
-__int128
-little_endian_to_binary_unsigned(
-  const unsigned char *psource,
-  int capacity
-)
+native_to_binary_signed(const void *psource,
+                              int   capacity )
   {
   __int128 result = 0;
-
-  // Copy the low-order bytes into place:
-  memcpy(&result, psource, capacity);
+  switch(capacity)
+    {
+    case 1:
+      result = load_unaligned<int8_t>(psource);
+      break;
+    case 2:
+      result = load_unaligned<int16_t>(psource);
+      break;
+    case 4:
+      result = load_unaligned<int32_t>(psource);
+      break;
+    case 8:
+      result = load_unaligned<int64_t>(psource);
+      break;
+    case 16:
+      result = load_unaligned<__int128>(psource);
+      break;
+    default:
+      abort();
+    }
   return result;
   }
 
 static
 __int128
-big_endian_to_binary_unsigned(
-  const unsigned char *psource,
-  int   capacity
-)
+native_to_binary_unsigned(const void *psource,
+                                int   capacity)
+  {
+  unsigned __int128 result = 0;
+  switch(capacity)
+    {
+    case 1:
+      result = load_unaligned<uint8_t>(psource);
+      break;
+    case 2:
+      result = load_unaligned<uint16_t>(psource);
+      break;
+    case 4:
+      result = load_unaligned<uint32_t>(psource);
+      break;
+    case 8:
+      result = load_unaligned<uint64_t>(psource);
+      break;
+    case 16:
+      result = load_unaligned<unsigned __int128>(psource);
+      break;
+    default:
+      abort();
+    }
+  return static_cast<__int128>(result);
+  }
+
+static
+__int128
+big_endian_to_binary_unsigned(const void *psource,
+                              int   capacity)
   {
   // This subroutine takes an unsigned big-endian value of "capacity" bytes and
   // converts it to an INT128.
 
-  __int128 retval = 0 ;
+  unsigned __int128 retval = 0 ;
 
-  // move the bytes of psource into retval, flipping them end-to-end
-  unsigned char *dest = PTRCAST(unsigned char, &retval);
-  while(capacity > 0)
+  switch(capacity)
     {
-    *dest++ = psource[--capacity];
+    case 1:
+      {
+      uint8_t v;
+      memcpy(&v, psource, sizeof(v));
+      retval = v;
+      break;
+      }
+    case 2:
+      {
+      uint16_t v;
+      memcpy(&v, psource, sizeof(v));
+      #if COBOL_LITTLE_ENDIAN
+      // This is a little-endian machine, so we have to flip the value.
+      v = __builtin_bswap16(v);
+      #endif
+      retval = v;
+      break;
+      }
+    case 4:
+      {
+      uint32_t v;
+      memcpy(&v, psource, sizeof(v));
+      #if COBOL_LITTLE_ENDIAN
+      v = __builtin_bswap32(v);
+      #endif
+      retval = v;
+      break;
+      }
+    case 8:
+      {
+      uint64_t v;
+      memcpy(&v, psource, sizeof(v));
+      #if COBOL_LITTLE_ENDIAN
+      v = __builtin_bswap64(v);
+      #endif
+      retval = v;
+      break;
+      }
+    case 16:
+      {
+      unsigned __int128 v;
+      memcpy(&v, psource, sizeof(v));
+      #if COBOL_LITTLE_ENDIAN
+      v = __builtin_bswap128(v);
+      #endif
+      retval = v;
+      break;
+      }
     }
+  return retval;
+  }
+
+static __int128
+big_endian_to_binary_signed(const void *psource, int capacity)
+  {
+  __int128 retval;
+  unsigned __int128 u = big_endian_to_binary_unsigned(psource, capacity);
+
+  switch (capacity)
+    {
+    case 1:
+    case 2:
+    case 4:
+    case 8:
+      {
+      int bits = capacity * 8;
+
+      unsigned __int128 sign_bit =
+          (static_cast<unsigned __int128>(1)) << (bits - 1);
+
+      if(u & sign_bit)
+        {
+        unsigned __int128 extension =
+            (~static_cast<unsigned __int128>(0)) << bits;
+
+        u |= extension;
+        }
+
+      retval = u;
+      break;
+      }
+
+    case 16:
+      {
+      /* Already a full-width 128-bit quantity.  Returning it as signed
+         interprets the high bit as the sign bit on GCC/two's-complement
+         targets. */
+      retval = u;
+      break;
+      }
+
+    default:
+      abort();
+    }
+  return retval;
+  }
+
+#define digit_rt(loc, offset) (((loc)[(offset) * stride]) & 0x0F)
+
+static __int128
+num_disp_dive_rt(const unsigned char *pdigits,
+                    int            ndigits,
+                    int            stride)
+  {
+  __int128 retval;
+  switch(ndigits)
+    {
+    case 1:
+      retval =  digit_rt(pdigits, 0);
+      break;
+    case 2:
+      retval =  digit_rt(pdigits, 0)*10
+              + digit_rt(pdigits, 1);
+      break;
+    case 3:
+      retval =  digit_rt(pdigits, 0)*100
+              + digit_rt(pdigits, 1)*10
+              + digit_rt(pdigits, 2);
+      break;
+    case 4:
+      retval =  digit_rt(pdigits, 0)*1000
+              + digit_rt(pdigits, 1)*100
+              + digit_rt(pdigits, 2)*10
+              + digit_rt(pdigits, 3);
+      break;
+    default:
+      {
+      int nright = ndigits/2;
+      int nleft  = ndigits - nright;
+      __int128 pot = __gg__power_of_ten(nright);
+      retval =   num_disp_dive_rt(pdigits,               nleft, stride) * pot
+               + num_disp_dive_rt(pdigits+nleft*stride, nright, stride);
+      break;
+      }
+    }
+  return retval;
+  }
+
+static __int128
+numeric_display_to_binary(const unsigned char *signp,
+                                const unsigned char *pdigits,
+                                      int            ndigits,
+                                      int            stride)
+  {
+  __int128 retval;
+
+  retval = num_disp_dive_rt(pdigits, ndigits, stride);
+
+  // For speed, we assume this value is well-formed:
+  if( *signp == ascii_minus )
+    {
+    retval = -retval;
+    }
+  else
+    {
+    unsigned int sbyte = *signp & 0xF0;
+    switch(sbyte)
+      {
+      case 0x60: // EBCDIC '-' is 0x60, and no other 0x6z characters matter.
+      case 0x70: // ASCII internal negative
+      case 0xD0: // EBDIC internal negative
+        retval = -retval;
+      break;
+      }
+    }
+
   return retval;
   }
 
@@ -915,7 +1033,7 @@ get_binary_value_local(  int                 *rdigits,
     case FldAlphanumeric :
       // Read the data area as a dirty string:
       retval = __gg__dirty_to_binary(
-                        PTRCAST(const char, resolved_location),
+                        as_chars( resolved_location),
                         resolved_var->encoding,
                         resolved_length,
                         rdigits );
@@ -942,16 +1060,22 @@ get_binary_value_local(  int                 *rdigits,
         // resulting binary number to the maximum possible positive
         // value.
 
-        // Turn all the bits on
-        memset( &retval, 0xFF, sizeof(retval) );
-
-        // Make it positive by turning off the highest order bit:
-        (PTRCAST(unsigned char, &retval))[sizeof(retval)-1] = 0x3F;
+        retval = signed_int128_max();
         }
       else
         {
+        // To convert numeric display to binary, resolved_location needs to
+        // point to the leftmost digit.  For little-endian encodings, that's
+        // where we are now.  For big-endian encodings, we need to bump
+        // the location by stride-1:
         const charmap_t *charmap = __gg__get_charmap(resolved_var->encoding);
         int stride = charmap->stride();
+
+        if( charmap->is_big_endian() )
+          {
+          resolved_location += stride-1;
+          }
+
         unsigned char *digits;
         unsigned char *sign_byte_location;
         int ndigits;
@@ -996,17 +1120,17 @@ get_binary_value_local(  int                 *rdigits,
           ndigits = resolved_length;
           }
         ndigits /= stride;
-        retval = __gg__numeric_display_to_binary(sign_byte_location,
+        retval = numeric_display_to_binary(sign_byte_location,
                                                  digits,
                                                  ndigits,
-                                                 resolved_var->encoding);
+                                                 stride);
         }
       break;
       }
 
     case FldNumericEdited :
       retval = edited_to_binary(resolved_var,
-                                PTRCAST(char, resolved_location),
+                                as_chars( resolved_location),
                                 resolved_length,
                                 rdigits);
       break;
@@ -1015,13 +1139,13 @@ get_binary_value_local(  int                 *rdigits,
       if( resolved_var->attr & signable_e)
         {
         retval = big_endian_to_binary_signed(
-                        PTRCAST(const unsigned char, resolved_location),
+                        resolved_location,
                         resolved_length);
         }
       else
         {
         retval = big_endian_to_binary_unsigned(
-                        PTRCAST(const unsigned char, resolved_location),
+                        resolved_location,
                         resolved_length);
         }
       *rdigits = resolved_var->rdigits;
@@ -1031,12 +1155,12 @@ get_binary_value_local(  int                 *rdigits,
       {
       if( resolved_var->attr & signable_e)
         {
-        retval = little_endian_to_binary_signed(resolved_var->data,
+        retval = native_to_binary_signed(resolved_var->data,
                                                 resolved_var->capacity);
         }
       else
         {
-        retval = little_endian_to_binary_unsigned(resolved_var->data,
+        retval = native_to_binary_unsigned(resolved_var->data,
                                                   resolved_var->capacity);
         }
       *rdigits = resolved_var->rdigits;
@@ -1048,14 +1172,14 @@ get_binary_value_local(  int                 *rdigits,
     case FldPointer:
       if( resolved_var->attr & signable_e)
         {
-        retval = little_endian_to_binary_signed(
-                      PTRCAST(const unsigned char, resolved_location),
+        retval = native_to_binary_signed(
+                      resolved_location,
                       resolved_length);
         }
       else
         {
-        retval = little_endian_to_binary_unsigned(
-                      PTRCAST(const unsigned char, resolved_location),
+        retval = native_to_binary_unsigned(
+                      resolved_location,
                       resolved_length);
         }
       *rdigits = resolved_var->rdigits;
@@ -1085,7 +1209,8 @@ get_binary_value_local(  int                 *rdigits,
     else
       {
       // We have a source with a PIC string like 999PPPPPP, which is
-      // a capacity of 3 and a resolved_var->rdigits of -6.  We need to multiply
+      // a capacity of 3 and a resolved_var->rdigits of -6.  We need to
+      // multiply
       // retval by +6, and make rdigits zero:
       retval *= __gg__power_of_ten( -resolved_var->rdigits );
       *rdigits = 0;
@@ -1220,9 +1345,13 @@ __gg__power_of_ten(int n)
   if( n < 0 || n>MAX_POWER*2)     // The most we can handle is 10**38
     {
     fprintf(stderr,
-            "Trying to raise 10 to %d as an int128, which we can't do.\n",
+            "Trying to raise 10 to %d as an __int128, which we can't do.\n",
             n);
-    fprintf(stderr, "The problem is in %s %s:%d.\n", __func__, __FILE__, __LINE__);
+    fprintf(stderr,
+            "The problem is in %s %s:%d.\n",
+            __func__,
+            __FILE__,
+            __LINE__);
     abort();
     }
   if( n <= MAX_POWER )
@@ -1248,8 +1377,8 @@ __int128
 __gg__scale_by_power_of_ten_1(__int128 value, int N)
   {
   // This routine is called when the result of the scaling is not allowed to
-  // have non-zero rdigits.  __gg__rdigits is set to 1 when the result is
-  // in the bad zone.  The ultimate caller needs to examine __gg__rdigits to
+  // have non-zero rdigits.  __gg__fracdigits is set to 1 when the result is
+  // in the bad zone.  The ultimate caller needs to examine __gg__fracdigits to
   // decide what to do about it.
 
   // This is a separate routine because of the performance hit caused by the
@@ -1257,21 +1386,21 @@ __gg__scale_by_power_of_ten_1(__int128 value, int N)
   // turned on.
   if( N > 0 )
     {
-    __gg__rdigits = 0;
+    __gg__fracdigits = 0;
     value *= __gg__power_of_ten(N);
     }
   else if( N < 0)
     {
-    // We throwing away the N rightmost digits.  Use __gg__rdigits
+    // We throwing away the N rightmost digits.  Use __gg__fracdigits
     // to let the calling chain know they were non-zero:
     __int128 pot = __gg__power_of_ten(-N);
     if( value % pot)
       {
-      __gg__rdigits = 1;
+      __gg__fracdigits = 1;
       }
     else
       {
-      __gg__rdigits = 0;
+      __gg__fracdigits = 0;
       }
 
     value /= pot;
@@ -1279,7 +1408,7 @@ __gg__scale_by_power_of_ten_1(__int128 value, int N)
   else
     {
     // N is zero
-    __gg__rdigits = 0;
+    __gg__fracdigits = 0;
     }
   return value;
   }
@@ -1318,13 +1447,18 @@ value_is_too_big(const cblc_field_t *var,
     if( var->digits )
       {
       // I don't know how to describe this calculation.  I came up with the
-      // equation by working a few examples.  For instance, if value is 12345 and
+      // equation by working a few examples.  For instance, if value is 12345
+      // and
       // source_rdigits is two, then we are trying to cram 123.45 into 99v99999
-      // and we have a size error.  So, digits is 7, rdigits is 5 and source_rdigits
-      // 2.  That means we compare 12345 with 10^(7 - 5 + 2), which is 12345 versus
+      // and we have a size error.  So, digits is 7, rdigits is 5 and
+      // source_rdigits
+      // 2.  That means we compare 12345 with 10^(7 - 5 + 2), which is 12345
+      // versus
       // 10000, which is too big, which means we have a size error.
       retval =
-          value >= __gg__power_of_ten( var->digits - var->rdigits + source_rdigits);
+          value >= __gg__power_of_ten(var->digits
+                                        - var->rdigits
+                                        + source_rdigits);
       }
     else
       {
@@ -1334,7 +1468,8 @@ value_is_too_big(const cblc_field_t *var,
               || var->type == FldPointer
               || var->type == FldIndex) )
         {
-        __gg__abort("value_is_too_big() was given a type it doesn't know about");
+        __gg__abort("value_is_too_big() was given a type it doesn't "
+                      "know about");
         }
       if( var->capacity < 16 )
         {
@@ -1349,205 +1484,158 @@ value_is_too_big(const cblc_field_t *var,
   }
 
 static void
-binary_to_big_endian(   unsigned char *dest,
-                        int            bytes,
-                        __int128       value
-                    )
+binary_to_big_endian(unsigned char *dest,
+                     int            bytes,
+                     __int128       value,
+                     bool           signable )
   {
-  if( value < 0 )
+  // value is native, and we want the result to be big-endian.
+  if( signable )
     {
-    memset(dest, 0xFF, bytes);
+    switch(bytes)
+      {
+      case 1:
+        store_unaligned<int8_t>(dest, static_cast<int8_t>(value));
+        break;
+      case 2:
+        {
+        int16_t v = static_cast<int16_t>(value);
+        #if COBOL_LITTLE_ENDIAN
+        v = static_cast<int16_t>(__builtin_bswap16(v));
+        #endif
+        store_unaligned<int16_t>(dest, v);
+        break;
+        }
+      case 4:
+        {
+        int32_t v = static_cast<int32_t>(value);
+        #if COBOL_LITTLE_ENDIAN
+        v = static_cast<int32_t>(__builtin_bswap32(v));
+        #endif
+        store_unaligned<int32_t>(dest, v);
+        break;
+        }
+      case 8:
+        {
+        int64_t v = static_cast<int64_t>(value);
+        #if COBOL_LITTLE_ENDIAN
+        v = static_cast<int64_t>(__builtin_bswap64(v));
+        #endif
+        store_unaligned<int64_t>(dest, v);
+        break;
+        }
+      default:
+        {
+        __int128 v = value;
+        #if COBOL_LITTLE_ENDIAN
+        v = static_cast<__int128>(__builtin_bswap128(v));
+        #endif
+        store_unaligned<__int128>(dest, v);
+        break;
+        }
+      }
     }
   else
     {
-    memset(dest, 0x00, bytes);
-    }
-
-  dest += bytes-1;
-  while( bytes-- )
-    {
-    *dest-- = (unsigned char) value;
-    value >>= 8;
+    unsigned __int128 uvalue = static_cast<unsigned __int128>(value);
+    switch(bytes)
+      {
+      case 1:
+        store_unaligned<uint8_t>(dest, static_cast<uint8_t>(uvalue));
+        break;
+      case 2:
+        {
+        uint16_t v = static_cast<uint16_t>(uvalue);
+        #if COBOL_LITTLE_ENDIAN
+        v = __builtin_bswap16(v);
+        #endif
+        store_unaligned<uint16_t>(dest, v);
+        break;
+        }
+      case 4:
+        {
+        uint32_t v = static_cast<uint32_t>(uvalue);
+        #if COBOL_LITTLE_ENDIAN
+        v = __builtin_bswap32(v);
+        #endif
+        store_unaligned<uint32_t>(dest, v);
+        break;
+        }
+      case 8:
+        {
+        uint64_t v = static_cast<uint64_t>(uvalue);
+        #if COBOL_LITTLE_ENDIAN
+        v = __builtin_bswap64(v);
+        #endif
+        store_unaligned<uint64_t>(dest, v);
+        break;
+        }
+      default:
+        {
+        unsigned __int128 v = uvalue;
+        #if COBOL_LITTLE_ENDIAN
+        v = __builtin_bswap128(v);
+        #endif
+        store_unaligned<unsigned __int128>(dest, v);
+        break;
+        }
+      }
     }
   }
 
 static void
-binary_to_little_endian(   unsigned char *dest,
-                           int            bytes,
-                           __int128       value
-                       )
+binary_to_native_binary(void      *dest,
+                        int        bytes,
+                        __int128   value,
+                        bool       signable)
   {
-  if( value < 0 )
+  if(signable)
     {
-    memset(dest, 0xFF, bytes);
+    switch(bytes)
+      {
+      case 1:
+        store_unaligned<int8_t>(dest, static_cast<int8_t>(value));
+        break;
+      case 2:
+        store_unaligned<int16_t>(dest, static_cast<int16_t>(value));
+        break;
+      case 4:
+        store_unaligned<int32_t>(dest, static_cast<int32_t>(value));
+        break;
+      case 8:
+        store_unaligned<int64_t>(dest, static_cast<int64_t>(value));
+        break;
+      case 16:
+        store_unaligned<__int128>(dest, value);
+        break;
+      default:
+        abort();
+      }
     }
   else
     {
-    memset(dest, 0x00, bytes);
+    unsigned __int128 uvalue = static_cast<unsigned __int128>(value);
+    switch(bytes)
+      {
+      case 1:
+        store_unaligned<uint8_t>(dest, static_cast<uint8_t>(uvalue));
+        break;
+      case 2:
+        store_unaligned<uint16_t>(dest, static_cast<uint16_t>(uvalue));
+        break;
+      case 4:
+        store_unaligned<uint32_t>(dest, static_cast<uint32_t>(uvalue));
+        break;
+      case 8:
+        store_unaligned<uint64_t>(dest, static_cast<uint64_t>(uvalue));
+        break;
+      case 16:
+        store_unaligned<unsigned __int128>(dest, uvalue);
+        break;
+      default:
+        abort();
+      }
     }
-  memcpy(dest, &value, bytes);
-  }
-
-static __int128
-int128_to_int128_rounded( cbl_round_t rounded,
-                          __int128    value,
-                          __int128    factor,
-                          __int128    remainder,
-                          int        *compute_error)
-  {
-  // value is signed, and is scaled to the target
-  GCOB_FP128 fpart = ((GCOB_FP128)remainder) / ((GCOB_FP128)factor);
-  __int128 retval = value;
-
-  if(rounded == nearest_even_e
-     && fpart != GCOB_FP128_LITERAL (-0.5)
-     && fpart != GCOB_FP128_LITERAL (0.5))
-    {
-    // "bankers rounding" has been requested.
-    //
-    // Since the fraction is not 0.5, this is an ordinary rounding
-    // problem
-    rounded =  nearest_away_from_zero_e;
-    }
-
-  switch(rounded)
-    {
-    case truncation_e:
-      break;
-
-    case nearest_away_from_zero_e:
-      {
-      // This is ordinary rounding, like you learned in grade school
-      // 0.0 through 0.4 becomes 0
-      // 0.5 through 0.9 becomes 1
-      if( value < 0 )
-        {
-        if( fpart <= GCOB_FP128_LITERAL(-0.5) )
-          {
-          retval -= 1;
-          }
-        }
-      else
-        {
-        if( fpart >= GCOB_FP128_LITERAL(0.5) )
-          {
-          retval += 1;
-          }
-        }
-      break;
-      }
-
-    case away_from_zero_e:
-      {
-      // zero stays zero, otherwise head for the next number away from zero
-      if( value < 0 )
-        {
-        if( fpart != 0 )
-          {
-          retval -= 1;
-          }
-        }
-      else
-        {
-        if( fpart != 0 )
-          {
-          retval += 1;
-          }
-        }
-      break;
-      }
-
-    case nearest_toward_zero_e:
-      {
-      // 0.0 through 0.5 becomes 0
-      // 0.6 through 0.9 becomes 1
-      if( value < 0 )
-        {
-        if( fpart < GCOB_FP128_LITERAL(-0.5) )
-          {
-          retval -= 1;
-          }
-        }
-      else
-        {
-        if( fpart > GCOB_FP128_LITERAL(0.5) )
-          {
-          retval += 1;
-          }
-        }
-      break;
-      }
-
-    case toward_greater_e:
-      {
-      if( value > 0 )
-        {
-        if( fpart != 0 )
-          {
-          retval += 1;
-          }
-        }
-      break;
-      }
-
-    case toward_lesser_e:
-      {
-      if( value < 0 )
-        {
-        if(fpart != 0)
-          {
-          retval -= 1;
-          }
-        }
-      break;
-      }
-
-    case nearest_even_e:
-      {
-      // This is "banker's rounding"
-      // 3.4 -> 3.0
-      // 3.5 -> 4.0
-      // 3.6 -> 4.0
-
-      // 4.4 -> 4.0
-      // 4.5 -> 4.0
-      // 4.6 -> 5.0
-
-     // We know that the fractional part is 0.5 or -0.5, and we know that
-     // we want 3 to become 4 and for 4 to stay 4.
-
-    if( value < 0 )
-      {
-      if( retval & 1 )
-        {
-        retval -= 1;
-        }
-      }
-    else
-      {
-      if( retval & 1 )
-        {
-        retval += 1;
-        }
-      }
-      break;
-      }
-
-    case prohibited_e:
-      {
-      if( fpart != 0 )
-        {
-        *compute_error |= compute_error_truncate;
-        }
-
-      break;
-      }
-
-    default:
-      abort();
-      break;
-    }
-  return retval;
   }
 
 static __int128
@@ -1736,7 +1824,7 @@ int128_to_field(cblc_field_t   *var,
           {
           float tvalue = (float)value;
           tvalue /= (float)__gg__power_of_ten(source_rdigits);
-          *PTRCAST(float, location) = tvalue;
+          store_unaligned<float>(location, tvalue);
           break;
           }
 
@@ -1744,7 +1832,7 @@ int128_to_field(cblc_field_t   *var,
           {
           double tvalue = (double)value;
           tvalue /= (double)__gg__power_of_ten(source_rdigits);
-          *PTRCAST(double, location) = tvalue;
+          store_unaligned<double>(location, tvalue);
           break;
           }
 
@@ -1816,7 +1904,6 @@ int128_to_field(cblc_field_t   *var,
         // to hold the value we've been given:
         target_rdigits = source_rdigits;
         var->rdigits = target_rdigits;
-        var->digits = MAX_FIXED_POINT_DIGITS;
         }
       else if( var->attr & scaled_e )
         {
@@ -1824,11 +1911,13 @@ int128_to_field(cblc_field_t   *var,
         // going into memory has no decimal places.
         target_rdigits = 0;
 
-        // We have some additional scaling of value to do to make things line up.
+        // We have some additional scaling of value to do to make things line
+        // up.
 
         if( var->rdigits >= 0 )
           {
-          // Our target is something like PPPPPP999, meaning that var->actual_length
+          // Our target is something like PPPPPP999, meaning that
+          // var->actual_length
           // is 3, and var->rdigits is 6.
 
           // By rights, our caller should have given us something like 123 with
@@ -1862,7 +1951,7 @@ int128_to_field(cblc_field_t   *var,
         {
         // The source (value), has fewer rdigits than the target (var)
 
-        // Multiply value by ten until the source_rdigits matches the
+        // Multiply value by a power of ten so that source_rdigits matches the
         // target_rdigits.  No rounding will be necessary
         value *= __gg__power_of_ten(target_rdigits - source_rdigits);
         source_rdigits = target_rdigits;
@@ -1875,15 +1964,11 @@ int128_to_field(cblc_field_t   *var,
         // Extract those extra digits; we'll need them for rounding:
         __int128 factor = __gg__power_of_ten(source_rdigits - target_rdigits);
 
-        __int128 remainder = value % factor;
-        value /= factor;
         source_rdigits = target_rdigits;
-
-        value = int128_to_int128_rounded( rounded,
-                                          value,
-                                          factor,
-                                          remainder,
-                                          compute_error);
+        value = __gg__int128_to_int128_rounded( rounded,
+                                                value,
+                                                factor,
+                                                compute_error);
         }
 
       // The documentation for ROUNDED MODE PHOHIBITED says that if the value
@@ -1899,7 +1984,7 @@ int128_to_field(cblc_field_t   *var,
         // Value is now scaled to the target's target_rdigits
         bool size_error = false;
 
-        bool is_negative = value < 0 ;
+        bool is_negative = var->type != FldPointer && value < 0 ;
 
         if( !(var->attr & signable_e) && is_negative )
           {
@@ -1933,7 +2018,7 @@ int128_to_field(cblc_field_t   *var,
             memset(location, 0, length);
             const charmap_t *charmap = __gg__get_charmap(var->encoding);
             size_error = __gg__binary_to_string_encoded(
-                                           PTRCAST(char, location),
+                                           as_chars( location),
                                            length > MAX_FIXED_POINT_DIGITS
                                                     ? MAX_FIXED_POINT_DIGITS
                                                     : length/charmap->stride(),
@@ -1961,7 +2046,7 @@ int128_to_field(cblc_field_t   *var,
                   // The sign character goes into the first location
                   size_error =
                      __gg__binary_to_string_encoded(
-                                                PTRCAST(char, location+stride),
+                                                as_chars( location+stride),
                                                 var->digits,
                                                 value,
                                                 var->encoding);
@@ -1971,7 +2056,7 @@ int128_to_field(cblc_field_t   *var,
                   {
                   // The sign character goes into the last location
                   size_error =
-                    __gg__binary_to_string_encoded(PTRCAST(char, location),
+                    __gg__binary_to_string_encoded(as_chars( location),
                                                     var->digits,
                                                     value,
                                                     var->encoding);
@@ -1988,18 +2073,18 @@ int128_to_field(cblc_field_t   *var,
 
                 // First, convert the binary value to the correct-length string
                 size_error =
-                  __gg__binary_to_string_encoded(PTRCAST(char, location),
-                                                  var->digits,
-                                                  value,
-                                                  var->encoding);
+                          __gg__binary_to_string_encoded(as_chars( location),
+                                                          var->digits,
+                                                          value,
+                                                          var->encoding);
 
                 // Check for a size error on a negative value.  It conceivably
                 // was truncated down to zero, in which case we need to
                 // suppress this is_negative flag.
                 if( size_error && is_negative )
                   {
-                  // If all of the digits are zero, then the result is zero, and
-                  // we have to kill the is_negative flag:
+                  // If all of the digits are zero, then the result is zero,
+                  // and we have to kill the is_negative flag:
                   is_negative = false;
                   size_t index = 0;
                   while(index<length)
@@ -2014,20 +2099,17 @@ int128_to_field(cblc_field_t   *var,
                   }
 
                 unsigned char *sign_location =
-                  var->attr & leading_e ? location
-                                        : location + length - stride;
-                cbl_char_t sign_digit = charmap->getch(sign_location,
-                                                       (size_t)0);
-                sign_digit = charmap->set_digit_negative(sign_digit,
-                                                         is_negative);
-                charmap->putch(sign_digit, sign_location, (size_t)0);
+                            var->attr & leading_e ? location
+                                                  : location + length - stride;
+                charmap->set_streamed_digit_negative(sign_location,
+                                                     is_negative);
                 }
               }
             else
               {
               // It's a simple positive number
               size_error = __gg__binary_to_string_encoded(
-                                                    PTRCAST(char, location),
+                                                    as_chars(location),
                                                     var->digits,
                                                     value,
                                                     var->encoding);
@@ -2040,7 +2122,9 @@ int128_to_field(cblc_field_t   *var,
             charmap_t *charmap = __gg__get_charmap(var->encoding);
             if( value == 0 && (var->attr & blank_zero_e) )
               {
-              charmap->memset(location, charmap->mapped_character(ascii_space), length);
+              charmap->memset(location,
+                              charmap->mapped_character(ascii_space),
+                              length);
               }
             else
               {
@@ -2055,7 +2139,7 @@ int128_to_field(cblc_field_t   *var,
 
               // Convert that string according to the PICTURE clause
               size_error |= __gg__string_to_numeric_edited(
-                                 PTRCAST(char, location),
+                                 as_chars( location),
                                 ach,
                                 target_rdigits,
                                 is_negative,
@@ -2064,7 +2148,7 @@ int128_to_field(cblc_field_t   *var,
               const char *converted = __gg__iconverter(
                                      DEFAULT_SOURCE_ENCODING,
                                      var->encoding,
-                                     PTRCAST(char, location),
+                                     as_chars( location),
                                      var->capacity/charmap->stride(),
                                      &outlength);
               memcpy(location, converted, outlength);
@@ -2076,7 +2160,8 @@ int128_to_field(cblc_field_t   *var,
           case FldNumericBinary:
             binary_to_big_endian(   location,
                                     length,
-                                    value);
+                                    value,
+                                    !!(var->attr&signable_e));
             size_error = value_is_too_big(var, value, source_rdigits);
             break;
 
@@ -2089,9 +2174,10 @@ int128_to_field(cblc_field_t   *var,
             // will become one, but it is, apparently harmless.  The HIGH-VALUE
             // must get processed separately elsewhere.  As the author, it
             // would be nice if I knew -- but I don't.
-            binary_to_little_endian(location,
+            binary_to_native_binary( location,
                                     length,
-                                    value);
+                                    value,
+                                    !!(var->attr&signable_e));
             size_error = value_is_too_big(var, value, source_rdigits);
             break;
 
@@ -2103,7 +2189,7 @@ int128_to_field(cblc_field_t   *var,
 
             // Convert that string according to the PICTURE clause
             __gg__string_to_alpha_edited(
-                            PTRCAST(char, location),
+                            as_chars( location),
                             var->encoding,
                             ach,
                             strlen(ach),
@@ -2168,6 +2254,11 @@ int128_to_field(cblc_field_t   *var,
             // We are now set up to do the conversion:
             __gg__binary_to_packed(location, digits, value);
 
+            if( value == 0 && sign_nybble == 0x0D )
+              {
+              sign_nybble = 0x0C;
+              }
+
             // We can put the sign nybble into place at this point.  Note that
             // for COMP-6 numbers the sign_nybble value is zero, so the next
             // operation is harmless.
@@ -2190,8 +2281,8 @@ int128_to_field(cblc_field_t   *var,
           *compute_error |= size_error ? compute_error_truncate : 0;
           }
         }
-      }
       break;
+      }
     }
   }
 
@@ -2223,8 +2314,7 @@ __gg__field_from_string(cblc_field_t *field,
   cblc_field_t source = {};
   source.type = FldAlphanumeric;
   source.encoding = field->encoding;
-  source.data = reinterpret_cast<unsigned char *>
-                                                (const_cast<char *>(string)),
+  source.data = as_unsigned_chars(const_cast<char *>(string)),
   source.capacity = string_length;
   __gg__move(  field, field_o, field_s,
               &source, source.offset, source.capacity,
@@ -2232,21 +2322,29 @@ __gg__field_from_string(cblc_field_t *field,
   }
 
 static void
-field_from_ascii(cblc_field_t *field, char *psz)
+field_from_ascii(cblc_field_t *field,
+                 size_t offset,
+                 size_t length,
+                 char *psz)
   {
   cblc_field_t source = {};
   source.type = FldAlphanumeric;
   source.capacity = strlen(psz);
-  source.data = reinterpret_cast<unsigned char *>(psz);
+  source.data = as_unsigned_chars(psz);
   source.encoding = __gg__console_encoding;
-  __gg__move(  field, field->offset, field->capacity,
-             &source, source.offset, source.capacity,
-             0, truncation_e );
+  __gg__move( field,
+              offset,
+              length,
+             &source,
+             source.offset,
+             source.capacity,
+             0,
+             truncation_e );
   }
 
 extern "C"
 void
-__gg__get_date_yymmdd(cblc_field_t *field)
+__gg__get_date_yymmdd(cblc_field_t *field, size_t offset, size_t length)
   {
   char ach[32];
 
@@ -2258,12 +2356,12 @@ __gg__get_date_yymmdd(cblc_field_t *field)
           local->tm_year  % 100,
           local->tm_mon+1 % 100,
           local->tm_mday  % 100 );
-  field_from_ascii(field, ach);
+  field_from_ascii(field, offset, length, ach);
   }
 
 extern "C"
 void
-__gg__get_date_yyyymmdd(cblc_field_t *field)
+__gg__get_date_yyyymmdd(cblc_field_t *field, size_t offset, size_t length)
   {
   char ach[32];
   time_t t = cobol_time();
@@ -2273,12 +2371,12 @@ __gg__get_date_yyyymmdd(cblc_field_t *field)
           local->tm_year + 1900,
           local->tm_mon+1,
           local->tm_mday);
-  field_from_ascii(field, ach);
+  field_from_ascii(field, offset, length, ach);
   }
 
 extern "C"
 void
-__gg__get_date_yyddd(cblc_field_t *field)
+__gg__get_date_yyddd(cblc_field_t *field, size_t offset, size_t length)
   {
   char ach[32];
 
@@ -2289,12 +2387,12 @@ __gg__get_date_yyddd(cblc_field_t *field)
           "%2.2d%3.3d",
           local->tm_year % 100,
           local->tm_yday+1);
-  field_from_ascii(field, ach);
+  field_from_ascii(field, offset, length, ach);
   }
 
 extern "C"
 void
-__gg__get_yyyyddd(cblc_field_t *field)
+__gg__get_yyyyddd(cblc_field_t *field, size_t offset, size_t length)
   {
   char ach[32];
 
@@ -2305,12 +2403,12 @@ __gg__get_yyyyddd(cblc_field_t *field)
           "%4.4d%3.3d",
           local->tm_year + 1900,
           local->tm_yday+1);
-  field_from_ascii(field, ach);
+  field_from_ascii(field, offset, length, ach);
   }
 
 extern "C"
 void
-__gg__get_date_dow(cblc_field_t *field)
+__gg__get_date_dow(cblc_field_t *field, size_t offset, size_t length)
   {
   char ach[32];
 
@@ -2320,7 +2418,7 @@ __gg__get_date_dow(cblc_field_t *field)
   sprintf(ach,
           "%1.1d",
           local->tm_wday == 0 ? 7 : local->tm_wday);
-  field_from_ascii(field, ach);
+  field_from_ascii(field, offset, length, ach);
   }
 
 static int
@@ -2356,7 +2454,7 @@ get_time_nanoseconds_local()
       how gettimeofday() gets used, instead.  But without the ability to
       compile on a MacOS system, I am fumbling along as best I can.
 
-      I decided to simply replace clock_gettime() with getttimeofday() when
+      I decided to simply replace clock_gettime() with gettimeofday() when
       clock_gettime() isn't available, even though gcc/timevar.cc handles
       the situation differently.
 
@@ -2420,7 +2518,7 @@ __gg__clock_gettime(struct cbl_timespec *tp)
 
 extern "C"
 void
-__gg__get_date_hhmmssff(cblc_field_t *field)
+__gg__get_date_hhmmssff(cblc_field_t *field, size_t offset, size_t length)
   {
   char ach[32];
   struct cbl_timespec tv;
@@ -2443,7 +2541,7 @@ __gg__get_date_hhmmssff(cblc_field_t *field)
           tm.tm_min,
           tm.tm_sec,
           hundredths);
-  field_from_ascii(field, ach);
+  field_from_ascii(field, offset, length, ach);
   }
 
 static
@@ -2464,14 +2562,14 @@ uint32_t collation_position( cbl_char_t ch )
   }
 
 static cbl_char_t
-uber_compare(cbl_char_t ch_left, cbl_char_t ch_right)
+uber_compare(cbl_char_t ch_left,
+             cbl_char_t ch_right)
   {
+  // This is where collation is going to have to be fixed for multi-byte
+  // encodings.  For now, if both characters fit into 0xFF, then we will
+  // use the current collation.  Otherwise, we just compare them.
   if( ((ch_left | ch_right) & 0xFFFFFF00) == 0x00000000 )
     {
-    // This is where collation is going to have to be fixed for multi-byte
-    // encodings.  For now, if both characters fit into 0xFF, then we will
-    // use the current collation.  Otherwise, we just compare them
-
     // Both characters fit into the current DISPLAY codeset, so assume we
     // are using the DISPLAY collation:
     ch_left  = collated(ch_left);
@@ -2484,7 +2582,6 @@ uber_compare(cbl_char_t ch_left, cbl_char_t ch_right)
   cbl_char_t retval = ch_left - ch_right;
   return retval;
   }
-
 
 extern "C"
 int
@@ -2507,11 +2604,11 @@ __gg__setop_compare(
      In order to compare the apples in candidate to the UTF32 values in the
      domain, we need to convert the candidate to UTF32 as well: */
 
-  const charmap_t *charmap = __gg__get_charmap(DEFAULT_32_ENCODING);
+  const charmap_t *charmap = __gg__get_charmap(HOST_32_ENCODING);
 
   size_t nbytes_converted;
   const char *candidate = __gg__iconverter(candidate_field->encoding,
-                                            DEFAULT_32_ENCODING,
+                                            HOST_32_ENCODING,
                                             candidate_field->data,
                                             candidate_field->capacity,
                                             &nbytes_converted);
@@ -2532,7 +2629,7 @@ __gg__setop_compare(
       // See the comments in genapi.cc::get_class_condition_string
       // to see how this string was encoded.
 
-      l = (int)strtoll(d, reinterpret_cast<char **>(&d), 16);
+      l = (int)strtoll(d, &d, 16);
       if( l < 0 )
         {
         // This is a collation position, as given in the COBOL program. Make
@@ -2549,7 +2646,7 @@ __gg__setop_compare(
       if( *d == '/' )
         {
         d += 1;
-        h = (int)strtoll(d, reinterpret_cast<char **>(&d), 16);
+        h = (int)strtoll(d, &d, 16);
         if( h < 0 )
           {
           // This is a collation position; make it the same as
@@ -2660,9 +2757,9 @@ __gg__dirty_to_binary_source(const char *dirty,
 
 extern "C"
 __int128
-__gg__dirty_to_binary(const char *dirty,
+__gg__dirty_to_binary(const char *dirty_in,
                       cbl_encoding_t encoding,
-                      int length,
+                      int length_in,
                       int *rdigits)
   {
   // This routine is used for converting uncontrolled strings to a
@@ -2684,16 +2781,12 @@ __gg__dirty_to_binary(const char *dirty,
   // We are limiting the number of digits in the number to
   // MAX_FIXED_POINT_DIGITS
 
-  charmap_t *charmap    = __gg__get_charmap(encoding);
-  int stride = charmap->stride();
-
-  cbl_char_t mapped_minus          = charmap->mapped_character(ascii_minus);
-  cbl_char_t mapped_plus           = charmap->mapped_character(ascii_plus);
-  cbl_char_t mapped_decimal_point  = charmap->mapped_character(__gg__decimal_point);
-  cbl_char_t mapped_0              = charmap->mapped_character(ascii_0);
-  cbl_char_t mapped_9              = charmap->mapped_character(ascii_9);
-  cbl_char_t mapped_E              = charmap->mapped_character(ascii_E);
-  cbl_char_t mapped_e              = charmap->mapped_character(ascii_e);
+  size_t length;
+  const char *dirty = __gg__iconverter(encoding,
+                                       DEFAULT_SOURCE_ENCODING,
+                                       dirty_in,
+                                       length_in,
+                                       &length);
 
   __int128 retval = 0;
 
@@ -2707,29 +2800,29 @@ __gg__dirty_to_binary(const char *dirty,
   int delta_r = 0;
 
   // We now loop over the remaining input characters:
-  cbl_char_t ch = '\0';
+  char ch = '\0';
   size_t chindex = 0;
 
   if(length > 0)
     {
-    length -= stride;
-    ch = charmap->getch(dirty, &chindex);
-    if( ch == mapped_minus )
+    length -= 1;
+    ch = dirty[chindex++];
+    if( ch == ascii_minus )
       {
       hyphen = 1;
       }
-    else if( ch == mapped_plus )
+    else if( ch == ascii_plus )
       {
       // A plus sign is okay
       }
-    else if( ch == mapped_decimal_point )
+    else if( ch == __gg__decimal_point )
       {
       delta_r = 1;
       }
-    else if( ch >= mapped_0
-          && ch <= mapped_9  )
+    else if( ch >= ascii_0
+          && ch <= ascii_9  )
       {
-      retval = ch - mapped_0 ;
+      retval = ch - ascii_0 ;
       if( retval )
         {
         digit_count += 1;
@@ -2746,17 +2839,16 @@ __gg__dirty_to_binary(const char *dirty,
 
   while( length > 0 )
     {
-    length -= stride;
-    ch = charmap->getch(dirty, &chindex);
-    if( ch == mapped_decimal_point && delta_r == 0 )
+    ch = dirty[chindex++];
+    if( ch == __gg__decimal_point && delta_r == 0 )
       {
       // This is the first decimal point we've seen, so we
       // can start counting rdigits:
       delta_r = 1;
       continue;
       }
-    if(    ch < mapped_0
-        || ch > mapped_9 )
+    if(    ch < ascii_0
+        || ch > ascii_9 )
       {
       // When we hit something that isn't a digit, then we are done
       break;
@@ -2764,7 +2856,8 @@ __gg__dirty_to_binary(const char *dirty,
     if( digit_count < MAX_FIXED_POINT_DIGITS )
       {
       retval *= 10;
-      retval += ch - mapped_0 ;
+      ch -= ascii_0;
+      retval += ch ;
       *rdigits += delta_r;
       if( retval )
         {
@@ -2774,38 +2867,38 @@ __gg__dirty_to_binary(const char *dirty,
     }
 
   // Let's check for an exponent:
-  if(   ch == mapped_E
-     || ch == mapped_e )
+  if(   ch == ascii_E
+     || ch == ascii_e )
     {
     int exponent = 0;
     int exponent_sign = 1;
     if( length > 0  )
       {
-      ch = charmap->getch(dirty, chindex);
-      if( ch == mapped_plus)
+      ch = dirty[chindex];
+      if( ch == ascii_plus)
         {
-        length -= stride;
-        dirty += stride;
+        length -= 1;
+        dirty += 1;
         }
-      else if( ch == mapped_minus )
+      else if( ch == ascii_minus )
         {
         exponent_sign = -1;
-        length -= stride;
-        dirty += stride;
+        length -= 1;
+        dirty += 1;
         }
       }
     while(length > 0)
       {
-      length -= stride;
-      ch = charmap->getch(dirty, &chindex);
-      if(    ch < mapped_0
-          || ch > mapped_9 )
+      length -= 1;
+      ch = dirty[chindex++];
+      if(    ch < ascii_0
+          || ch > ascii_9 )
         {
         // When we hit something that isn't a digit, then we are done
         break;
         }
       exponent *= 10;
-      exponent += ch - mapped_0 ;
+      exponent += ch - ascii_0 ;
       }
     exponent *= exponent_sign;
     // We need to adjust the retval and the rdigits based on the exponent.
@@ -3039,14 +3132,16 @@ get_scaled_rdigits(const cblc_field_t *field)
     {
     if( field->rdigits < 0 )
       {
-      // The PIC string was something like 999PPPP, which means an rdigits value
+      // The PIC string was something like 999PPPP, which means an rdigits
+      // value
       // of -4.  We return zero; somebody else will have the job of multiplying
       // the three significant digits by 10^4 to get the magnitude correct.
       retval = 0;
       }
     else
       {
-      // The PIC string was something like PPPP999, which means an rdigits value
+      // The PIC string was something like PPPP999, which means an rdigits
+      // value
       // of +4.  We return an rdigits value of 4 + 3 = 7, which will mean that
       // the three significant digits will be scaled to 0.0000999
       retval = field->digits + field->rdigits;
@@ -3127,7 +3222,9 @@ format_for_display_internal(char **dest,
           }
         else
           {
-          fprintf(stderr, "attempting to display a NULL pointer in %s\n", var->name);
+          fprintf(stderr,
+                  "attempting to display a NULL pointer in %s\n",
+                  var->name);
           abort();
           }
         (*dest)[actual_length] = NULLCH;
@@ -3161,7 +3258,9 @@ format_for_display_internal(char **dest,
           }
         else
           {
-          fprintf(stderr, "attempting to display a NULL pointer in %s\n", var->name);
+          fprintf(stderr,
+                  "attempting to display a NULL pointer in %s\n",
+                  var->name);
           abort();
           }
         (*dest)[actual_length] = NULLCH;
@@ -3184,7 +3283,8 @@ format_for_display_internal(char **dest,
         break;
         }
 
-      // We need the counts of digits to the left and right of the decimal point
+      // We need the counts of digits to the left and right of the decimal
+      // point
       int rdigits = get_scaled_rdigits(var);
       int ldigits = var->digits - rdigits;
 
@@ -3220,7 +3320,7 @@ format_for_display_internal(char **dest,
         const char *mapped = __gg__iconverter(
                                   var->encoding,
                                   enc_dest,
-                                  PTRCAST(char, actual_location),
+                                  as_chars( actual_location),
                                   actual_length,
                                   &outlength);
         memcpy(converted, mapped, outlength);
@@ -3234,9 +3334,10 @@ format_for_display_internal(char **dest,
                         + (var->attr & leading_e  ? 1 : 0);
         unsigned char *signloc;
         unsigned char *digits;
-        const unsigned char *digits_e;
-        bool is_negative;
-        int index = 0;  // This is the running index into our output destination
+        const unsigned char *digits_r = nullptr;
+        // This is the running index into our output destination.
+        int index = 0;
+        bool is_negative=false;
 
         switch(signtype)
           {
@@ -3247,19 +3348,15 @@ format_for_display_internal(char **dest,
             // not signable
             signloc  = converted;
             digits   = converted;
-            digits_e = converted + outlength;
+            digits_r = converted + outlength;
             is_negative = false;
             break;
           case 4:
             {
             // internal trailing
-            const charmap_t *charmap_from = __gg__get_charmap(var->encoding);
-            cbl_char_t original_sign_digit =
-                charmap_from->getch(actual_location,
-                                    actual_length - charmap_from->stride());
             signloc  = converted + outlength-1;
             digits   = converted;
-            digits_e = converted + outlength;
+            digits_r = converted + outlength;
             /*  In ascii, negative is indicated by turning bit 0x40 on.
                 In ebcdic, by turning bit 0x20 off.  In both cases, the result
                 is outside of the range '0' through '9'.  Working this way is
@@ -3267,42 +3364,213 @@ format_for_display_internal(char **dest,
                 set of garbage that might have been READ or REDEFINED into the
                 variable's memory.  I am not overly concerned.
             */
-            is_negative = *signloc > ascii_9 || *signloc < ascii_0;
-            *signloc = ascii_0 + (original_sign_digit & 0x0F);
+            const charmap_t *charmap_src = __gg__get_charmap(var->encoding);
+            if( charmap_src->is_like_ebcdic() )
+              {
+              switch(*signloc)
+                {
+                case '0':
+                case '1':
+                case '2':
+                case '3':
+                case '4':
+                case '5':
+                case '6':
+                case '7':
+                case '8':
+                case '9':
+                  is_negative = false;
+                  break;
+                case '}':
+                  is_negative = true;
+                  *signloc = '0';
+                  break;
+                case 'J':
+                case 'K':
+                case 'L':
+                case 'M':
+                case 'N':
+                case 'O':
+                case 'P':
+                case 'Q':
+                case 'R':
+                  is_negative = true;
+                  *signloc = ascii_zero + *signloc - 'J' + 1;
+                  break;
+                default:
+                  *signloc = 0;
+                  break;
+                }
+              }
+            else
+              {
+              switch(*signloc)
+                {
+                case '0':
+                case '1':
+                case '2':
+                case '3':
+                case '4':
+                case '5':
+                case '6':
+                case '7':
+                case '8':
+                case '9':
+                  is_negative = false;
+                  break;
+                case 'p':
+                case 'q':
+                case 'r':
+                case 's':
+                case 't':
+                case 'u':
+                case 'v':
+                case 'w':
+                case 'x':
+                case 'y':
+                  is_negative = true;
+                  *signloc = ascii_zero + *signloc - 'p';
+                  break;
+                default:
+                  is_negative = false;
+                  *signloc = 0;
+                  break;
+                }
+              }
             break;
             }
           case 5:
             {
             // internal leading
-            const charmap_t *charmap_from = __gg__get_charmap(var->encoding);
-            cbl_char_t original_sign_digit =
-                charmap_from->getch(actual_location,
-                                    (size_t)0);
             signloc  = converted;
             digits   = converted;
-            digits_e = converted + outlength;
-            is_negative = *signloc > ascii_9 || *signloc < ascii_0;
-            *signloc = ascii_0 + (original_sign_digit & 0x0F);
+            digits_r = converted + outlength;
+            const charmap_t *charmap_src = __gg__get_charmap(var->encoding);
+            if( charmap_src->is_like_ebcdic() )
+              {
+              switch(*signloc)
+                {
+                case '0':
+                case '1':
+                case '2':
+                case '3':
+                case '4':
+                case '5':
+                case '6':
+                case '7':
+                case '8':
+                case '9':
+                  is_negative = false;
+                  break;
+                case '}':
+                  is_negative = true;
+                  *signloc = '0';
+                  break;
+                case 'J':
+                case 'K':
+                case 'L':
+                case 'M':
+                case 'N':
+                case 'O':
+                case 'P':
+                case 'Q':
+                case 'R':
+                  is_negative = true;
+                  *signloc = ascii_zero + *signloc - 'J' + 1;
+                  break;
+                default:
+                  *signloc = 0;
+                  break;
+                }
+              }
+            else
+              {
+              switch(*signloc)
+                {
+                case '0':
+                case '1':
+                case '2':
+                case '3':
+                case '4':
+                case '5':
+                case '6':
+                case '7':
+                case '8':
+                case '9':
+                  is_negative = false;
+                  break;
+                case 'p':
+                case 'q':
+                case 'r':
+                case 's':
+                case 't':
+                case 'u':
+                case 'v':
+                case 'w':
+                case 'x':
+                case 'y':
+                  is_negative = true;
+                  *signloc = ascii_zero + *signloc - 'p';
+                  break;
+                default:
+                  *signloc = 0;
+                  is_negative = false;
+                  break;
+                }
+              }
             break;
             }
           case 6:
+            {
             // separate trailing
             signloc  = converted + outlength-1;
             digits   = converted;
-            digits_e = converted + outlength-1;
-            is_negative = *signloc == ascii_minus;
+            digits_r = converted + outlength-1;
+            switch(*signloc)
+              {
+              case ascii_plus:
+                is_negative = false;
+                break;
+              case ascii_minus:
+                is_negative = true;
+                break;
+              default:
+                {
+                is_negative = false;
+                *signloc = ascii_zero;
+                break;
+                }
+              }
             break;
+            }
           case 7:
+            {
             // separate leading
             signloc  = converted;
             digits   = converted+1;
-            digits_e = converted + outlength;
+            digits_r = converted + outlength;
             is_negative = *signloc == ascii_minus;
+            switch(*signloc)
+              {
+              case ascii_plus:
+                is_negative = false;
+                break;
+              case ascii_minus:
+                is_negative = true;
+                break;
+              default:
+                {
+                is_negative = false;
+                *signloc = ascii_zero;
+                break;
+                }
+              }
             break;
+            }
           }
         // We have the sign sorted out; make sure that the digits are valid:
         unsigned char *running_location = digits;
-        while(running_location < digits_e)
+        while(running_location < digits_r)
           {
           if( *running_location < ascii_0 || *running_location > ascii_9 )
             {
@@ -3390,7 +3658,9 @@ format_for_display_internal(char **dest,
         }
       else
         {
-        fprintf(stderr, "attempting to display a NULL pointer in %s\n", var->name);
+        fprintf(stderr,
+                "attempting to display a NULL pointer in %s\n",
+                var->name);
         abort();
         }
       }
@@ -3399,6 +3669,7 @@ format_for_display_internal(char **dest,
     case FldNumericBinary:
     case FldPacked:
     case FldNumericBin5:
+    case FldLiteralN:
       {
       int dummy;
       int digits;
@@ -3424,7 +3695,8 @@ format_for_display_internal(char **dest,
         }
       else
         {
-        // USAGE BINARY comes through without a digits value.  Force it based on
+        // USAGE BINARY comes through without a digits value.  Force it based
+        // on
         // the capacity:
         switch( var->capacity )
           {
@@ -3441,7 +3713,15 @@ format_for_display_internal(char **dest,
             digits = 19;
             break;
           case 16:
-            digits = MAX_FIXED_POINT_DIGITS;
+            // digits = MAX_FIXED_POINT_DIGITS;
+            /* This requires some context.  Although we generally operate on
+               the basis of MAX_FIXED_POINT_DIGITS (currently 37, which gives
+               one digit of headroom for rounding and such), a PIC X(16) COMP-X
+               provides for an honest 128-bits of binary value.  If that is set
+               to HIGH-VALUE, the decimal representation requires 39 decimal
+               digits.  So, we do that here so that the DISPLAY of that value
+               is accurate. */
+            digits = 39;
             break;
           default:
             warnx("%s(): %s has capacity %ld\n",
@@ -3503,8 +3783,10 @@ format_for_display_internal(char **dest,
           }
         else
           {
-          // An intermediate is a rubber-band variable.  It has no formal format.
-          // So, to make it cleaner for display purposes, let's clear off leading
+          // An intermediate is a rubber-band variable.  It has no formal
+          // format.
+          // So, to make it cleaner for display purposes, let's clear off
+          // leading
           // '+' characters and trailing zeroes.
           if( **dest == ascii_plus )
             {
@@ -3518,7 +3800,8 @@ format_for_display_internal(char **dest,
               {
               *p-- = '\0';
               }
-            // And if we are left with just a decimal point, strip that off, too.
+            // And if we are left with just a decimal point, strip that off,
+            // too.
             while( *p ==  charmap->decimal_point() )
               {
               *p = '\0';
@@ -3589,14 +3872,15 @@ format_for_display_internal(char **dest,
         {
         case 4:
           {
-          // We will convert based on the fact that for float32, any seven-digit
-          // number converts to float32 and then back again unchanged.
+          // We will convert based on the fact that for float32, any
+          // seven-digit number converts to float32 and then back again
+          // unchanged.
 
-          // We will also format numbers so that we produce 0.01 and 1E-3 on the low
-          // side, and 9999999 and then 1E+7 on the high side
+          // We will also format numbers so that we produce 0.01 and 1E-3 on
+          // the low side, and 9999999 and then 1E+7 on the high side
           // 10,000,000 = 1E7
           char ach[64];
-          _Float32 floatval = *PTRCAST(_Float32, actual_location);
+          _Float32 floatval = load_unaligned<_Float32>(actual_location);
           strfromf32(ach, sizeof(ach), "%.9E", floatval);
           char *p = strchr(ach, 'E');
           if( !p )
@@ -3605,23 +3889,55 @@ format_for_display_internal(char **dest,
             }
           else
             {
-            p += 1;
-            int exp = atoi(p);
-            if( exp >= 6 || exp <= -5 )
+            if( __gg__dialects & dialect_ibm_e )
               {
-              // We are going to stick with the E notation, so ach has our result
+              // IBM specifies that this look like
+              //     A COMP-1 item will display as if it had an external
+              //     floating-point PICTURE clause of -.9(8)E-99.
+              // The plus signs are suppressed.
+              floatval *= 10; // Needed because we are going to flip the
+              //              // decimal point and first digit.
+              if( floatval >= 0 )
+                {
+                strfromf32(ach+1, sizeof(ach), "%.7E", floatval);
+                ach[0] = ascii_space;
+                }
+              else
+                {
+                strfromf32(ach, sizeof(ach), "%.7E", floatval);
+                }
+              // Turn 1.23 into .123
+              ach[2] = ach[1];
+              ach[1] = ascii_period;
+
+              // Turn "E+00" to the IBM "E 00"
+              p = strchr(ach, ascii_plus);
+              if(p)
+                {
+                *p = ascii_space;
+                }
               }
             else
               {
-              // We are going to produce our number in such a way that we specify
-              // seven signicant digits, no matter where the decimal point lands.
-              // Note that exp is in the range of 6 to -2
+              p += 1;
+              int exp = atoi(p);
+              if( exp >= 6 || exp <= -5 )
+                {
+                // We are going to stick with the E notation, so ach has our
+                // result
+                }
+              else
+                {
+                // We are going to produce our number in such a way that we
+                // specify seven signicant digits, no matter where the decimal
+                // point lands. Note that exp is in the range of 6 to -2
 
-              int precision = 9 - exp;
-              sprintf(ach, "%.*f", precision, (double)floatval );
+                int precision = 9 - exp;
+                sprintf(ach, "%.*f", precision, (double)floatval );
+                }
+              __gg__remove_trailing_zeroes(ach);
+              __gg__realloc_if_necessary(dest, dest_size, strlen(ach)+1);
               }
-            __gg__remove_trailing_zeroes(ach);
-            __gg__realloc_if_necessary(dest, dest_size, strlen(ach)+1);
             }
           strcpy(*dest, ach);
           break;
@@ -3632,10 +3948,10 @@ format_for_display_internal(char **dest,
           // We will convert based on the fact that for float32, any 15-digit
           // number converts to float64 and then back again unchanged.
 
-          // We will also format numbers so that we produce 0.01 and 1E-3 on the low
-          // side, and 9999999 and then 1E+15 on the high side
+          // We will also format numbers so that we produce 0.01 and 1E-3 on
+          // the low side, and 9999999 and then 1E+15 on the high side
           char ach[64];
-          _Float64 floatval = *PTRCAST(_Float64, actual_location);
+          _Float64 floatval = load_unaligned<_Float64>(actual_location);
           strfromf64(ach, sizeof(ach), "%.17E", floatval);
           char *p = strchr(ach, 'E');
           if( !p )
@@ -3644,24 +3960,55 @@ format_for_display_internal(char **dest,
             }
           else
             {
-            p += 1;
-            int exp = atoi(p);
-            if( exp >= 6 || exp <= -5 )
+            if( __gg__dialects & dialect_ibm_e )
               {
-              // We are going to stick with the E notation, so ach has our result
+              // IBM specifies that this look like
+              //     A COMP-2 item will display as if it had an external
+              //     floating-point PICTURE clause of -.9(17)E-99.
+              // The plus signs are suppressed.
+              floatval *= 10; // Needed because we are going to flip the
+              //              // decimal point and first digit.
+              if( floatval >= 0 )
+                {
+                strfromf64(ach+1, sizeof(ach), "%.16E", floatval);
+                ach[0] = ascii_space;
+                }
+              else
+                {
+                strfromf64(ach, sizeof(ach), "%.16E", floatval);
+                }
+              // Turn 1.23 into .123
+              ach[2] = ach[1];
+              ach[1] = ascii_period;
+              // Turn "E+00" to the IBM "E 00"
+              p = strchr(ach, ascii_plus);
+              if(p)
+                {
+                *p = ascii_space;
+                }
               }
             else
               {
-              // We are going to produce our number in such a way that we specify
-              // seven signicant digits, no matter where the decimal point lands.
-              // Note that exp is in the range of 6 to -2
+              p += 1;
+              int exp = atoi(p);
+              if( exp >= 6 || exp <= -5 )
+                {
+                // We are going to stick with the E notation, so ach has our
+                // result
+                }
+              else
+                {
+                // We are going to produce our number in such a way that we
+                // specify seven signicant digits, no matter where the decimal
+                // point lands.  Note that exp is in the range of 6 to -2
 
-              int precision = 17 - exp;
+                int precision = 17 - exp;
 
-              sprintf(ach, "%.*f", precision, (double)floatval );
+                sprintf(ach, "%.*f", precision, (double)floatval );
+                }
+              __gg__remove_trailing_zeroes(ach);
+              __gg__realloc_if_necessary(dest, dest_size, strlen(ach)+1);
               }
-            __gg__remove_trailing_zeroes(ach);
-            __gg__realloc_if_necessary(dest, dest_size, strlen(ach)+1);
             }
           strcpy(*dest, ach);
           break;
@@ -3672,8 +4019,8 @@ format_for_display_internal(char **dest,
           // We will convert based on the fact that for float32, any 15-digit
           // number converts to float64 and then back again unchanged.
 
-          // We will also format numbers so that we produce 0.01 and 1E-3 on the low
-          // side, and 9999999 and then 1E+15 on the high side
+          // We will also format numbers so that we produce 0.01 and 1E-3 on
+          // the low side, and 9999999 and then 1E+15 on the high side
           char ach[128];
           // We can't use *(_Float64 *)actual_location;
           // That uses the SSE registers, which won't work if the source isn't
@@ -3692,13 +4039,14 @@ format_for_display_internal(char **dest,
             int exp = atoi(p);
             if( exp >= 6 || exp <= -5 )
               {
-              // We are going to stick with the E notation, so ach has our result
+              // We are going to stick with the E notation, so ach has our
+              // result
               }
             else
               {
-              // We are going to produce our number in such a way that we specify
-              // seven signicant digits, no matter where the decimal point lands.
-              // Note that exp is in the range of 6 to -2
+              // We are going to produce our number in such a way that we
+              // specify seven signicant digits, no matter where the decimal
+              // point lands. Note that exp is in the range of 6 to -2
 
               int precision = 36 - exp;
               char achFormat[24];
@@ -3778,7 +4126,8 @@ format_for_display_internal(char **dest,
     // Because this is a intermediate Bin5, let's strip off leading zeroes.
     //
     // Because we don't know what we are dealing with, we created a 37-digit
-    // number with a variable number of rdigits.  So, we usually have a boatload
+    // number with a variable number of rdigits.  So, we usually have a
+    // boatload
     // of leading zeroes.  I find that display offensive, so let's fix it:
     unsigned char *p1 = (unsigned char *)(*dest);
     if( *p1 == ascii_plus || *p1 == ascii_minus )
@@ -3790,7 +4139,7 @@ format_for_display_internal(char **dest,
       {
       p2 += 1;
       }
-    strcpy(PTRCAST(char, p1), PTRCAST(char, p2));
+    strcpy(as_chars( p1), as_chars( p2));
     }
 
   done:
@@ -3816,7 +4165,7 @@ compare_88( const char    *list,
   size_t list_len = list_e-list;
 
   // We need to convert the conditional to be UTF32 as well:
-  charmap_t *charmap = __gg__get_charmap(DEFAULT_32_ENCODING);
+  charmap_t *charmap = __gg__get_charmap(HOST_32_ENCODING);
   size_t stride = charmap->stride();
   cbl_char_t mapped_space = charmap->mapped_character(ascii_space);
 
@@ -3824,7 +4173,7 @@ compare_88( const char    *list,
   size_t conditional_length=0;
   char * conditional_i = __gg__miconverter(
                                 conditional_->encoding,
-                                DEFAULT_32_ENCODING,
+                                HOST_32_ENCODING,
                                 conditional_location_,
                                 conditional_length_,
                                 &conditional_length);
@@ -3922,7 +4271,7 @@ compare_88( const char    *list,
 
 static GCOB_FP128
 get_float128( const cblc_field_t *field,
-              unsigned char *location )
+              const unsigned char *location )
   {
   GCOB_FP128 retval=0;
   if(field->type == FldFloat )
@@ -3930,10 +4279,10 @@ get_float128( const cblc_field_t *field,
     switch( field->capacity )
       {
       case 4:
-        retval = *PTRCAST(_Float32 , location);
+        retval = load_unaligned<_Float32>(location);
         break;
       case 8:
-        retval = *PTRCAST(_Float64 , location);
+        retval = load_unaligned<_Float64>(location);
         break;
       case 16:
         // retval = *(_Float128 *)location; doesn't work, because the SSE
@@ -4010,18 +4359,18 @@ get_float128( const cblc_field_t *field,
   return retval;
   }
 
-static
+extern "C"
 int
-compare_field_class(const cblc_field_t  *conditional,
+__gg__compare_field_class(const cblc_field_t  *conditional,
                     unsigned char       *conditional_location,
-                    int                  conditional_length,
+                    size_t               conditional_length,
                     cblc_field_t        *list)
   {
   int retval = 1; // Zero means equal
   __int128 value;
   int rdigits;
 
-  charmap_t *charmap32 = __gg__get_charmap(DEFAULT_32_ENCODING);
+  charmap_t *charmap32 = __gg__get_charmap(HOST_32_ENCODING);
   int stride32 = charmap32->stride();
   cbl_char_t mapped_F = charmap32->mapped_character(ascii_F);
   cbl_char_t mapped_Z = charmap32->mapped_character(ascii_Z);
@@ -4042,7 +4391,7 @@ compare_field_class(const cblc_field_t  *conditional,
                                       conditional_location,
                                       conditional_length);
       char *walker = list->initial;
-      while(*walker)
+      for(;;)
         {
         cbl_char_t left_flag;
         size_t left_len;
@@ -4055,7 +4404,13 @@ compare_field_class(const cblc_field_t  *conditional,
         char *pend;
 
         left_len = charmap32->strtoull(walker, &pend, 10);
+        if( left_len == 0 )
+          {
+          // When the first bytes are zero, we've hit the end.
+          break;
+          }
         left_flag = charmap32->getch(pend, (size_t)0);
+
         left = pend+stride32;
 
         right = left + left_len*stride32;
@@ -4079,7 +4434,7 @@ compare_field_class(const cblc_field_t  *conditional,
           {
           left_value = __gg__dirty_to_binary(
                                   left,
-                                  DEFAULT_32_ENCODING,
+                                  HOST_32_ENCODING,
                                   left_len*stride32,
                                   &left_rdigits);
           }
@@ -4095,7 +4450,7 @@ compare_field_class(const cblc_field_t  *conditional,
           {
           right_value = __gg__dirty_to_binary(
                                    right,
-                                   DEFAULT_32_ENCODING,
+                                   HOST_32_ENCODING,
                                    right_len*stride32,
                                    &right_rdigits);
           }
@@ -4132,7 +4487,7 @@ compare_field_class(const cblc_field_t  *conditional,
       // This is an alphanumeric comparison.  The list is in UTF32, so we
       // are going to have to convert the conditional to UTF32.
       char *walker = list->initial;
-      while(*walker)
+      for(;;)
         {
         bool fig1;
         bool fig2;
@@ -4149,6 +4504,11 @@ compare_field_class(const cblc_field_t  *conditional,
 
         first = walker;
         first_len = charmap32->strtoull(first, &pend, 10);
+        if( first_len == 0 )
+          {
+          // When the first bytes are zero, we've hit the end.
+          break;
+          }
         ch = charmap32->getch(pend, (size_t)0);
         fig1 = ch == mapped_F;
         first = pend+stride32;
@@ -4201,11 +4561,11 @@ compare_field_class(const cblc_field_t  *conditional,
       // We need a fake field to hold the encoding for the
       // __gg__dirty_to_float() routine.
       cblc_field_t fakir;
-      fakir.encoding = DEFAULT_32_ENCODING;
+      fakir.encoding = HOST_32_ENCODING;
 
       GCOB_FP128 fp128 = get_float128(conditional, conditional_location) ;
       char *walker = list->initial;
-      while(*walker)
+      for(;;)
         {
         cbl_char_t   left_flag;
         size_t left_len;
@@ -4217,6 +4577,10 @@ compare_field_class(const cblc_field_t  *conditional,
 
         char *pend;
         left_len = charmap32->strtoull(walker, &pend, 10);
+        if(left_len == 0 )
+          {
+          break;
+          }
         left_flag = charmap32->getch(pend, (size_t)0);
         left = pend+stride32;
 
@@ -4346,77 +4710,91 @@ interconvert( char **allocated_left,
   *allocated_left  = nullptr;
   *allocated_right = nullptr;
 
-  bool convert_left_to_right = false;
-  bool convert_right_to_left = false;
-
-  size_t converted_length;
-  const char *converted;
   if( *encoding_left == *encoding_right )
     {
     // This is both the most-seen situation, and, happily, the easiest to
     // handle.  We just do nothing.
     }
-  else if(   *encoding_left  == __gg__national_encoding
-          || *encoding_right == __gg__national_encoding )
-    {
-    // The encodings are different, but at least one is the national encoding.
-    // Convert the other one to be national as well:
-    if( *encoding_left != __gg__national_encoding )
-      {
-      convert_left_to_right = true;
-      }
-    else
-      {
-      convert_right_to_left = true;
-      }
-    }
   else
     {
-    // We have two different encodings, and neither of them are national.  This
-    // can happen when a file descriptor has a specific codeset that doesn't
-    // match the national codeset.  We will convert the narrower to the wider;
-    // if they are both the same width we will pick one arbitrarily.
+    bool convert_left_to_right = false;
+    bool convert_right_to_left = false;
+    size_t converted_length;
+    const char *converted;
+
+    // We are dealing with two different encodings
     const charmap_t *charmap_left  = __gg__get_charmap(*encoding_left);
     const charmap_t *charmap_right = __gg__get_charmap(*encoding_right);
-    if( charmap_right->stride() >= charmap_left->stride() )
+    if( charmap_left->stride() == charmap_right->stride() )
       {
-      convert_left_to_right = true;
+      // The strides are the same.  If one is display, convert the other to
+      // display.  If one is national, convert the other to national
+      if( *encoding_left  == __gg__display_encoding )
+        {
+        convert_right_to_left = true;
+        }
+      else if(*encoding_right  == __gg__display_encoding )
+        {
+        convert_left_to_right = true;
+        }
+      else if(*encoding_left  == __gg__national_encoding )
+        {
+        convert_right_to_left = true;
+        }
+      else if(*encoding_right  == __gg__national_encoding )
+        {
+        convert_left_to_right = true;
+        }
+      else
+        {
+        // The strides are the same, but we don't know anything about the
+        // encodings.  Toss a coin:
+        convert_right_to_left = true;
+        }
       }
     else
       {
-      convert_right_to_left = true;
+      // The two strides are different.  Convert the narrow to the wider:
+      if( charmap_left->stride() > charmap_right->stride() )
+        {
+        convert_right_to_left = true;
+        }
+      else
+        {
+        convert_left_to_right = true;
+        }
       }
-    }
 
-  if( convert_left_to_right )
-    {
-    // Convert the left side to the right encoding
-    converted = __gg__iconverter(*encoding_left,
-                                 *encoding_right,
-                                 *left_string,
-                                 *left_length,
-                                 &converted_length);
-    *encoding_left = *encoding_right ;
-    *allocated_left = static_cast<char *>(malloc(converted_length));
-    massert(*allocated_left);
-    *left_string = *allocated_left;
-    *left_length = converted_length;
-    memcpy(*left_string, converted, *left_length);
-    }
-  if( convert_right_to_left )
-    {
-    // Convert the right side to the left_encoding
-    converted = __gg__iconverter(*encoding_right,
-                                 *encoding_left,
-                                 *right_string,
-                                 *right_length,
-                                 &converted_length);
-    *encoding_right = *encoding_left ;
-    *allocated_right = static_cast<char *>(malloc(converted_length));
-    massert(*allocated_right);
-    *right_string = *allocated_right;
-    *right_length = converted_length;
-    memcpy(right_string, converted, *right_length);
+    if( convert_left_to_right )
+      {
+      // Convert the left side to the right encoding
+      converted = __gg__iconverter(*encoding_left,
+                                   *encoding_right,
+                                   *left_string,
+                                   *left_length,
+                                   &converted_length);
+      *encoding_left = *encoding_right ;
+      *allocated_left = static_cast<char *>(malloc(converted_length));
+      massert(*allocated_left);
+      *left_string = *allocated_left;
+      *left_length = converted_length;
+      memcpy(*left_string, converted, *left_length);
+      }
+    if( convert_right_to_left )
+      {
+      // Convert the right side to the left_encoding
+      converted = __gg__iconverter(*encoding_right,
+                                   *encoding_left,
+                                   *right_string,
+                                   *right_length,
+                                   &converted_length);
+      *encoding_right = *encoding_left ;
+      *allocated_right = static_cast<char *>(malloc(converted_length));
+      massert(*allocated_right);
+      *right_string = *allocated_right;
+      *right_length = converted_length;
+      memcpy(*right_string, converted, *right_length);
+      }
     }
   }
 
@@ -4544,7 +4922,7 @@ __gg__compare_2(cblc_field_t  *left_side,
 
   if( right_side->type == FldClass )
     {
-    return compare_field_class( left_side,
+    return __gg__compare_field_class( left_side,
                                 left_location,
                                 left_length,
                                 right_side);
@@ -4718,10 +5096,10 @@ __gg__compare_2(cblc_field_t  *left_side,
         {
         encoding_left = encoding_right = iconv_CP1252_e;
         }
-      retval = compare_strings(   reinterpret_cast<char *>(left_location),
+      retval = compare_strings(   as_chars(left_location),
                                   left_length,
                                   left_all,
-                                  reinterpret_cast<char *>(right_location),
+                                  as_chars(right_location),
                                   right_length,
                                   right_all,
                                   encoding_left,
@@ -4737,8 +5115,10 @@ __gg__compare_2(cblc_field_t  *left_side,
       if( left_side->type == FldFloat && right_side->type == FldFloat )
         {
         // One or the other of the numerics is a FldFloat
-        GCOB_FP128 left_value  = __gg__float128_from_location(left_side,  left_location);
-        GCOB_FP128 right_value = __gg__float128_from_location(right_side, right_location);
+        GCOB_FP128 left_value =
+          __gg__float128_from_location(left_side, left_location);
+        GCOB_FP128 right_value =
+          __gg__float128_from_location(right_side, right_location);
         retval = 0;
         retval = left_value < right_value ? -1 : retval;
         retval = left_value > right_value ?  1 : retval;
@@ -4756,13 +5136,13 @@ __gg__compare_2(cblc_field_t  *left_side,
         if( right_side->type == FldLiteralN)
           {
           right_value = get_float128(right_side, right_location);
-          // In order to do the comparision, we need the value from the
+          // In order to do the comparison, we need the value from the
           // literal to be the same flavor as the left side:
           switch(left_side->capacity)
             {
             case 4:
               {
-              _Float32 left_value4  = *PTRCAST(_Float32, left_location);
+              _Float32 left_value4 = load_unaligned<_Float32>(left_location);
               _Float32 right_value4 = (_Float32)right_value;
               retval = 0;
               retval = left_value4 < right_value4 ? -1 : retval;
@@ -4771,7 +5151,7 @@ __gg__compare_2(cblc_field_t  *left_side,
               }
             case 8:
               {
-              _Float64 left_value8  = *PTRCAST(_Float64, left_location);
+              _Float64 left_value8 = load_unaligned<_Float64>(left_location);
               _Float64 right_value8 = (_Float64)right_value;
               retval = 0;
               retval = left_value8 < right_value8 ? -1 : retval;
@@ -4793,7 +5173,8 @@ __gg__compare_2(cblc_field_t  *left_side,
           }
         else
           {
-          left_value  = __gg__float128_from_location(left_side,  left_location);
+          left_value =
+            __gg__float128_from_location(left_side, left_location);
 
           right_value = get_binary_value_local( &rdecimals,
                                                 right_side,
@@ -4875,10 +5256,10 @@ __gg__compare_2(cblc_field_t  *left_side,
           {
           encoding_left = encoding_right = iconv_CP1252_e;
           }
-        retval = compare_strings(   reinterpret_cast<char *>(left_location),
+        retval = compare_strings(   as_chars(left_location),
                                     left_length,
                                     left_all,
-                                    reinterpret_cast<char *>(right_location),
+                                    as_chars(right_location),
                                     right_length,
                                     right_all,
                                     left_side->encoding,
@@ -4898,7 +5279,7 @@ __gg__compare_2(cblc_field_t  *left_side,
       // VAL5 EQUAL "005" is TRUE
       if( left_side->type == FldLiteralA )
         {
-        left_location = reinterpret_cast<unsigned char *>(left_side->data);
+        left_location = left_side->data;
         left_length   = left_side->capacity;
         }
 
@@ -4961,7 +5342,7 @@ __gg__compare_2(cblc_field_t  *left_side,
         {
         encoding_left = encoding_right = iconv_CP1252_e;
         }
-      retval = compare_strings(   reinterpret_cast<char *>(left_location),
+      retval = compare_strings(   as_chars(left_location),
                                   left_length,
                                   left_all,
                                   right_fixed,
@@ -5049,7 +5430,9 @@ __gg__compare(struct cblc_field_t *left,
 
 extern "C"
 void
-__gg__double_to_target(cblc_field_t *tgt, double tgt_value,  cbl_round_t rounded)
+__gg__double_to_target(cblc_field_t *tgt,
+                         double        tgt_value,
+                         cbl_round_t   rounded)
   {
   int tgt_rdigits = 0;
 
@@ -5219,7 +5602,8 @@ __gg__sort_table( const cblc_field_t    *table,
     while( offset + sizeof(size_t) + record_size > buffer_size )
       {
       buffer_size *= 2;
-      contents = static_cast<unsigned char *>(realloc(contents, buffer_size));
+      contents = static_cast<unsigned char *>(
+        checked_realloc(contents, buffer_size));
       }
     offsets.push_back(offset);
     memcpy(contents+offset, &record_size, sizeof(size_t));
@@ -5294,19 +5678,9 @@ init_var_both(cblc_field_t  *var,
 
   // Set the "initialized" bit, which is tested in parser_symbol_add to make
   // sure this code gets executed only once.
-  //fprintf(stderr, "__gg__initialize_variable %s setting initialize_e\n", var->name);
+  //fprintf(stderr, "__gg__initialize_variable %s setting initialize_e\n",
+  //var->name);
   var->attr |= initialized_e;
-
-  // We need to make sure that the program_states vector has at least one
-  // entry in it.  This happens when we are the very first PROGRAM-ID called
-  // in this module.
-
-  // When there is no DATA DIVISION, program_states will be empty the first time
-  // we arrive here.
-  if( program_states.empty() )
-    {
-    initialize_program_state();
-    }
 
   const char *local_initial = as_initial(var->initial);
 
@@ -5334,9 +5708,17 @@ init_var_both(cblc_field_t  *var,
     return;
     }
 
-  if( !(var->attr & based_e) && (var->attr & external_e) )
+  if( !(var->attr & based_e) && (var->attr & external_e) && !var->initial)
     {
     // These types can't be initialized
+    return;
+    }
+
+  if( flag_bits & JUST_ONCE_BIT && var->attr & external_e )
+    {
+    // This is an EXTERNAL variable with a VALUE clause.  We don't initialize
+    // that on startup.  The value is applicable only for explicit INITIALIZE
+    // statements.
     return;
     }
 
@@ -5349,7 +5731,7 @@ init_var_both(cblc_field_t  *var,
     {
     while(parent)
       {
-      if( strlen(as_initial(parent->initial)) )
+      if( parent->initial )
         {
         a_parent_initialized = true;
         }
@@ -5362,7 +5744,10 @@ init_var_both(cblc_field_t  *var,
       }
     }
 
-  if( is_redefined || a_parent_initialized || var->level == LEVEL66 || var->level == LEVEL88)
+  if(    is_redefined
+      || a_parent_initialized
+      || var->level == LEVEL66
+      || var->level == LEVEL88)
     {
     // Don't initialize variables that have the REDEFINES clause.  Many things
     // in COBOL programs don't work if you do, in particular the initialization
@@ -5472,12 +5857,14 @@ init_var_both(cblc_field_t  *var,
               {
               initialization_character = __gg__local_init;
               }
-            if( !(var->attr & linkage_e) && __gg__working_init != NOT_A_CHARACTER )
+            if(    !(var->attr & linkage_e)
+                && __gg__working_init != NOT_A_CHARACTER )
               {
               initialization_character = __gg__working_init;
               }
             charmap->memset(outer_location,
-                            charmap->mapped_character(initialization_character),
+                            charmap->mapped_character(
+                              initialization_character),
                             capacity );
             }
           else
@@ -5541,7 +5928,8 @@ init_var_both(cblc_field_t  *var,
       case FldIndex:
       case FldFloat:
         {
-        // During  parser_symbol_add(), the original text initial value was turned
+        // During  parser_symbol_add(), the original text initial value was
+        // turned
         // into the appropriate binary value.
         if( var->initial )
           {
@@ -5577,15 +5965,21 @@ init_var_both(cblc_field_t  *var,
         break;
 
       default:
-        fprintf(stderr, "###### %10s in %s:%d\n", __func__, __FILE__, __LINE__ );
-        fprintf(stderr, "###### You got yourself a new CVT_type %d for variable %s (%s)\n",
+        fprintf(stderr,
+                "###### %10s in %s:%d\n",
+                __func__,
+                __FILE__,
+                __LINE__ );
+        fprintf(stderr,
+                "###### You got yourself a new CVT_type %d "
+                "for variable %s (%s)\n",
                 var->type,
                 var->name,
                 local_initial);
         __gg__abort("Unknown variable type");
       }
 
-    char *location = reinterpret_cast<char *>(save_the_location);
+    char *location = as_chars(save_the_location);
 
     there_is_more = false;
     size_t i=0;
@@ -5611,7 +6005,7 @@ init_var_both(cblc_field_t  *var,
         }
       }
 
-    outer_location = reinterpret_cast<unsigned char *>(location);
+    outer_location = as_unsigned_chars(location);
     } while(there_is_more);
 
   var->data = save_the_location;
@@ -5656,7 +6050,7 @@ alpha_to_alpha_move_from_location(cblc_field_t *field,
   // same encoding as field->encoding.
   dest_length = dest_length ? dest_length : field->capacity;
 
-  char *to         = reinterpret_cast<char *>(field->data + dest_offset);
+  char *to         = as_chars(field->data + dest_offset);
   const char *from = source_location;
   size_t count     = std::min(dest_length, source_length);
 
@@ -5673,7 +6067,7 @@ alpha_to_alpha_move_from_location(cblc_field_t *field,
       }
     else
       {
-      // Destination is right-justified, so we
+      // Destination is left-justified, so we
       // discard the trailing source characters:
       memmove(to,
               from,
@@ -5735,7 +6129,7 @@ alpha_to_alpha_move_from_location(cblc_field_t *field,
         }
       else
         {
-        // The destination is right-justified, and the source is an
+        // The destination is left-justified, and the source is an
         // ordinary string too short to fill it.  So, we space-fill
         // the trailing characters.
         // We do the move first, in case this is an overlapping move
@@ -5776,7 +6170,7 @@ alpha_to_alpha_move(cblc_field_t *dest,
                     bool source_move_all)
   {
   const char *source_location
-                      = reinterpret_cast<char *>(source->data + source_offset);
+                      = as_chars(source->data + source_offset);
   size_t outlength;
   if(dest->encoding == source->encoding)
     {
@@ -5833,7 +6227,6 @@ __gg__move( cblc_field_t        *fdest,
   int size_error = 0; // This is the return value
 
   __int128 value;
-  int rdigits;
 
   charmap_t *charmap = __gg__get_charmap(fdest->encoding);
   int stride = charmap->stride();
@@ -5890,7 +6283,8 @@ __gg__move( cblc_field_t        *fdest,
     // high-value and low-value required special processing in order to cope
     // with code.  Or, at least, to cope with legacy tests.
 
-    // The ISO 2014 specification has this to say about the moving of figurative
+    // The ISO 2014 specification has this to say about the moving of
+    // figurative
     // constants to numerics:
 
     // 14.9.24.3, paragraph 7)
@@ -6008,10 +6402,9 @@ __gg__move( cblc_field_t        *fdest,
                                       ? -fsource->rdigits : 0) ;
 
               // Pick up the absolute value of the source
-              value = __gg__binary_value_from_qualified_field(&rdigits,
-                                                              fsource,
-                                                              source_offset,
-                                                              source_size);
+              value = __gg__int128_from_qualified_field(fsource,
+                                                        source_offset,
+                                                        source_size);
 
               char ach[128];
 
@@ -6086,12 +6479,40 @@ __gg__move( cblc_field_t        *fdest,
               char ach[128];
 
               // Turn the integer source into a value:
-              value = __gg__binary_value_from_qualified_field(&rdigits,
-                                                              fsource,
-                                                              source_offset,
-                                                              source_size);
+              value = __gg__int128_from_qualified_field(fsource,
+                                                        source_offset,
+                                                        source_size);
 
               source_size   = fsource->digits;
+
+              // We have to deal with the special case of moving a pure binary
+              // value to an alphanumeric, which starts with a source_size
+              // of zero.
+              if( source_size == 0 )
+                {
+                switch(fsource->capacity)
+                  {
+                  case 1:
+                    source_size = 3;
+                    break;
+                  case 2:
+                    source_size = 5;
+                    break;
+                  case 3:
+                  case 4:
+                    source_size = 10;
+                    break;
+                  case 5:
+                  case 6:
+                  case 7:
+                  case 8:
+                    source_size = 20;
+                    break;
+                  default:
+                    source_size = 39;
+                    break;
+                  }
+                }
 
               // Turn the integer value into a string:
               __gg__binary_to_string_encoded(ach,
@@ -6109,7 +6530,7 @@ __gg__move( cblc_field_t        *fdest,
               // Specifically, we'll move pach to point to the first
               // character that isn't zero.
 
-              if( fsource->attr & intermediate_e )
+              if( fsource->attr & intermediate_e || fsource->digits == 0)
                 {
                 while(source_size > 1)  // This ensures we leave one '0'
                   {
@@ -6174,10 +6595,9 @@ __gg__move( cblc_field_t        *fdest,
             char ach[128];
 
             // Turn the integer source into a value:
-            value = __gg__binary_value_from_qualified_field(&rdigits,
-                                                            fsource,
-                                                            source_offset,
-                                                            source_size);
+            value = __gg__int128_from_qualified_field(fsource,
+                                                      source_offset,
+                                                      source_size);
             // Turn the integer value into a string:
             __gg__binary_to_string_encoded(ach,
                                            source_size,
@@ -6201,7 +6621,8 @@ __gg__move( cblc_field_t        *fdest,
               }
             else
               {
-              // Destination is right-justified, so things are slightly more complex
+              // Destination is right-justified, so things are slightly more
+              // complex
               if( source_size >= dest_size )
                 {
                 // We need to truncate the source data on the left:
@@ -6237,7 +6658,9 @@ __gg__move( cblc_field_t        *fdest,
           {
           case FldGroup:
             min_length = std::min(source_size, dest_size);
-            memmove(fdest->data+dest_offset, fsource->data+source_offset, min_length);
+            memmove(fdest->data+dest_offset,
+                    fsource->data+source_offset,
+                    min_length);
             if( min_length < dest_size )
               {
               // min_length is smaller than dest_length, so we have to
@@ -6259,60 +6682,60 @@ __gg__move( cblc_field_t        *fdest,
           case FldLiteralN:
             {
             // We are moving a number to a number:
-            value = __gg__binary_value_from_qualified_field(&rdigits,
-                                                            fsource,
-                                                            source_offset,
-                                                            source_size);
+            int128 val128;
+            __gg__int128_from_qualified_field(val128,
+                                              fsource,
+                                              source_offset,
+                                              source_size);
 
             if( truncation_mode == trunc_std_e )
               {
               // We need to adjust the value to have the rdigits of the
               // the destination:
 
-              int scaler = rdigits - fdest->rdigits;
+              int scaler = val128.rdigits - fdest->rdigits;
               if( scaler > 0 )
                 {
-                value /= __gg__power_of_ten(scaler);
-                rdigits -= scaler;
+                val128.i128 /= __gg__power_of_ten(scaler);
+                val128.rdigits -= scaler;
                 }
               else if( scaler < 0 )
                 {
-                value *= __gg__power_of_ten(-scaler);
-                rdigits -= scaler;
+                val128.i128 *= __gg__power_of_ten(-scaler);
+                val128.rdigits -= scaler;
                 }
-              if( value < 0 )
+              if( val128.i128 < 0 )
                 {
-                value = -value;
-                value %= __gg__power_of_ten(fdest->digits);
-                value = -value;
+                val128.i128 = -val128.i128;
+                val128.i128 %= __gg__power_of_ten(fdest->digits);
+                val128.i128 = -val128.i128;
                 }
               else
                 {
-                value %= __gg__power_of_ten(fdest->digits);
+                val128.i128 %= __gg__power_of_ten(fdest->digits);
                 }
               }
 
-            __gg__int128_to_qualified_field(
-                                  fdest,
-                                  dest_offset,
-                                  dest_size,
-                                  value,
-                                  rdigits,
-                                  rounded,
-                                  &size_error );
+            size_error = __gg__int128_to_qualified_field(fdest,
+                                                     dest_offset,
+                                                     dest_size,
+                                                     val128.i128,
+                                                     val128.rdigits,
+                                                     rounded);
             break;
             }
 
           case FldFloat:
             {
-            rdigits = get_scaled_rdigits(fdest);
+            int rdigits = get_scaled_rdigits(fdest);
             bool negative = false;
             __int128 value128 = 0;
             switch(fsource->capacity)
               {
               case 4:
                 {
-                _Float32 val = *PTRCAST(_Float32, fsource->data+source_offset);
+                _Float32 val = load_unaligned<_Float32>(
+                  fsource->data+source_offset);
                 if(val < 0)
                   {
                   negative = true;
@@ -6324,7 +6747,8 @@ __gg__move( cblc_field_t        *fdest,
                 }
               case 8:
                 {
-                _Float64 val = *PTRCAST(_Float64, fsource->data+source_offset);
+                _Float64 val = load_unaligned<_Float64>(
+                  fsource->data+source_offset);
                 if(val < 0)
                   {
                   negative = true;
@@ -6353,14 +6777,12 @@ __gg__move( cblc_field_t        *fdest,
               {
               value128 = -value128;
               }
-            __gg__int128_to_qualified_field(
-                                  fdest,
-                                  dest_offset,
-                                  dest_size,
-                                  value128,
-                                  rdigits,
-                                  rounded,
-                                  &size_error );
+            size_error = __gg__int128_to_qualified_field( fdest,
+                                                          dest_offset,
+                                                          dest_size,
+                                                          value128,
+                                                          rdigits,
+                                                          rounded);
             break;
             }
 
@@ -6385,7 +6807,9 @@ __gg__move( cblc_field_t        *fdest,
           {
           case FldGroup:
             min_length = std::min(source_size, dest_size);
-            memmove(fdest->data+dest_offset, fsource->data+source_offset, min_length);
+            memmove(fdest->data+dest_offset,
+                    fsource->data+source_offset,
+                    min_length);
             if( min_length < dest_size )
               {
               // min_length is smaller than dest_length, so we have to
@@ -6406,18 +6830,17 @@ __gg__move( cblc_field_t        *fdest,
           case FldLiteralN:
             {
             // We are moving a number to a number:
-            value = __gg__binary_value_from_qualified_field(&rdigits,
-                                                            fsource,
-                                                            source_offset,
-                                                            source_size);
-            __gg__int128_to_qualified_field(
-                                       fdest,
-                                       dest_offset,
-                                       dest_size,
-                                       value,
-                                       rdigits,
-                                       rounded,
-                                       &size_error );
+            int128 val128;
+            __gg__int128_from_qualified_field(val128,
+                                              fsource,
+                                              source_offset,
+                                              source_size);
+           size_error = __gg__int128_to_qualified_field(fdest,
+                                                        dest_offset,
+                                                        dest_size,
+                                                        val128.i128,
+                                                        val128.rdigits,
+                                                        rounded);
             break;
             }
 
@@ -6425,18 +6848,17 @@ __gg__move( cblc_field_t        *fdest,
             {
             // We are converted a floating-point value fixed-point
 
-            rdigits = get_scaled_rdigits(fdest);
             GCOB_FP128 fp128=0;
             switch(fsource->capacity)
               {
               case 4:
                 {
-                fp128 = *reinterpret_cast<_Float32 *>(fsource->data+source_offset);
+                fp128 = load_unaligned<_Float32>(fsource->data+source_offset);
                 break;
                 }
               case 8:
                 {
-                fp128 = *reinterpret_cast<_Float64 *>(fsource->data+source_offset);
+                fp128 = load_unaligned<_Float64>(fsource->data+source_offset);
                 break;
                 }
               case 16:
@@ -6468,7 +6890,9 @@ __gg__move( cblc_field_t        *fdest,
           {
           case FldGroup:
             min_length = std::min(source_size, dest_size);
-            memmove(fdest->data+dest_offset, fsource->data+source_offset, min_length);
+            memmove(fdest->data+dest_offset,
+                    fsource->data+source_offset,
+                    min_length);
             if( min_length < dest_size )
               {
               // min_length is smaller than dest_length, so we have to
@@ -6485,10 +6909,9 @@ __gg__move( cblc_field_t        *fdest,
                               + (fsource->rdigits<0 ? -fsource->rdigits : 0) ;
 
             // Pick up the absolute value of the source
-            value = __gg__binary_value_from_qualified_field(&rdigits,
-                                                            fsource,
-                                                            source_offset,
-                                                            source_size);
+            value = __gg__int128_from_qualified_field(fsource,
+                                                      source_offset,
+                                                      source_size);
             char ach[64];
 
             // Convert it to the full complement of digits available
@@ -6499,7 +6922,7 @@ __gg__move( cblc_field_t        *fdest,
                                            fdest->encoding);
             // And move them into place:
             __gg__string_to_alpha_edited(
-                          reinterpret_cast<char *>(fdest->data+dest_offset),
+                          as_chars(fdest->data+dest_offset),
                           fdest->encoding,
                           ach,
                           source_digits,
@@ -6510,7 +6933,8 @@ __gg__move( cblc_field_t        *fdest,
           default:
             {
             static size_t display_string_size = MINIMUM_ALLOCATION_SIZE;
-            static char *display_string = static_cast<char *>(malloc(display_string_size));
+            static char *display_string =
+              static_cast<char *>(malloc(display_string_size));
 
             size_t display_string_length = dest_size;
             __gg__realloc_if_necessary( &display_string,
@@ -6520,11 +6944,15 @@ __gg__move( cblc_field_t        *fdest,
             int fc_char = __gg__fc_char(fsource);
             if( fc_char != NOT_A_CHARACTER )
               {
+              size_t nbytes;
               memset(display_string, fc_char, dest_size);
-              __gg__convert_encoding_length(display_string,
-                                            dest_size,
-                                            fsource->encoding,
-                                            fdest->encoding );
+              const char *converted = __gg__iconverter(fsource->encoding,
+                                                       fdest->encoding,
+                                                       display_string,
+                                                       display_string_length,
+                                                       &nbytes);
+              size_t len = std::min(dest_size, nbytes);
+              memcpy(display_string, converted, len);
               }
             else
               {
@@ -6532,14 +6960,12 @@ __gg__move( cblc_field_t        *fdest,
                               &display_string,
                               &display_string_size,
                               fsource,
-                              reinterpret_cast<unsigned char *>
-                                                 (fsource->data+source_offset),
+                              fsource->data+source_offset,
                               source_size,
-                              source_flags && REFER_T_ADDRESS_OF);
+                              source_flags & REFER_T_ADDRESS_OF);
               display_string_length = strlen(display_string);
               }
-            __gg__string_to_alpha_edited( reinterpret_cast<char *>
-                                                     (fdest->data+dest_offset),
+            __gg__string_to_alpha_edited( as_chars(fdest->data+dest_offset),
                                                       fdest->encoding,
                                                       display_string,
                                                       display_string_length,
@@ -6562,7 +6988,7 @@ __gg__move( cblc_field_t        *fdest,
             size_t charsout;
             const char *converted = __gg__iconverter(fsource->encoding,
                                                      DEFAULT_SOURCE_ENCODING,
-                                    PTRCAST(char, fsource->data+source_offset),
+                                    as_chars( fsource->data+source_offset),
                                                      source_size,
                                                      &charsout);
             char ach[256];
@@ -6573,12 +6999,14 @@ __gg__move( cblc_field_t        *fdest,
               {
               case 4:
                 {
-                *PTRCAST(float, fdest->data+dest_offset) = strtod(ach, NULL);
+                store_unaligned<float>(fdest->data+dest_offset,
+                                       strtod(ach, NULL));
                 break;
                 }
               case 8:
                 {
-                *PTRCAST(double, fdest->data+dest_offset) = strtod(ach, NULL);
+                store_unaligned<double>(fdest->data+dest_offset,
+                                        strtod(ach, NULL));
                 break;
                 }
               case 16:
@@ -6689,14 +7117,12 @@ __gg__move_literala(cblc_field_t *field,
           value %= __gg__power_of_ten(field->digits);
           }
         }
-      __gg__int128_to_qualified_field(
-                            field,
-                            field_offset,
-                            field_size,
-                            value,
-                            rdigits,
-                            rounded,
-                            &size_error );
+      size_error = __gg__int128_to_qualified_field( field,
+                                                    field_offset,
+                                                    field_size,
+                                                    value,
+                                                    rdigits,
+                                                    rounded);
       break;
       }
 
@@ -6712,20 +7138,19 @@ __gg__move_literala(cblc_field_t *field,
                                     field->encoding,
                                     strlen,
                                     &rdigits );
-      __gg__int128_to_qualified_field(
-                            field,
-                            field_offset,
-                            field_size,
-                            value,
-                            rdigits,
-                            rounded,
-                            &size_error );
+      size_error = __gg__int128_to_qualified_field( field,
+                                                    field_offset,
+                                                    field_size,
+                                                    value,
+                                                    rdigits,
+                                                    rounded);
       break;
 
     case FldAlphaEdited:
       {
       static size_t display_string_size = MINIMUM_ALLOCATION_SIZE;
-      static char *display_string = static_cast<char *>(malloc(display_string_size));
+      static char *display_string =
+        static_cast<char *>(malloc(display_string_size));
 
       __gg__realloc_if_necessary( &display_string,
                                   &display_string_size,
@@ -6738,7 +7163,7 @@ __gg__move_literala(cblc_field_t *field,
       size_t len = std::min(display_string_size, strlen);
       memcpy(display_string, str, len);
       __gg__string_to_alpha_edited(
-                          reinterpret_cast<char *>(field->data+field_offset),
+                          as_chars(field->data+field_offset),
                           field->encoding,
                           display_string,
                           field_size,
@@ -6756,12 +7181,12 @@ __gg__move_literala(cblc_field_t *field,
         {
         case 4:
           {
-          *PTRCAST(float, field->data+field_offset) = strtod(ach, NULL);
+          store_unaligned<float>(field->data+field_offset, strtod(ach, NULL));
           break;
           }
         case 8:
           {
-          *PTRCAST(double, field->data+field_offset) = strtod(ach, NULL);
+          store_unaligned<double>(field->data+field_offset, strtod(ach, NULL));
           break;
           }
         case 16:
@@ -6925,7 +7350,8 @@ __gg__sort_workfile(cblc_file_t    *workfile,
     while( offset + sizeof(size_t) + bytes_read > buffer_size )
       {
       buffer_size *= 2;
-      contents = static_cast<unsigned char *>(realloc(contents, buffer_size));
+      contents = static_cast<unsigned char *>(
+        checked_realloc(contents, buffer_size));
       }
     offsets.push_back(offset);
 
@@ -6992,9 +7418,11 @@ __gg__merge_files( cblc_file_t   *workfile,
                    cblc_file_t  **inputs)
   {
   // Merge takes in N files that are already sorted.  It looks at the N records
-  // at the top of the N files, and figures out who the winner is, and puts each
+  // at the top of the N files, and figures out who the winner is, and puts
+  // each
   // winner into workfile.  If it notices that any of the files are not in the
-  // order specified by the keys it raises the EC-SORT-MERGE-SEQUENCE exception.
+  // order specified by the keys it raises the EC-SORT-MERGE-SEQUENCE
+  // exception.
 
   // Is everybody ready?
 
@@ -7028,7 +7456,8 @@ __gg__merge_files( cblc_file_t   *workfile,
     return;
     }
 
-  unsigned char *prior_winner = static_cast<unsigned char *>(malloc(the_biggest));
+  unsigned char *prior_winner =
+    static_cast<unsigned char *>(malloc(the_biggest));
   massert(prior_winner);
   *prior_winner = '\0';
 
@@ -7050,7 +7479,8 @@ __gg__merge_files( cblc_file_t   *workfile,
         }
       // We now compare inputs[i] to the current winner
       int ncompare = compare_two_records( inputs[i]->default_record->data,
-                                          inputs[winner]->default_record->data);
+                                          inputs[winner]
+                                            ->default_record->data);
       if( ncompare < 0 )
         {
         // We have a new winner
@@ -7067,7 +7497,8 @@ __gg__merge_files( cblc_file_t   *workfile,
       {
       // We need to compare the current winner to the prior winner
       int ncompare = compare_two_records( prior_winner,
-                                          inputs[winner]->default_record->data);
+                                          inputs[winner]
+                                            ->default_record->data);
       if( ncompare > 0 )
         {
         // The prior winner is bigger than the current winner, which means that
@@ -7110,2020 +7541,155 @@ __gg__merge_files( cblc_file_t   *workfile,
   free(prior_winner);
   }
 
-typedef std::vector<cbl_char_t>::const_iterator char_it_c ;
-typedef std::vector<cbl_char_t>::iterator       char_it   ;
-
-static const char *
-funky_find( const char *piece,
-            const char *piece_end,
-            const char *whole,
-            const char *whole_end )
-  {
-  const char *retval = NULL;
-
-  size_t length_of_piece = piece_end - piece;
-  if(length_of_piece == 0)
-    {
-    __gg__abort("funky_find() length_of_piece shouldn't be zero");
-    }
-
-  whole_end -= length_of_piece;
-
-  while( whole <= whole_end )
-    {
-    if( memcmp( piece, whole, length_of_piece) == 0 )
-      {
-      retval = whole;
-      break;
-      }
-    whole += 1;
-    }
-  return retval;
-  }
-
-static char_it_c
-funky_find_wide( char_it_c needle,
-                 char_it_c needle_end,    // Actually end+1
-                 char_it_c haystack,
-                 char_it_c haystack_end,  // Actually end+1
-                 char_it_c notfound)
-  {
-  // We are looking for the needle in the haystack
-
-  char_it_c retval = notfound;
-
-  size_t length_of_piece = needle_end - needle;
-  if(length_of_piece == 0)
-    {
-    __gg__abort("funky_find_wide() length_of_piece shouldn't be zero");
-    }
-
-  haystack_end -= length_of_piece;
-
-  while( haystack <= haystack_end )
-    {
-    // Compare the memory at needle to the memory at haystack
-    if( memcmp( &(*needle),
-                &(*haystack),
-                length_of_piece*sizeof(cbl_char_t)) == 0 )
-      {
-      // They are the same; return where needle was found
-      retval = haystack;
-      break;
-      }
-    // Not found; move to the next location in the haystach
-    haystack += 1;
-    }
-  return retval;
-  }
-
-static const char *
-funky_find_backward(const char *piece,
-                    const char *piece_end,
-                    const char *whole,
-                    const char *whole_end )
-  {
-  const char *retval = NULL;
-
-  size_t length_of_piece = piece_end - piece;
-  if(length_of_piece == 0)
-    {
-    __gg__abort("funky_find_backward() length_of_piece shouldn't be zero");
-    }
-
-  whole_end -= length_of_piece;
-
-  while( whole <= whole_end )
-    {
-    if( memcmp( piece, whole_end, length_of_piece) == 0 )
-      {
-      retval = whole_end;
-      break;
-      }
-    whole_end -= 1;
-    }
-  return retval;
-  }
-
-static char_it_c
-funky_find_wide_backward( char_it_c needle,
-                 char_it_c needle_end,    // Actually end+1
-                 char_it_c haystack,
-                 char_it_c haystack_end,  // Actually end+1
-                 char_it_c notfound)
-  {
-  // We are looking for the needle in the haystack
-
-  char_it_c retval = notfound;
-
-  size_t length_of_piece = needle_end - needle;
-  if(length_of_piece == 0)
-    {
-    __gg__abort("funky_find_wide_backward() length_of_piece shouldn't be zero");
-    }
-
-  haystack_end -= length_of_piece;
-
-  while( haystack <= haystack_end )
-    {
-    if( memcmp( &(*needle),
-                &(*haystack_end),
-                length_of_piece*sizeof(cbl_char_t)) == 0 )
-      {
-      // They are the same; return where needle was found
-      retval = haystack_end;
-      break;
-      }
-    // Not found; move to the next location in the haystack
-    haystack_end -= 1;
-    }
-  return retval;
-  }
-
-typedef struct normalized_operand
-  {
-  // These are the characters of the string.  When the field is NumericDisplay
-  // any leading or trailing +/- characters are removed, and any embedded
-  // minus bits are removed.
-
-  // In order for INSPECT to handle things like UTF-8, which often has
-  // multi-byte codepoints, and UTF-16, which sometimes has multi-pair
-  // codepoints we are going to convert everything to UTF-32 for internal
-  // calculations and searches.
-  std::string the_characters;
-  std::vector<cbl_char_t>the_vectorxxxx;
-
-  // offset and length are maintained in characters, not bytes
-  size_t offset;  // Usually zero.  Increased by one for leading separate sign.
-  size_t length;  // Usually the same as the original.  But it is one less
-  //              // than the original when there is a trailing separate sign.
-  } normalized_operand;
-
-typedef struct comparand
-  {
-  size_t id_2_index;
-  cbl_inspect_bound_t operation;
-  normalized_operand identifier_3; // The thing to be found
-  normalized_operand identifier_5; // The replacement, for FORMAT 2
-  const char *alpha; // The start location within normalized_id_1
-  const char *omega; // The end+1 location within normalized_id_1
-  char_it_c     alpha_it;   // The start location within normalized_id_1
-  char_it_c     omega_it;   // The end+1 location within normalized_id_1
-  size_t leading_count;
-  bool leading;
-  bool first;
-  } comparand;
-
-typedef struct id_2_result
-  {
-  cblc_field_t *id2;
-  size_t        id2_o;
-  size_t        id2_s;
-  size_t result;
-  } id_2_result;
-
-static normalized_operand
-normalize_id( const cblc_field_t *field,
-              size_t              field_o,
-              size_t              field_s,
-              cbl_encoding_t      encoding )
-  {
-  normalized_operand retval;
-
-  if( field )
-    {
-    charmap_t *charmap = __gg__get_charmap(encoding);
-
-    // This is the old-style byte-based assumption
-    const unsigned char *data = field->data + field_o;
-    cbl_figconst_t figconst
-      = (cbl_figconst_t)(field->attr & FIGCONST_MASK);
-
-    retval.offset = 0;
-    retval.length = field_s;
-
-    if( field->type == FldNumericDisplay )
-      {
-      // The value is NumericDisplay.
-      if( field->attr & separate_e )
-        {
-        // Because the sign is a separate plus or minus, the length
-        // gets reduced by one:
-        retval.length = field_s - 1;
-        if( field->attr & leading_e )
-          {
-          // Because the sign character is LEADING, we increase the
-          // offset by one
-          retval.offset = 1;
-          }
-        }
-      for( size_t i=retval.offset; i<retval.length; i+=1 )
-        {
-        // Because we are dealing with a NumericDisplay that might have
-        // the minus bit turned on, we will to mask it off as we copy the
-        // input characters over to retval:
-        retval.the_characters += charmap->set_digit_negative(data[i], false);
-        }
-      }
-    else
-      {
-      // We are set up to create the_characters;
-      if( figconst == normal_value_e )
-        {
-        for( size_t i=retval.offset; i<retval.length; i+=1 )
-          {
-          retval.the_characters += data[i];
-          }
-        }
-      else
-        {
-        char ch =  charmap->figconst_character(figconst);
-        for( size_t i=retval.offset; i<retval.length; i+=1 )
-          {
-          retval.the_characters += ch;
-          }
-        }
-      }
-    }
-  else
-    {
-    // There is no field, so leave the_characters empty.
-    retval.offset = 0;
-    retval.length = 0;
-    }
-
-  if( field )
-    {
-    cbl_encoding_t source_encoding = field->encoding;
-    const charmap_t *charmap_source = __gg__get_charmap(source_encoding);
-    charmap_t *charmap = __gg__get_charmap(encoding);
-    int stride = charmap->stride();
-
-    const unsigned char *data = field->data + field_o;
-    cbl_figconst_t figconst = (cbl_figconst_t)(field->attr & FIGCONST_MASK);
-    if( figconst == normal_value_e )
-      {
-      retval.offset = 0;
-      retval.length = field_s / stride;
-
-      if( field->type == FldNumericDisplay )
-        {
-        // The value is NumericDisplay, so we might need to adjust the offset
-        // and length:
-        if( field->attr & separate_e )
-          {
-          // Because the sign is a separate plus or minus, the length
-          // gets reduced by one:
-          retval.length = field_s - 1;
-          if( field->attr & leading_e )
-            {
-            // Because the sign character is LEADING, we increase the
-            // offset by one
-            retval.offset = 1;
-            }
-          }
-        }
-      // We are ready to convert from the input to UTF32
-      size_t converted_characters;
-      const char *converted = __gg__iconverter(source_encoding,
-                                               DEFAULT_32_ENCODING,
-                                               data+retval.offset * stride,
-                                               retval.length * stride,
-                                               &converted_characters);
-      // We are ready to copy the characters over:
-      for( size_t i=0; i<converted_characters; i+=width_of_utf32 )
-        {
-        // Because we are dealing with a NumericDisplay that might have
-        // the minus bit turned on, we will to mask it off as we copy the
-        // input characters over to retval:
-        cbl_char_t ch = charmap->getch(converted, i);
-        if( field->type == FldNumericDisplay )
-          {
-          if( charmap_source->is_like_ebcdic() )
-            {
-            // In EBCDIC, a flagged negative digit 0xF0 through 0xF9 becomes
-            // 0xD0 through 0xD9.  Those represent the characters
-            // "}JKLMNOPQR", which, now that we are in UTF32 space, don't have
-            // the right bit pattern to be fixed with set_digit_negative().
-            // So, we fix it separately with this table:  Note that location
-            // 0x7D, which is ASCII '{', becomes 0x30 '0'.  See also that
-            // locations 0x4A through 0x52 become 0x31 through 0x39.
-            static const uint8_t fixit[256] =
-              {
-              0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x80, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-              0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x81, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
-              0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x82, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
-              0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x83, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
-              0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x84, 0x49, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36,
-              0x37, 0x38, 0x39, 0x53, 0x54, 0x55, 0x56, 0x57, 0x85, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f,
-              0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x86, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
-              0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x87, 0x79, 0x7a, 0x7b, 0x7c, 0x30, 0x7e, 0x7f,
-              0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
-              0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x89, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
-              0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0x8a, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
-              0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0x8b, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
-              0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0x8c, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf,
-              0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0x8d, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
-              0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0x8e, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
-              0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0x8f, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff,
-              };
-            ch = fixit[ch & 0xFF];
-            }
-          else
-            {
-            ch = charmap->set_digit_negative(ch, false);
-            }
-          }
-        retval.the_vectorxxxx.push_back(ch);
-        }
-      }
-    else
-      {
-      // We need to fill the field with a figurative constant:
-      // We are set up to create the_characters;
-      charmap_t *charmap32 = __gg__get_charmap(DEFAULT_32_ENCODING);
-      char ch =  charmap32->figconst_character(figconst);
-      for( size_t i=retval.offset; i<retval.length; i+=1 )
-        {
-        retval.the_characters += ch;
-        retval.the_vectorxxxx.push_back(ch);
-        }
-      }
-    }
-  else
-    {
-    // There is no field, so leave the_characters empty.
-    retval.offset = 0;
-    retval.length = 0;
-    }
-
-  return retval;
-  }
-
 static void
-match_lengths(      normalized_operand &id_target,
-                    const normalized_operand &id_source)
+move_string(cblc_field_t *field,
+                size_t offset,
+                size_t length,
+                const char *from,
+                cbl_encoding_t src_encoding,
+                size_t strlen_from = (size_t)(-1) )
   {
-  // This routine gets called when id_source is a figurative constant and
-  // we need the target to be the same length as the source
+  bool moved = true;
 
-  char ch = id_target.the_characters[0];
-  id_target.the_characters.clear();
-  for(size_t i=0; i<id_source.length; i++)
+  if( strlen_from == (size_t)(-1) )
     {
-    id_target.the_characters += ch;
+    strlen_from = strlen(from);
     }
 
-  cbl_char_t wch = id_target.the_vectorxxxx[0];
-  id_target.the_vectorxxxx.clear();
-  for(size_t i=0; i<id_source.length; i++)
+  switch(field->type)
     {
-    id_target.the_vectorxxxx.push_back(wch);
-    }
-  id_target.length = id_source.length;
-  }
-
-static void
-the_alpha_and_omega(const normalized_operand &id_before,
-                    const normalized_operand &id_after,
-                    const char *          &alpha,
-                    const char *          &omega,
-                    char_it_c             &alpha_it,
-                    char_it_c             &omega_it,
-                    char_it_c              notfound)
-  {
-  /*  The 2023 ISO description of the AFTER and BEFORE phrases of the INSPECT
-      statement is, in a word, garbled.
-
-      IBM's COBOL for Linux 1.2 is a little better, but still a bit confusing
-      because the description for AFTER neglects to specifically state that
-      the scan starts one character to the right of the *first* occurrence of
-      the AFTER value.
-
-      Micro Focus 9.2.5 has the advantage of being ungarbled, succinct, and
-      unambiguous.
-
-      The BEFORE phrase modifies the character position to use as the rightmost
-      position in source for the corresponding comparison operation. Comparisons
-      in source occur only to the left of the first occurrence of delimiter. If
-      delimiter is not present in source, then the comparison proceeds as if
-      there were no BEFORE phrase.
-
-      The AFTER phrase modifies the character position to use as the leftmost
-      position in source for the corresponding comparison operation. Comparisons
-      in source occur only to the right of the first occurrence of delimiter.
-      This character position is the one immediately to the right of the
-      rightmost character of the delimiter found. If delimiter is not found in
-      source, the INSPECT statement has no effect (no tallying or replacement
-      occurs).
-
-      "xyzxyzAFTERxyzxyzxyzxyzBEFORExyzxyzAFTERxyzxyz"
-                  ^           ^
-                  |           |
-                  |           |-- omega
-                  ----------------alpha
-  */
-
-  if( id_before.length )
-    {
-    // This is the BEFORE delimiter.   We look for the first occurrence of that
-    // delimiter starting at the left of id_1
-
-    const char *start = id_before.the_characters.c_str();
-    const char *end   = start + id_before.length;
-    const char *found = funky_find(start, end, alpha, omega);
-    if( found )
+    case FldGroup:
+    case FldAlphanumeric:
+    case FldAlphaEdited:
       {
-      // We found id_before within alpha/omega, so reduce omega
-      // to the found location.
-      omega = found;
-      // If not found, we just leave omega alone.
-      }
+      char *to = as_chars(field->data + offset);
+      size_t dest_length = length ? length : field->capacity;
+      size_t source_length = strlen_from;
 
-    char_it_c omega_found = funky_find_wide(id_before.the_vectorxxxx.begin(),
-                                            id_before.the_vectorxxxx.end(),
-                                            alpha_it,
-                                            omega_it,
-                                            notfound );
-    if( omega_found != notfound )
-      {
-      // We found id_before within alpha/omega, so reduce omega
-      // to the found location.
-      omega_it = omega_found;
-      }
-    }
+      // We need to convert the source string to the destination encoding:
+      size_t charsout;
+      const char *converted = __gg__iconverter(src_encoding,
+                                               field->encoding,
+                                               from,
+                                               source_length,
+                                               &charsout);
 
-  if( id_after.length )
-    {
-    // This is the AFTER delimiter.  We look for the first occurrence of that
-    // delimiter in id_1
-
-    const char *start = id_after.the_characters.c_str();
-    const char *end   = start + id_after.length;
-    const char *found = funky_find(start, end, alpha, omega);
-    if( found )
-      {
-      // We found id_after in the alpha/omega segment.  We update alpha
-      // be the character after the id_after substring.
-      alpha = found + (end-start);
-      }
-    else
-      {
-      // We didn't find the id_after string, so we set the alpha to be
-      // omega.  That means that no tally or replace operation will take
-      // because no characters will qualify.
-      alpha = omega;
-      }
-
-    char_it_c omega_found = funky_find_wide(id_after.the_vectorxxxx.begin(),
-                                            id_after.the_vectorxxxx.end(),
-                                            alpha_it,
-                                            omega_it,
-                                            notfound );
-    if( omega_found != notfound)
-      {
-      // We found id_after in the alpha/omega segment.  We update alpha
-      // be the character after the id_after substring.
-      alpha_it = omega_found + (end-start);
-      }
-    else
-      {
-      // We didn't find the id_after string, so we set the alpha to be
-      // omega.  That means that no tally or replace operation will take
-      // because no characters will qualify.
-      alpha_it = omega_it;
-      }
-    }
-
-  }
-
-static void
-the_alpha_and_omega_backward( const normalized_operand &id_before,
-                              const normalized_operand &id_after,
-                              const char *          &alpha,
-                              const char *          &omega,
-                              char_it_c             &alpha_it,
-                              char_it_c             &omega_it,
-                              char_it_c              notfound)
-  {
-  /*  Like the_alpha_and_omega(), but for handling BACKWARD.
-
-      "xyzxyzBEFORExyzxyzAFTERxyzxyzxyzxyzBEFORExyzxyzAFTERxyzxyz"
-                                                ^     ^
-                                                |     |
-                                                |     -- omega
-                                                |--------alpha
-  */
-
-  const char *id_1     = alpha;
-  const char *id_1_end = omega;
-
-  if( id_before.length )
-    {
-    // This is the BEFORE delimiter.  We look for the first occurrence of it
-    // from the right end of id_1
-
-    const char *start = id_before.the_characters.c_str();
-    const char *end   = start + id_before.length;
-    const char *found = funky_find_backward(start, end, id_1, id_1_end);
-    if( found )
-      {
-      // We found id_before within id_1, so change alpha to the character just
-      // to the right of BEFORE.  Otherwise, we will leave alpha alone, so that
-      // it stays at the beginning of id_1. That's because if you can't find
-      // id_before, it's as if there were no BEFORE phrase.
-      alpha = found + id_before.length;
-      }
-
-    char_it_c omega_found = funky_find_wide_backward(id_before.the_vectorxxxx.begin(),
-                                            id_before.the_vectorxxxx.end(),
-                                            alpha_it,
-                                            omega_it,
-                                            notfound );
-    if( omega_found != notfound )
-      {
-      // We found id_before within id_1, so change alpha to the character just
-      // to the right of BEFORE.  Otherwise, we will leave alpha alone, so that
-      // it stays at the beginning of id_1
-      alpha_it = omega_found + id_before.length;
-      }
-    }
-
-  if( id_after.length )
-    {
-    // This is the AFTER delimiter.  We look for the first occurrence in id_1
-
-    const char *start = id_after.the_characters.c_str();
-    const char *end   = start + id_after.length;
-    const char *found = funky_find_backward(start, end, alpha, omega);
-    if( found )
-      {
-      // We found id_after in id_1.  We update omega to be
-      // at that location.
-      omega = found;
-      }
-    else
-      {
-      // If the AFTER isn't found, we need to adjust things so that nothing
-      // happens.
-      omega = alpha;
-      }
-
-    char_it_c omega_found = funky_find_wide_backward(id_after.the_vectorxxxx.begin(),
-                                            id_after.the_vectorxxxx.end(),
-                                            alpha_it,
-                                            omega_it,
-                                            notfound );
-    if( omega_found != notfound)
-      {
-      // We found id_after in id_1.  We update omega to be
-      // at that location.
-      omega_it = omega_found;
-      }
-    else
-      {
-      // If the AFTER isn't found, we need to adjust things so that nothing
-      // happens.
-      omega_it = alpha_it;
-      }
-    }
-  }
-
-static
-void
-inspect_backward_format_1(const size_t integers[])
-  {
-  size_t int_index = 0;
-  size_t cblc_index = 0;
-
-  // Reference the language specification for the meanings of identifier_X
-
-  // Pick up the number of identifier_2 loops in this INSPECT statement
-  size_t n_identifier_2 = integers[int_index++];
-
-  std::vector<id_2_result> id_2_results(n_identifier_2);
-
-  // Pick up identifier_1, which is the string being inspected
-  const cblc_field_t *id1   = __gg__treeplet_1f[cblc_index];
-  size_t              id1_o = __gg__treeplet_1o[cblc_index];
-  size_t              id1_s = __gg__treeplet_1s[cblc_index];
-  cblc_index += 1;
-  // normalize it, according to the language specification.
-  normalized_operand normalized_id_1 = normalize_id(id1, id1_o, id1_s, id1->encoding);
-
-  std::vector<comparand> comparands;
-
-  for(size_t i=0; i<n_identifier_2; i++)
-    {
-    // For each identifier_2, we pick up its value:
-
-    id_2_results[i].id2   = __gg__treeplet_1f  [cblc_index];
-    id_2_results[i].id2_o = __gg__treeplet_1o[cblc_index];
-    id_2_results[i].id2_s = __gg__treeplet_1s[cblc_index];
-
-    cblc_index += 1;
-    id_2_results[i].result = 0;
-
-    // For each identifier 2, there is a count of operations:
-    size_t nbounds = integers[int_index++];
-
-    for(size_t j=0; j<nbounds; j++ )
-      {
-      // each operation has a bound code:
-      cbl_inspect_bound_t operation
-        = (cbl_inspect_bound_t)integers[int_index++];
-      switch( operation )
+      source_length = charsout;
+      size_t count = std::min(dest_length, source_length);
+      if( source_length >= dest_length )
         {
-        case bound_characters_e:
+        // We have more source characters than places to put them
+        if( field->attr & rjust_e )
           {
-          // We are counting characters.  There is no identifier-3,
-          // but we we hard-code the length to one to represent a
-          // single character.
-          comparand next_comparand = {};
-          next_comparand.id_2_index = i;
-          next_comparand.operation = operation;
-          next_comparand.identifier_3.length = 1;
-
-          const cblc_field_t *id4_before   = __gg__treeplet_1f  [cblc_index];
-          size_t              id4_before_o = __gg__treeplet_1o[cblc_index];
-          size_t              id4_before_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          const cblc_field_t *id4_after   = __gg__treeplet_1f  [cblc_index];
-          size_t              id4_after_o = __gg__treeplet_1o[cblc_index];
-          size_t              id4_after_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          normalized_operand normalized_id_4_before
-            = normalize_id(id4_before, id4_before_o, id4_before_s, id1->encoding);
-
-          normalized_operand normalized_id_4_after
-            = normalize_id(id4_after, id4_after_o, id4_after_s, id1->encoding);
-
-          next_comparand.alpha
-            = normalized_id_1.the_characters.c_str();
-
-          next_comparand.omega
-            = next_comparand.alpha + normalized_id_1.length;
-
-          next_comparand.alpha_it = normalized_id_1.the_vectorxxxx.begin();
-          next_comparand.omega_it = normalized_id_1.the_vectorxxxx.end();
-
-          the_alpha_and_omega_backward(normalized_id_4_before,
-                              normalized_id_4_after,
-                              next_comparand.alpha,
-                              next_comparand.omega,
-                              next_comparand.alpha_it,
-                              next_comparand.omega_it,
-                              normalized_id_1.the_vectorxxxx.end());
-
-          comparands.push_back(next_comparand);
-          break;
+          // Destination is right-justified, so we
+          // discard the leading source characters:
+          memmove(to,
+                  converted + (source_length - count),
+                  count);
           }
-        default:
+        else
           {
-          // We have some number of identifer-3 values,
-          // each with possible PHRASE1 modifiers.
-          size_t pair_count = integers[int_index++];
-
-          // We need to build up pair_count comparand structures:
-
-          for(size_t k=0; k<pair_count; k++)
-            {
-            comparand next_comparand = {};
-            next_comparand.id_2_index = i;
-            next_comparand.operation = operation;
-
-            const cblc_field_t *id3   = __gg__treeplet_1f[cblc_index];
-            size_t              id3_o = __gg__treeplet_1o[cblc_index];
-            size_t              id3_s = __gg__treeplet_1s[cblc_index];
-            cblc_index += 1;
-
-            const cblc_field_t *id4_before   = __gg__treeplet_1f[cblc_index];
-            size_t              id4_before_o = __gg__treeplet_1o[cblc_index];
-            size_t              id4_before_s = __gg__treeplet_1s[cblc_index];
-            cblc_index += 1;
-
-            const cblc_field_t *id4_after   = __gg__treeplet_1f[cblc_index];
-            size_t              id4_after_o = __gg__treeplet_1o[cblc_index];
-            size_t              id4_after_s = __gg__treeplet_1s[cblc_index];
-            cblc_index += 1;
-
-            next_comparand.identifier_3
-                                    = normalize_id(id3, id3_o, id3_s, id1->encoding);
-
-            next_comparand.alpha
-              = normalized_id_1.the_characters.c_str();
-            next_comparand.omega
-              = next_comparand.alpha + normalized_id_1.length;
-
-            normalized_operand normalized_id_4_before
-              = normalize_id(id4_before, id4_before_o, id4_before_s, id1->encoding);
-
-            normalized_operand normalized_id_4_after
-              = normalize_id(id4_after, id4_after_o, id4_after_s, id1->encoding);
-
-            next_comparand.alpha_it = normalized_id_1.the_vectorxxxx.begin();
-            next_comparand.omega_it = normalized_id_1.the_vectorxxxx.end();
-
-            the_alpha_and_omega_backward(normalized_id_4_before,
-                                normalized_id_4_after,
-                                next_comparand.alpha,
-                                next_comparand.omega,
-                                next_comparand.alpha_it,
-                                next_comparand.omega_it,
-                                normalized_id_1.the_vectorxxxx.end());
-
-            next_comparand.leading = true;
-            next_comparand.leading_count = 0;
-            comparands.push_back(next_comparand);
-            }
-          }
-        }
-      }
-    }
-
-  // We are now ready to walk through identifier-1, character by
-  // character, checking each of the comparands for a match:
-
-  // We are now set up to accomplish the data flow described
-  // in the language specification.  We loop through the
-  // the character positions in normalized_id_1:
-  char_it_c leftmost  = normalized_id_1.the_vectorxxxx.begin();
-  char_it_c rightmost = leftmost + normalized_id_1.length;
-  char_it_c the_end_of_the_world = rightmost;
-
-  while( leftmost < rightmost )
-    {
-    size_t rightmost_delta = 0;
-    rightmost -= 1;
-    // We look at the rightmost position.  If that position is within the
-    // alpha-to-omega qualified range, we check all possible matches:
-
-    for(size_t k=0; k<comparands.size(); k++)
-      {
-      if( rightmost < comparands[k].alpha_it )
-        {
-        // This can't be a match, because rightmost is
-        // to the left of the comparand's alpha.
-        continue;
-        }
-      if( rightmost + comparands[k].identifier_3.length >
-                                                       comparands[k].omega_it )
-        {
-        // This can't be a match, because the rightmost
-        // character of the comparand falls to the right
-        // of the comparand's omega
-        continue;
-        }
-      if( rightmost + comparands[k].identifier_3.length >
-                                                        the_end_of_the_world )
-        {
-        // This can't be a match, because the rightmost character of the
-        // comparand falls past the new edge of id_1 established by a prior
-        // match.
-        continue;
-        }
-      // A match is theoretically possible, because all
-      // the characters of the comparand fall between
-      // alpha and omega:
-      bool possible_match = true;
-
-      if( comparands[k].operation != bound_characters_e )
-        {
-        for(size_t m=0; m<comparands[k].identifier_3.length; m++)
-          {
-          if( comparands[k].identifier_3.the_vectorxxxx[m] != rightmost[m] )
-            {
-            possible_match = false;
-            break;
-            }
-          }
-        }
-      if( possible_match )
-        {
-        // The characters of the comparand match the
-        // characters at rightmost.
-        bool match = false;
-        switch( comparands[k].operation )
-          {
-          case bound_first_e:
-            // This can't happen in a FORMAT_1
-            warnx("The compiler goofed: "
-                  "INSPECT FORMAT 1 "
-                  "shouldn't have "
-                  "bound_first_e");
-            abort();
-            break;
-
-          case bound_characters_e:
-            match = 1;
-            break;
-
-          case bound_all_e:
-            {
-            // We have a match.
-            match = true;
-            break;
-            }
-
-          case bound_leading_e:
-            {
-            // We have a match at rightmost.  But we need to figure out if this
-            // particular match is valid for LEADING.
-
-            if( comparands[k].leading )
-              {
-              if( rightmost + comparands[k].identifier_3.length
-                                                     == comparands[k].omega_it)
-                {
-                // This means that the match here is just the latest of a
-                // string of LEADING matches that started at .omega
-                comparands[k].leading_count += 1;
-                match = true;
-                comparands[k].omega_it -= comparands[k].identifier_3.length;
-                the_end_of_the_world = rightmost;
-                rightmost_delta = comparands[k].identifier_3.length-1;
-                }
-              }
-            break;
-            }
-
-          case bound_trailing_e:
-            {
-            // We have a match at rightmost.
-            //
-            // We want to know if this is a trailing match.  For that to be,
-            // all of the possible matches from here leftward to the alpha have
-            // to be true as well:
-
-            if( (rightmost - comparands[k].alpha_it )
-                    % comparands[k].identifier_3.length == 0 )
-              {
-              // The remaining number of characters is correct for a match.
-              // Keep checking.
-
-              // Assume a match until we learn otherwise:
-              match = true;
-              char_it_c local_left = rightmost;
-              local_left -= comparands[k].identifier_3.length;
-              while( local_left >= comparands[k].alpha_it )
-                {
-                for(size_t m=0; m<comparands[k].identifier_3.length; m++)
-                  {
-                  if( comparands[k].identifier_3.the_vectorxxxx[m]
-                      != local_left[m] )
-                    {
-                    // We have a mismatched character, so no trailing match is
-                    // possible
-                    match = false;
-                    break;
-                    }
-                  }
-                local_left -= comparands[k].identifier_3.length;
-                }
-              }
-            break;
-            }
-          }
-
-        if( match )
-          {
-          // We have a match at rightmost:
-          // Bump the result counter
-          id_2_results[comparands[k].id_2_index].result += 1;
-
-          // We have a match here at rightmost, so we need to set the end of
-          // the world here
-          the_end_of_the_world = rightmost;
-
-          // Adjust rightmost by the additional characters in a BACKWARD
-          // LEADING search:
-          rightmost -= rightmost_delta;
-          break;
+          // Destination is right-justified, so we
+          // discard the trailing source characters:
+          memmove(to,
+                  converted,
+                  count);
           }
         }
       else
         {
-        // We are within alpha/omega, but there was no
-        // match, which permanently disqualifies the
-        // possibility of LEADING
-        comparands[k].leading = false;
+        // We have too few source characters to fill the destination.
+        if( field->attr & rjust_e )
+          {
+          // The destination is right-justified, and the source is an
+          // ordinary string too short to fill it.  So, we space-fill
+          // the leading characters.
+          memmove(to + (dest_length-count),
+                  converted,
+                  count);
+          // Get the charmap after the move, because it can mess with the
+          // static 'to' buffer.
+          charmap_t *charmap = __gg__get_charmap(field->encoding);
+          charmap->memset(to,
+                          charmap->mapped_character(ascii_space),
+                          dest_length-count);
+          }
+        else
+          {
+          // The destination is left-justified
+          // We do the move first, in case this is an overlapping move
+          // involving characters that will be space-filled
+          memmove(to,
+                  converted,
+                  count);
+          charmap_t *charmap = __gg__get_charmap(field->encoding);
+          charmap->memset(to + count,
+                          charmap->mapped_character(ascii_space),
+                          dest_length-count);
+          }
         }
+      break;
       }
-    }
 
-  // Add our results to the identifier_2 values:
-
-  for(size_t i = 0; i<id_2_results.size(); i++)
-    {
-    int rdigits;
-    __int128 id_2_value
-      = __gg__binary_value_from_qualified_field(&rdigits,
-                                                id_2_results[i].id2,
-                                                id_2_results[i].id2_o,
-                                                id_2_results[i].id2_s);
-    while(rdigits--)
+    case FldNumericBinary:
+    case FldPacked:
+    case FldNumericDisplay:
+    case FldNumericEdited:
+    case FldNumericBin5:
+    case FldIndex:
       {
-      id_2_value /= 10.0;
+      // We are starting with a string, and setting it to a numerical
+      // target.
+      int rdigits;
+      __int128 value = __gg__dirty_to_binary(from,
+                                             src_encoding,
+                                             strlen_from,
+                                             &rdigits);
+      __gg__int128_to_qualified_field(field,
+                                      offset,
+                                      length,
+                                      value,
+                                      rdigits,
+                                      truncation_e);
+      break;
       }
 
-    // Accumulate what we've found into it
-    id_2_value += id_2_results[i].result;
-
-    // And put it back:
-    __gg__int128_to_qualified_field(id_2_results[i].id2,
-                                    id_2_results[i].id2_o,
-                                    id_2_results[i].id2_s,
-                                    id_2_value,
-                                    0,
-                                    truncation_e,
-                                    NULL);
+    default:
+      moved = false;
+      break;
+    }
+  if( !moved )
+    {
+    fprintf(stderr, "%s() %s:%d -- We were unable move a string to "
+            "field type %d\n",
+            __func__, __FILE__, __LINE__,
+            field->type);
+    abort();
     }
   }
 
-extern "C"
-void
-__gg__inspect_format_1(int backward, size_t integers[])
+static char *
+brute_force_trim(char *str, cbl_encoding_t encoding)
   {
-  if( backward )
+  charmap_t *charmap = __gg__get_charmap(encoding);
+  int stride = charmap->stride();
+
+  char *retval = str;
+
+  while(   charmap->getch(retval, size_t(0))
+        == charmap->mapped_character(ascii_space) )
     {
-    return inspect_backward_format_1(integers);
+    retval += stride;
     }
-
-  size_t int_index = 0;
-  size_t cblc_index = 0;
-
-  // Reference the language specification for the meanings of identifier_X
-
-  // Pick up the number of identifier_2 loops in this INSPECT statement
-  size_t n_identifier_2 = integers[int_index++];
-
-  std::vector<id_2_result> id_2_results(n_identifier_2);
-
-  // Pick up identifier_1, which is the string being inspected
-  const cblc_field_t *id1   = __gg__treeplet_1f[cblc_index];
-  size_t              id1_o = __gg__treeplet_1o[cblc_index];
-  size_t              id1_s = __gg__treeplet_1s[cblc_index];
-  cblc_index += 1;
-  // normalize it, according to the language specification.
-  normalized_operand normalized_id_1
-                             = normalize_id(id1, id1_o, id1_s, id1->encoding);
-
-  std::vector<comparand> comparands;
-
-  for(size_t i=0; i<n_identifier_2; i++)
+  char *p = retval + strlen(retval)-stride;
+  while(    p > retval
+        && (   charmap->getch(p, size_t(0))
+            == charmap->mapped_character(ascii_space)) )
     {
-    // For each identifier_2, we pick up its value:
-
-    id_2_results[i].id2   = __gg__treeplet_1f  [cblc_index];
-    id_2_results[i].id2_o = __gg__treeplet_1o[cblc_index];
-    id_2_results[i].id2_s = __gg__treeplet_1s[cblc_index];
-
-    cblc_index += 1;
-    id_2_results[i].result = 0;
-
-    // For each identifier 2, there is a count of operations:
-    size_t nbounds = integers[int_index++];
-
-    for(size_t j=0; j<nbounds; j++ )
-      {
-      // each operation has a bound code:
-      cbl_inspect_bound_t operation
-        = (cbl_inspect_bound_t)integers[int_index++];
-      switch( operation )
-        {
-        case bound_characters_e:
-          {
-          // We are counting characters.  There is no identifier-3,
-          // but we we hard-code the length to one to represent a
-          // single character.
-          comparand next_comparand = {};
-          next_comparand.id_2_index = i;
-          next_comparand.operation = operation;
-          next_comparand.identifier_3.length = 1;
-
-          const cblc_field_t *id4_before   = __gg__treeplet_1f  [cblc_index];
-          size_t              id4_before_o = __gg__treeplet_1o[cblc_index];
-          size_t              id4_before_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          const cblc_field_t *id4_after   = __gg__treeplet_1f  [cblc_index];
-          size_t              id4_after_o = __gg__treeplet_1o[cblc_index];
-          size_t              id4_after_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          normalized_operand normalized_id_4_before
-            = normalize_id(id4_before, id4_before_o, id4_before_s, id1->encoding);
-
-          normalized_operand normalized_id_4_after
-            = normalize_id(id4_after, id4_after_o, id4_after_s, id1->encoding);
-
-          next_comparand.alpha
-            = normalized_id_1.the_characters.c_str();
-
-          next_comparand.omega
-            = next_comparand.alpha + normalized_id_1.length;
-
-          next_comparand.alpha_it = normalized_id_1.the_vectorxxxx.begin();
-          next_comparand.omega_it = normalized_id_1.the_vectorxxxx.end();
-
-          the_alpha_and_omega(normalized_id_4_before,
-                              normalized_id_4_after,
-                              next_comparand.alpha,
-                              next_comparand.omega,
-                              next_comparand.alpha_it,
-                              next_comparand.omega_it,
-                              normalized_id_1.the_vectorxxxx.end());
-
-          comparands.push_back(next_comparand);
-          break;
-          }
-        default:
-          {
-          // We have some number of identifer-3 values,
-          // each with possible PHRASE1 modifiers.
-          size_t pair_count = integers[int_index++];
-
-          // We need to build up pair_count comparand structures:
-
-          for(size_t k=0; k<pair_count; k++)
-            {
-            comparand next_comparand = {};
-            next_comparand.id_2_index = i;
-            next_comparand.operation = operation;
-
-            const cblc_field_t *id3   = __gg__treeplet_1f[cblc_index];
-            size_t              id3_o = __gg__treeplet_1o[cblc_index];
-            size_t              id3_s = __gg__treeplet_1s[cblc_index];
-            cblc_index += 1;
-
-            const cblc_field_t *id4_before   = __gg__treeplet_1f[cblc_index];
-            size_t              id4_before_o = __gg__treeplet_1o[cblc_index];
-            size_t              id4_before_s = __gg__treeplet_1s[cblc_index];
-            cblc_index += 1;
-
-            const cblc_field_t *id4_after   = __gg__treeplet_1f[cblc_index];
-            size_t              id4_after_o = __gg__treeplet_1o[cblc_index];
-            size_t              id4_after_s = __gg__treeplet_1s[cblc_index];
-            cblc_index += 1;
-
-            next_comparand.identifier_3
-                                    = normalize_id(id3,
-                                                           id3_o,
-                                                           id3_s,
-                                               id1->encoding);
-
-            next_comparand.alpha
-              = normalized_id_1.the_characters.c_str();
-            next_comparand.omega
-              = next_comparand.alpha + normalized_id_1.length;
-
-            next_comparand.alpha_it = normalized_id_1.the_vectorxxxx.begin();
-            next_comparand.omega_it = normalized_id_1.the_vectorxxxx.end();
-
-            normalized_operand normalized_id_4_before
-              = normalize_id(id4_before, id4_before_o, id4_before_s, id1->encoding);
-
-            normalized_operand normalized_id_4_after
-              = normalize_id(id4_after, id4_after_o, id4_after_s, id1->encoding);
-
-            the_alpha_and_omega(normalized_id_4_before,
-                                normalized_id_4_after,
-                                next_comparand.alpha,
-                                next_comparand.omega,
-                                next_comparand.alpha_it,
-                                next_comparand.omega_it,
-                                normalized_id_1.the_vectorxxxx.end());
-
-            next_comparand.leading = true;
-            next_comparand.leading_count = 0;
-            comparands.push_back(next_comparand);
-            }
-          }
-        }
-      }
+    charmap->putch(NULLCH, p, size_t(0));
+    p -= stride;
     }
-
-  // We are now ready to walk through identifier-1, character by
-  // character, checking each of the comparands for a match:
-
-  // We are now set up to accomplish the data flow described
-  // in the language specification.  We loop through the
-  // the character positions in normalized_id_1:
-  char_it_c leftmost  = normalized_id_1.the_vectorxxxx.begin();
-  char_it_c rightmost = leftmost + normalized_id_1.length;
-
-  while( leftmost < rightmost )
-    {
-    // For each leftmost position, we check each of the
-    // pairs:
-
-    for(size_t k=0; k<comparands.size(); k++)
-      {
-      if( leftmost < comparands[k].alpha_it )
-        {
-        // This can't be a match, because leftmost is
-        // to the left of the comparand's alpha.
-        continue;
-        }
-      if( leftmost + comparands[k].identifier_3.length > comparands[k].omega_it )
-        {
-        // This can't be a match, because the rightmost
-        // character of the comparand falls to the right
-        // of the comparand's omega
-        continue;
-        }
-      // A match is theoretically possible, because all
-      // the characters of the comparand fall between
-      // alpha and omega:
-      bool possible_match = true;
-
-      if( comparands[k].operation != bound_characters_e )
-        {
-        for(size_t m=0; m<comparands[k].identifier_3.length; m++)
-          {
-          if( comparands[k].identifier_3.the_vectorxxxx[m] != leftmost[m] )
-            {
-            possible_match = false;
-            break;
-            }
-          }
-        }
-      if( possible_match )
-        {
-        // The characters of the comparand match the
-        // characters at leftmost.
-        bool match = false;
-        switch( comparands[k].operation )
-          {
-          case bound_first_e:
-            // This can't happen in a FORMAT_1
-            warnx("The compiler goofed: "
-                  "INSPECT FORMAT 1 "
-                  "shouldn't have "
-                  "bound_first_e");
-            abort();
-            break;
-
-          case bound_characters_e:
-            match = true;
-            break;
-
-          case bound_all_e:
-            {
-            // We have a match.
-            match = true;
-            break;
-            }
-
-          case bound_leading_e:
-            {
-            // We have a match at leftmost.  But we need to figure out if this
-            // particular match is valid for LEADING.
-
-            // Hang onto your hat.  This is delightfully clever.
-            //
-            // This position is LEADING if:
-            //  1) .leading is still true
-            //  2) leftmost / (length_of_comparand ) = current_count
-            //
-            // I get chills every time I look at that.
-
-            if( comparands[k].leading )
-              {
-              // So far, so good.
-              size_t count = ((leftmost - comparands[k].alpha_it))
-                              / comparands[k].identifier_3.length;
-              if( count == comparands[k].leading_count )
-                {
-                // This means that the match here is just the latest of a
-                // string of LEADING matches that started at .alpha
-                comparands[k].leading_count += 1;
-                match = true;
-                }
-              }
-            break;
-            }
-
-          case bound_trailing_e:
-            {
-            // We have a match at leftmost.
-            //
-            // We want to know if this is a trailing match.  For that to be,
-            // all of the possible matches from here to the omega have to be
-            // true as well:
-
-            if( (comparands[k].omega_it-leftmost)
-                    % comparands[k].identifier_3.length == 0 )
-              {
-              // The remaining number of characters is correct for a match.
-              // Keep checking.
-
-              // Assume a match until we learn otherwise:
-              match = true;
-              char_it_c local_left = leftmost;
-              local_left += comparands[k].identifier_3.length;
-              while( match && local_left < comparands[k].omega_it )
-                {
-                for(size_t m=0; m<comparands[k].identifier_3.length; m++)
-                  {
-                  if( comparands[k].identifier_3.the_vectorxxxx[m]
-                      != local_left[m] )
-                    {
-                    // We have a mismatched character, so no trailing match is
-                    // possible
-                    match = false;
-                    break;
-                    }
-                  }
-                local_left += comparands[k].identifier_3.length;
-                }
-              }
-            break;
-            }
-          }
-
-        if( match )
-          {
-          // We have a match at leftmost:
-
-          // Bump the result counter
-          id_2_results[comparands[k].id_2_index].result += 1;
-
-          // Adjust the leftmost pointer to point to
-          // the rightmost character of the matched
-          // string, keeping in mind that it will be
-          // bumped again after we break out of the
-          // k<pair_count loop:
-          leftmost += comparands[k].identifier_3.length - 1;
-          break;
-          }
-        }
-      else
-        {
-        // We are within alpha/omega, but there was no
-        // match, which permanently disqualifies the
-        // possibility of LEADING
-        comparands[k].leading = false;
-        }
-      }
-    leftmost += 1;
-    }
-
-  // Add our results to the identifier_2 values:
-
-  for(size_t i = 0; i<id_2_results.size(); i++)
-    {
-    int rdigits;
-    __int128 id_2_value
-      = __gg__binary_value_from_qualified_field(&rdigits,
-                                                id_2_results[i].id2,
-                                                id_2_results[i].id2_o,
-                                                id_2_results[i].id2_s);
-    while(rdigits--)
-      {
-      id_2_value /= 10.0;
-      }
-
-    // Accumulate what we've found into it
-    id_2_value += id_2_results[i].result;
-
-    // And put it back:
-    __gg__int128_to_qualified_field(id_2_results[i].id2,
-                                    id_2_results[i].id2_o,
-                                    id_2_results[i].id2_s,
-                                    id_2_value,
-                                    0,
-                                    truncation_e,
-                                    NULL);
-    }
-  }
-
-static
-void
-inspect_backward_format_2(const size_t integers[])
-  {
-  size_t int_index = 0;
-  size_t cblc_index = 0;
-
-  // Reference the language specification for the meanings of identifier_X
-
-  // Pick up identifier_1, which is the string being inspected
-  cblc_field_t *id1   = __gg__treeplet_1f[cblc_index];
-  size_t        id1_o = __gg__treeplet_1o[cblc_index];
-  size_t        id1_s = __gg__treeplet_1s[cblc_index];
-  cblc_index += 1;
-
-  // normalize it, according to the language specification.
-  normalized_operand normalized_id_1
-                                   = normalize_id(id1, id1_o, id1_s, id1->encoding);
-
-  std::vector<comparand> comparands;
-
-  // Pick up the count of operations:
-  size_t nbounds = integers[int_index++];
-
-  for(size_t j=0; j<nbounds; j++ )
-    {
-    // each operation has a bound code:
-    cbl_inspect_bound_t operation = (cbl_inspect_bound_t)integers[int_index++];
-    switch( operation )
-      {
-      case bound_characters_e:
-        {
-        comparand next_comparand = {};
-        next_comparand.operation = operation;
-
-        const cblc_field_t *id5   = __gg__treeplet_1f[cblc_index];
-        size_t              id5_o = __gg__treeplet_1o[cblc_index];
-        size_t              id5_s = __gg__treeplet_1s[cblc_index];
-        cblc_index += 1;
-
-        const cblc_field_t *id4_before   = __gg__treeplet_1f[cblc_index];
-        size_t              id4_before_o = __gg__treeplet_1o[cblc_index];
-        size_t              id4_before_s = __gg__treeplet_1s[cblc_index];
-        cblc_index += 1;
-
-        const cblc_field_t *id4_after   = __gg__treeplet_1f  [cblc_index];
-        size_t              id4_after_o = __gg__treeplet_1o[cblc_index];
-        size_t              id4_after_s = __gg__treeplet_1s[cblc_index];
-        cblc_index += 1;
-
-        next_comparand.identifier_5
-          = normalize_id(id5, id5_o, id5_s, id1->encoding);
-        normalized_operand normalized_id_4_before
-          = normalize_id(id4_before, id4_before_o, id4_before_s, id1->encoding);
-        normalized_operand normalized_id_4_after
-          = normalize_id(id4_after, id4_after_o, id4_after_s, id1->encoding);
-
-        // Because this is a CHARACTER operation, the lengths of
-        // identifier-3 and identifier-5 should be one.  Let's avoid the
-        // chaos that will otherwise ensue should the lengths *not* be
-        // one.
-        next_comparand.identifier_3.length = 1;
-        next_comparand.identifier_5.length = 1;
-
-        next_comparand.alpha = normalized_id_1.the_characters.c_str();
-        next_comparand.omega
-          = next_comparand.alpha + normalized_id_1.length;
-
-        next_comparand.alpha_it = normalized_id_1.the_vectorxxxx.begin();
-        next_comparand.omega_it = normalized_id_1.the_vectorxxxx.end();
-
-        the_alpha_and_omega_backward(normalized_id_4_before,
-                            normalized_id_4_after,
-                            next_comparand.alpha,
-                            next_comparand.omega,
-                            next_comparand.alpha_it,
-                            next_comparand.omega_it,
-                            normalized_id_1.the_vectorxxxx.end());
-
-
-        comparands.push_back(next_comparand);
-        break;
-        }
-      default:
-        {
-        // We have some number of identifer-3/identifier-5 pairs,
-        // each with possible PHRASE1 modifiers.
-        size_t pair_count = integers[int_index++];
-
-        for(size_t k=0; k<pair_count; k++)
-          {
-          comparand next_comparand = {};
-          next_comparand.operation = operation;
-
-          const cblc_field_t *id3   = __gg__treeplet_1f[cblc_index];
-          size_t              id3_o = __gg__treeplet_1o[cblc_index];
-          size_t              id3_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          const cblc_field_t *id5   = __gg__treeplet_1f[cblc_index];
-          size_t              id5_o = __gg__treeplet_1o[cblc_index];
-          size_t              id5_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          const cblc_field_t *id4_before   = __gg__treeplet_1f[cblc_index];
-          size_t              id4_before_o = __gg__treeplet_1o[cblc_index];
-          size_t              id4_before_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          const cblc_field_t *id4_after   = __gg__treeplet_1f[cblc_index];
-          size_t              id4_after_o = __gg__treeplet_1o[cblc_index];
-          size_t              id4_after_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          next_comparand.identifier_3 = normalize_id(id3, id3_o, id3_s, id1->encoding);
-          next_comparand.identifier_5 = normalize_id(id5, id5_o, id5_s, id1->encoding);
-
-          // Identifiers 3 and 5 have to be the same length.  But
-          // but either, or both, can be figurative constants.  If
-          // they are figurative constants, they start off with a
-          // length of one.  We will expand figurative constants to
-          // match the length of the other one:
-
-          if( id3->attr & FIGCONST_MASK )
-            {
-            match_lengths(  next_comparand.identifier_3,
-                            next_comparand.identifier_5);
-            }
-          else if( id5->attr & FIGCONST_MASK )
-            {
-            match_lengths(  next_comparand.identifier_5,
-                            next_comparand.identifier_3);
-            }
-
-          next_comparand.alpha
-            = normalized_id_1.the_characters.c_str();
-          next_comparand.omega
-            = next_comparand.alpha + normalized_id_1.length;
-
-          normalized_operand normalized_id_4_before
-            = normalize_id(id4_before, id4_before_o, id4_before_s, id1->encoding);
-          normalized_operand normalized_id_4_after
-            = normalize_id(id4_after, id4_after_o, id4_after_s, id1->encoding);
-
-          next_comparand.alpha_it = normalized_id_1.the_vectorxxxx.begin();
-          next_comparand.omega_it = normalized_id_1.the_vectorxxxx.end();
-
-          the_alpha_and_omega_backward(normalized_id_4_before,
-                              normalized_id_4_after,
-                              next_comparand.alpha,
-                              next_comparand.omega,
-                              next_comparand.alpha_it,
-                              next_comparand.omega_it,
-                              normalized_id_1.the_vectorxxxx.end());
-
-          next_comparand.leading = true;
-          next_comparand.leading_count = 0;
-          next_comparand.first   = true;
-          comparands.push_back(next_comparand);
-          }
-        }
-      }
-    }
-
-  // We can now look through normalized_id_1 and replace characters:
-
-  char_it_c leftmost  = normalized_id_1.the_vectorxxxx.begin();
-  char_it_c rightmost = leftmost + normalized_id_1.length;
-  char_it_c the_end_of_the_world = rightmost;
-
-  while( leftmost < rightmost )
-    {
-    size_t rightmost_delta = 0;
-
-    rightmost -= 1;
-    // We look at the rightmost position.  If that position is within the
-    // alpha-to-omega qualified range, we check all possible matches:
-
-    for(size_t k=0; k<comparands.size(); k++)
-      {
-      if( rightmost < comparands[k].alpha_it )
-        {
-        // This can't be a match, because rightmost is
-        // to the left of the comparand's alpha.
-        continue;
-        }
-      if( rightmost + comparands[k].identifier_3.length > comparands[k].omega_it )
-        {
-        // This can't be a match, because the rightmost
-        // character of the comparand falls to the right
-        // of the comparand's omega
-        continue;
-        }
-      if( rightmost + comparands[k].identifier_3.length > the_end_of_the_world )
-        {
-        // This can't be a match, because the rightmost character of the
-        // comparand falls past the new edge of id_1 established by a prior
-        // match.
-        continue;
-        }
-      // A match is theoretically possible, because all
-      // the characters of the comparand fall between
-      // alpha and omega:
-      bool possible_match = true;
-
-      if( comparands[k].operation != bound_characters_e )
-        {
-        for(size_t m=0; m<comparands[k].identifier_3.length; m++)
-          {
-          if( comparands[k].identifier_3.the_vectorxxxx[m] != rightmost[m] )
-            {
-            possible_match = false;
-            break;
-            }
-          }
-        }
-      if( possible_match )
-        {
-        // The characters of the comparand match the
-        // characters at rightmost.
-        bool match = false;
-        switch( comparands[k].operation )
-          {
-          case bound_first_e:
-            // This can't happen in a FORMAT_2
-            warnx("The compiler goofed: "
-                  "INSPECT FORMAT 2 "
-                  "shouldn't have "
-                  "bound_first_e");
-            abort();
-            break;
-
-          case bound_characters_e:
-            match = 1;
-            break;
-
-          case bound_all_e:
-            {
-            // We have a match.
-            match = true;
-            break;
-            }
-
-          case bound_leading_e:
-            {
-            // We have a match at rightmost.  But we need to figure out if this
-            // particular match is valid for LEADING.
-
-            if( comparands[k].leading )
-              {
-              if(   rightmost
-                  + comparands[k].identifier_3.length * (comparands[k].leading_count +1)
-                    == comparands[k].omega_it)
-                {
-                // This means that the match here is just the latest of a
-                // string of LEADING matches that started at .omega
-                comparands[k].leading_count += 1;
-                match = true;
-                rightmost_delta = comparands[k].identifier_3.length-1;
-                }
-              }
-            break;
-            }
-
-          case bound_trailing_e:
-            {
-            // We have a match at rightmost.
-            //
-            // We want to know if this is a trailing match.  For that to be,
-            // all of the possible matches from here leftward to the alpha have
-            // to be true as well:
-
-            if( (rightmost - comparands[k].alpha_it )
-                    % comparands[k].identifier_3.length == 0 )
-              {
-              // The remaining number of characters is correct for a match.
-              // Keep checking.
-
-              // Assume a match until we learn otherwise:
-              match = true;
-              char_it_c local_left = rightmost;
-              local_left -= comparands[k].identifier_3.length;
-              while( local_left >= comparands[k].alpha_it )
-                {
-                for(size_t m=0; m<comparands[k].identifier_3.length; m++)
-                  {
-                  if( comparands[k].identifier_3.the_vectorxxxx[m]
-                      != local_left[m] )
-                    {
-                    // We have a mismatched character, so no trailing match is
-                    // possible
-                    match = false;
-                    break;
-                    }
-                  }
-                local_left -= comparands[k].identifier_3.length;
-                }
-              }
-            break;
-            }
-          }
-
-        if( match )
-          {
-          // We have a match at rightmost.  We need to
-          // to replace the characters in normalized_id_1
-          // with the characters from normalized_id_5
-          //fprintf(stderr, "Rule: %ld %p %s\n", k+1, rightmost, rightmost);
-
-          size_t index = rightmost - normalized_id_1.the_vectorxxxx.begin();
-          for( size_t l = 0;
-               l < comparands[k].identifier_5.length;
-               l++ )
-            {
-            cbl_char_t ch = comparands[k].identifier_5.
-                      the_vectorxxxx[l];
-            normalized_id_1.the_vectorxxxx[index++] = ch;
-            }
-
-          the_end_of_the_world = rightmost;
-          rightmost -= rightmost_delta;
-          break;
-          }
-        }
-      else
-        {
-        comparands[k].leading = false;
-        }
-      }
-    }
-
-  // Here is where we take the characters from normalized_id_1 and put them
-  // back into identifier_1.
-
-  charmap_t *charmap = __gg__get_charmap(id1->encoding);
-  // Wastefully prefill id_1 with spaces in case the processing resulted in a
-  // string shorter than the original.  (There is always the possiblity that
-  // a UTF-8 or UTF-16 codeset pair got replaced with a single character.) Do
-  // this before calling __gg__converter, because both mapped_character and
-  // __gg__iconverter use the same static buffer.
-  unsigned char *id1_data = id1->data + id1_o;
-  charmap->memset(id1_data, charmap->mapped_character(ascii_space), id1_s);
-
-  // We've been working in UTF32; we convert back to the original id1 encoding.
-  size_t bytes_converted;
-  const char *converted = __gg__iconverter( DEFAULT_32_ENCODING,
-                                         id1->encoding,
-                                         normalized_id_1.the_vectorxxxx.data(),
-                                         normalized_id_1.length*width_of_utf32,
-                                         &bytes_converted) ;
-  // And move those characters into place in id_1:
-  memcpy(id1_data,
-         converted,
-         std::min(bytes_converted, id1_s));
-
-  return;
-  }
-
-extern "C"
-void
-__gg__inspect_format_2(int backward, size_t integers[])
-  {
-  if( backward )
-    {
-    return inspect_backward_format_2(integers);
-    }
-  size_t int_index = 0;
-  size_t cblc_index = 0;
-
-  // Reference the language specification for the meanings of identifier_X
-
-  // Pick up identifier_1, which is the string being inspected
-  cblc_field_t *id1   = __gg__treeplet_1f[cblc_index];
-  size_t        id1_o = __gg__treeplet_1o[cblc_index];
-  size_t        id1_s = __gg__treeplet_1s[cblc_index];
-  cblc_index += 1;
-
-  // normalize it, according to the language specification.
-  normalized_operand normalized_id_1
-                                   = normalize_id(id1, id1_o, id1_s, id1->encoding);
-
-  std::vector<comparand> comparands;
-
-  // Pick up the count of operations:
-  size_t nbounds = integers[int_index++];
-
-  for(size_t j=0; j<nbounds; j++ )
-    {
-    // each operation has a bound code:
-    cbl_inspect_bound_t operation
-      = (cbl_inspect_bound_t)integers[int_index++];
-    switch( operation )
-      {
-      case bound_characters_e:
-        {
-        comparand next_comparand = {} ;
-        next_comparand.operation = operation;
-
-        const cblc_field_t *id5   = __gg__treeplet_1f[cblc_index];
-        size_t              id5_o = __gg__treeplet_1o[cblc_index];
-        size_t              id5_s = __gg__treeplet_1s[cblc_index];
-        cblc_index += 1;
-
-        const cblc_field_t *id4_before   = __gg__treeplet_1f[cblc_index];
-        size_t              id4_before_o = __gg__treeplet_1o[cblc_index];
-        size_t              id4_before_s = __gg__treeplet_1s[cblc_index];
-        cblc_index += 1;
-
-        const cblc_field_t *id4_after   = __gg__treeplet_1f  [cblc_index];
-        size_t              id4_after_o = __gg__treeplet_1o[cblc_index];
-        size_t              id4_after_s = __gg__treeplet_1s[cblc_index];
-        cblc_index += 1;
-
-        next_comparand.identifier_5
-          = normalize_id(id5, id5_o, id5_s, id1->encoding);
-        normalized_operand normalized_id_4_before
-          = normalize_id(id4_before, id4_before_o, id4_before_s, id1->encoding);
-        normalized_operand normalized_id_4_after
-          = normalize_id(id4_after, id4_after_o, id4_after_s, id1->encoding);
-
-        // Because this is a CHARACTER operation, the lengths of
-        // identifier-3 and identifier-5 should be one.  Let's avoid the
-        // chaos that will otherwise ensue should the lengths *not* be
-        // one.
-        next_comparand.identifier_3.length = 1;
-        next_comparand.identifier_5.length = 1;
-
-        next_comparand.alpha = normalized_id_1.the_characters.c_str();
-        next_comparand.omega
-          = next_comparand.alpha + normalized_id_1.length;
-
-        next_comparand.alpha_it = normalized_id_1.the_vectorxxxx.begin();
-        next_comparand.omega_it = normalized_id_1.the_vectorxxxx.end();
-
-        the_alpha_and_omega(normalized_id_4_before,
-                            normalized_id_4_after,
-                            next_comparand.alpha,
-                            next_comparand.omega,
-                            next_comparand.alpha_it,
-                            next_comparand.omega_it,
-                            normalized_id_1.the_vectorxxxx.end());
-        comparands.push_back(next_comparand);
-        break;
-        }
-      default:
-        {
-        // We have some number of identifer-3/identifier-5 pairs,
-        // each with possible PHRASE1 modifiers.
-        size_t pair_count = integers[int_index++];
-
-        for(size_t k=0; k<pair_count; k++)
-          {
-          comparand next_comparand = {};
-          next_comparand.operation = operation;
-
-          const cblc_field_t *id3   = __gg__treeplet_1f[cblc_index];
-          size_t              id3_o = __gg__treeplet_1o[cblc_index];
-          size_t              id3_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          const cblc_field_t *id5   = __gg__treeplet_1f[cblc_index];
-          size_t              id5_o = __gg__treeplet_1o[cblc_index];
-          size_t              id5_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          const cblc_field_t *id4_before   = __gg__treeplet_1f[cblc_index];
-          size_t              id4_before_o = __gg__treeplet_1o[cblc_index];
-          size_t              id4_before_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          const cblc_field_t *id4_after   = __gg__treeplet_1f[cblc_index];
-          size_t              id4_after_o = __gg__treeplet_1o[cblc_index];
-          size_t              id4_after_s = __gg__treeplet_1s[cblc_index];
-          cblc_index += 1;
-
-          next_comparand.identifier_3 = normalize_id(id3,
-                                                     id3_o,
-                                                     id3_s,
-                                                id1->encoding);
-          next_comparand.identifier_5 = normalize_id(id5,
-                                                     id5_o,
-                                                     id5_s,
-                                                id1->encoding);
-
-          // Identifiers 3 and 5 have to be the same length.  But
-          // but either, or both, can be figurative constants.  If
-          // they are figurative constants, they start off with a
-          // length of one.  We will expand figurative constants to
-          // match the length of the other one:
-
-          if( id3->attr & FIGCONST_MASK )
-            {
-            match_lengths(  next_comparand.identifier_3,
-                            next_comparand.identifier_5);
-            }
-          else if( id5->attr & FIGCONST_MASK )
-            {
-            match_lengths(  next_comparand.identifier_5,
-                            next_comparand.identifier_3);
-            }
-
-          next_comparand.alpha
-            = normalized_id_1.the_characters.c_str();
-          next_comparand.omega
-            = next_comparand.alpha + normalized_id_1.length;
-
-          normalized_operand normalized_id_4_before
-            = normalize_id(id4_before, id4_before_o, id4_before_s, id1->encoding);
-          normalized_operand normalized_id_4_after
-            = normalize_id(id4_after, id4_after_o, id4_after_s, id1->encoding);
-
-          next_comparand.alpha_it = normalized_id_1.the_vectorxxxx.begin();
-          next_comparand.omega_it = normalized_id_1.the_vectorxxxx.end();
-
-          the_alpha_and_omega(normalized_id_4_before,
-                              normalized_id_4_after,
-                              next_comparand.alpha,
-                              next_comparand.omega,
-                              next_comparand.alpha_it,
-                              next_comparand.omega_it,
-                              normalized_id_1.the_vectorxxxx.end());
-
-          next_comparand.leading = true;
-          next_comparand.leading_count = 0;
-          next_comparand.first   = true;
-          comparands.push_back(next_comparand);
-          }
-        }
-      }
-    }
-
-  // We are now set up to accomplish the data flow described
-  // in the language specification.  We loop through the
-  // the character positions in normalized_id_1:
-  char_it_c leftmost  = normalized_id_1.the_vectorxxxx.begin();
-  char_it_c rightmost = leftmost + normalized_id_1.length;
-
-  while( leftmost < rightmost )
-    {
-    // For each leftmost position, we check each of the
-    // comparands
-
-    for(size_t k=0; k<comparands.size(); k++)
-      {
-      if( leftmost < comparands[k].alpha_it )
-        {
-        // This can't be a match, because leftmost is
-        // to the left of the comparand's alpha.
-        continue;
-        }
-      if( leftmost + comparands[k].identifier_3.length
-          > comparands[k].omega_it )
-        {
-        // This can't be a match, because the rightmost
-        // character of the comparand falls to the right
-        // of the comparand's omega
-        continue;
-        }
-      // A match is theoretically possible, because all
-      // the characters of the comparand fall between
-      // alpha and omega:
-      bool possible_match = true;
-      if( comparands[k].operation != bound_characters_e)
-        {
-        for(size_t m=0; m<comparands[k].identifier_3.length; m++)
-          {
-          if( comparands[k].identifier_3.the_vectorxxxx[m]
-              != leftmost[m] )
-            {
-            possible_match = false;
-            break;
-            }
-          }
-        }
-      if( possible_match )
-        {
-        // The characters of the comparand match the
-        // characters at leftmost.  See if further processing is
-        // indicated:
-
-        bool match = false;
-        switch( comparands[k].operation )
-          {
-          case bound_characters_e:
-            match = true;
-            break;
-
-          case bound_first_e:
-            if( comparands[k].first )
-              {
-              match = true;
-              comparands[k].first = false;
-              }
-            break;
-
-          case bound_all_e:
-            {
-            // We have a match.
-            match = true;
-            break;
-            }
-
-          case bound_leading_e:
-            {
-            // We have a match at leftmost.  But we need to figure out if this
-            // particular match is valid for LEADING.
-
-            // Hang onto your hat.  This is delightfully clever.
-            //
-            // This position is LEADING if:
-            //  1) .leading is still true
-            //  2) leftmost / (length_of_comparand ) = current_count
-            //
-            // I get chills every time I look at that.
-            if( comparands[k].leading )
-              {
-              // So far, so good.
-              size_t count = (leftmost - comparands[k].alpha_it)
-                              / comparands[k].identifier_3.length;
-              if( count == comparands[k].leading_count )
-                {
-                // This means that the match here is just the latest of a
-                // string of LEADING matches that started at .alpha
-                comparands[k].leading_count += 1;
-                match = true;
-                }
-              }
-            break;
-            }
-
-          case bound_trailing_e:
-            {
-            // We have a match at leftmost.
-            //
-            // We want to know if this is a trailing match.  For that to be,
-            // all of the possible matches from here to the omega have to be
-            // true as well:
-
-            if( (comparands[k].omega_it-leftmost)
-                    % comparands[k].identifier_3.length == 0 )
-              {
-              // The remaining number of characters is correct for a match.
-              // Keep checking.
-
-              // Assume a match until we learn otherwise:
-              match = true;
-              char_it_c local_left = leftmost;
-              local_left += comparands[k].identifier_3.length;
-              while( local_left < comparands[k].omega_it )
-                {
-                for(size_t m=0; m<comparands[k].identifier_3.length; m++)
-                  {
-                  if( comparands[k].identifier_3.the_vectorxxxx[m]
-                      != local_left[m] )
-                    {
-                    // We have a mismatched character, so no trailing match is
-                    // possible
-                    match = false;
-                    break;
-                    }
-                  }
-                local_left += comparands[k].identifier_3.length;
-                }
-              }
-            break;
-            }
-          }
-        if( match )
-          {
-          // We have a match at leftmost.  We need to
-          // to replace the characters in normalized_id_1
-          // with the characters from normalized_id_5
-
-          size_t index = leftmost
-                         - normalized_id_1.the_vectorxxxx.begin();
-          for( size_t l = 0;
-               l < comparands[k].identifier_5.length;
-               l++ )
-            {
-            char ch = comparands[k].identifier_5.
-                      the_vectorxxxx[l];
-            normalized_id_1.the_vectorxxxx[index++] = ch;
-            }
-          // Adjust the leftmost pointer to point to
-          // the rightmost character of the matched
-          // string, keeping in mind that it will be
-          // bumped again after we break out of the
-          // k<pair_count loop:
-          leftmost += comparands[k].identifier_3.length - 1;
-          break;
-          }
-        }
-      else
-        {
-        comparands[k].leading = false;
-        }
-      }
-    leftmost += 1;
-    }
-
-  // Here is where we take the characters from normalized_id_1 and put them
-  // back into identifier_1.
-
-  charmap_t *charmap = __gg__get_charmap(id1->encoding);
-  // Wastefully prefill id_1 with spaces in case the processing resulted in a
-  // string shorter than the original.  (There is always the possiblity that
-  // a UTF-8 or UTF-16 codeset pair got replaced with a single character.) Do
-  // this before calling __gg__converter, because both mapped_character and
-  // __gg__iconverter use the same static buffer.
-  unsigned char *id1_data = id1->data + id1_o;
-  charmap->memset(id1_data, charmap->mapped_character(ascii_space), id1_s);
-
-  // We've been working in UTF32; we convert back to the original id1 encoding.
-  size_t bytes_converted;
-  const char *converted = __gg__iconverter( DEFAULT_32_ENCODING,
-                                         id1->encoding,
-                                         normalized_id_1.the_vectorxxxx.data(),
-                                         normalized_id_1.length*width_of_utf32,
-                                         &bytes_converted) ;
-  // And move those characters into place in id_1:
-  memcpy(id1_data,
-         converted,
-         std::min(bytes_converted, id1_s));
-  return;
+  return retval;
   }
 
 static std::u32string
@@ -9136,7 +7702,7 @@ normalize_for_inspect_format_4(const cblc_field_t  *var,
   if(var)
     {
     const charmap_t *charmap_var = __gg__get_charmap(source_encoding);
-    charmap_t *charmap32 = __gg__get_charmap(DEFAULT_32_ENCODING);
+    charmap_t *charmap32 = __gg__get_charmap(HOST_32_ENCODING);
 
     cbl_figconst_t figconst =
                       static_cast<cbl_figconst_t>(var->attr & FIGCONST_MASK);
@@ -9212,7 +7778,7 @@ normalize_for_inspect_format_4(const cblc_field_t  *var,
       size_t converted_bytes;
       const char *converted = __gg__iconverter(
                               var->encoding,
-                              DEFAULT_32_ENCODING,
+                              HOST_32_ENCODING,
                               var->data + var_offset,
                               var_size,
                               &converted_bytes);
@@ -9228,579 +7794,25 @@ normalize_for_inspect_format_4(const cblc_field_t  *var,
   return retval;
   }
 
-extern "C"
-void
-__gg__inspect_format_4( int backward,
-                        cblc_field_t *input,              // identifier-1
-                        size_t        input_offset,
-                        size_t        input_size,
-                  const cblc_field_t *original,           // id-6 / literal-4
-                        size_t        original_offset,
-                        size_t        original_size,
-                  const cblc_field_t *replacement,        // id-7 / literal-5
-                        size_t        replacement_offset,
-                        size_t        replacement_size,
-                  const cblc_field_t *after,              // id-4 / literal-2
-                        size_t        after_offset,
-                        size_t        after_size,
-                  const cblc_field_t *before,             // id-4 / literal-2
-                        size_t        before_offset,
-                        size_t        before_size
-                        )
-  {
-  // We need to cope with multiple encodings; the ISO specification says only
-  // that identifier-1 and -3 through -n are display or national.
-
-  // We will leave the input encoded as whatever it is, and we will convert the
-  // others to match.
-
-  // We also need to cope with anything except identifier-1 being a figurative
-  // constant.
-
-  cbl_figconst_t figconst_original =
-                static_cast<cbl_figconst_t>(original->attr & FIGCONST_MASK);
-  cbl_figconst_t figconst_replacement =
-                static_cast<cbl_figconst_t>(replacement->attr & FIGCONST_MASK);
-  int figswitch = (figconst_original ? 2 : 0) + (figconst_replacement ? 1 : 0);
-  switch( figswitch )
-    {
-    case 0:
-      // Neither are figconst; we leave the sizes alone
-      break;
-    case 1:
-      // Only replacement is figconst, so we make its size -1
-      // This will cause CONVERTING "ABC" TO ZERO to be the same as
-      //                            CONVERTING "ABC" TO "000"
-      replacement_size = (size_t)(-1LL);
-      break;
-    case 2:
-      // Only original is figconst.  Set the size to one.  (This is necessary
-      // because the size of NULL is eight, since NULL does double-duty as both
-      // a character (this is a MicroFocus specification) and a pointer.
-      original_size = 1;
-      break;
-    case 3:
-      // Both are figconst
-      replacement_size = original_size = 1;
-      break;
-    }
-
-  // Because before and after can be figurative constant NULL, we have to make
-  // sure that in such cases the size is 1:
-  if(before && before_size && before->attr & FIGCONST_MASK)
-    {
-    before_size = 1;
-    }
-  if(after && after_size && after->attr & FIGCONST_MASK)
-    {
-    after_size = 1;
-    }
-
-  bool all = (replacement_size == (size_t)(-1LL));
-  if( all )
-    {
-    // A replacement_size of -1 means that the statement is something like
-    // INSPECT XYZ CONVERTING "abcxyz" to ALL "?"  That means replacement is
-    // a single character.  We need to convert it to the target encoding.
-    const charmap_t * charmap = __gg__get_charmap(input->encoding);
-    replacement_size = charmap->stride();
-    }
-
-  std::u32string str_input       = normalize_for_inspect_format_4(input      , input_offset      , input_size      , input->encoding);
-  std::u32string str_original    = normalize_for_inspect_format_4(original   , original_offset   , original_size   , input->encoding);
-  std::u32string str_replacement = normalize_for_inspect_format_4(replacement, replacement_offset, replacement_size, input->encoding);
-  std::u32string str_after       = normalize_for_inspect_format_4(after      , after_offset      , after_size      , input->encoding);
-  std::u32string str_before      = normalize_for_inspect_format_4(before     , before_offset     , before_size     , input->encoding);
-
-  if( all )
-    {
-    // We now expand the single-character replacement to be the same length as
-    // original.
-    cbl_char_t ch = str_replacement[0];
-    str_replacement.clear();
-    for(size_t i=0; i<str_original.size(); i++)
-      {
-      str_replacement.push_back(ch);
-      }
-    }
-
-  // Use a  map to make this O(N), rather than an O(N-squared),
-  // computational complexity
-  std::unordered_map<cbl_char_t, cbl_char_t>map;
-  typedef std::unordered_map<cbl_char_t, cbl_char_t>::const_iterator map_it_t ;
-
-  // The rule is, if the same character appears more than once in the
-  // original (which is identifier-6), then the first occurrence of the
-  // matching character in replacement is used.  So, we create the map
-  // backwards.  The one closest to zero will win.
-  for(size_t i=str_original.size()-1; i<str_original.size(); i--)
-    {
-    map[str_original[i]] = str_replacement[i];
-    }
-
-  size_t leftmost_i;   // Leftmost index to replace at.
-  size_t rightmost_i;  // Rightmost+1 index to replace at.
-
-  if( !backward )
-    {
-    // This is a forward conversion.  We look for the first instance
-    // of str_after from the left.  And then we look for the first instance
-    // of str_before after that.  When there is no str_before, we move the
-    // rightmost limit to the end of str_input, as if there were no BEFORE
-    // phrase:
-
-    if( str_after.empty() )
-      {
-      // There is no AFTER phrase, so we start from the left.
-      leftmost_i = 0;
-      }
-    else
-      {
-      size_t nfound = str_input.find(str_after);
-      if( nfound != std::u32string::npos )
-        {
-        // Move the left limit to one character past the found element
-        leftmost_i = nfound + str_after.size();
-        }
-      else
-        {
-        // We didn't find the after phrase, so we move the left limit to the
-        // end of input, which means nothing will be replaced
-        leftmost_i = str_input.size();
-        }
-      }
-
-    // At this point, leftmost_i has been set to something.  Look for the
-    // BEFORE phrase somewhere to the right of it:
-
-    if( str_before.empty() )
-      {
-      // There is no BEFORE phrase, so set rightmost to the end of the input
-      rightmost_i = str_input.size();
-      }
-    else
-      {
-      // Look for BEFORE to the right of leftmost_i:
-      size_t nfound = str_input.find(str_before, leftmost_i);
-      if( nfound != std::u32string::npos )
-        {
-        // We found the BEFORE phrase.
-        rightmost_i = nfound;
-        }
-      else
-        {
-        // We didn't find the BEFORE phrase; IOS says to treat this situation
-        // as if there were no BEFORE phrase
-        rightmost_i = str_input.size();
-        }
-      }
-    }
-  else
-    {
-    // We are doing a BACKWARD conversion.  So, we look for the AFTER phrase
-    // and use that to establish the rightmost limit.  And we look for the
-    // BEFORE to the left of AFTER phrase and use that to establish the
-    // leftmost limit
-
-    if( str_after.empty() )
-      {
-      // There is no AFTER phrase, so we set the rightmost limit to the end
-      // of the input:
-      rightmost_i = str_input.size();
-      }
-    else
-      {
-      // Start from the right and look for AFTER
-      size_t nfound = str_input.rfind(str_after, str_input.size());
-      if( nfound != std::u32string::npos )
-        {
-        // We found str_after, so its location becomes rightmost
-        rightmost_i = nfound;
-        }
-      else
-        {
-        // We didn't find str_after, so we move rightmost all the way to the
-        // left, so that nothing will ever be found.
-        rightmost_i = 0;
-        }
-      }
-    // rightmost_i has been established, so now look for BEFORE to the left
-    // of it
-    if( str_before.empty() )
-      {
-      // There is no str_before, so the left limit is all the way to the left
-      leftmost_i = 0;
-      }
-    else
-      {
-      size_t nfound = str_input.rfind(str_before, rightmost_i);
-      if( nfound != std::u32string::npos )
-        {
-        // We found BEFORE, so we put the left limit just to the right of
-        // where we found it:
-        leftmost_i = nfound + str_before.size();
-        }
-      else
-        {
-        // Not finding the BEFORE phrase is the same as the BEFORE phrase
-        // not having been specified:
-        leftmost_i = 0;
-        }
-      }
-    }
-  // leftmost_i and rightmost_i have been established.  Do the conversion of
-  // characters inside those limits:
-  for(size_t i=leftmost_i; i<rightmost_i; i++)
-    {
-    cbl_char_t ch = str_input[i];
-    map_it_t cvt = map.find(ch);
-    if( cvt != map.end() )
-      {
-      str_input[i] = cvt->second;
-      }
-    }
-
-  // We now take the converted str_input, and put it back into id_1:
-
-  size_t bytes_converted;
-  const char *converted = __gg__iconverter(DEFAULT_32_ENCODING,
-                                           input->encoding,
-                                           str_input.data(),
-                                           str_input.size()*width_of_utf32,
-                                           &bytes_converted) ;
-
-  // And move those characters into place in input:
-  memcpy(input->data + input_offset,
-         converted,
-         std::min(bytes_converted, input_size));
-  }
-
-static void
-move_string(cblc_field_t *field,
-                size_t offset,
-                size_t length,
-                const char *from,
-                cbl_encoding_t src_encoding,
-                size_t strlen_from = (size_t)(-1) )
-  {
-  bool moved = true;
-
-  if( strlen_from == (size_t)(-1) )
-    {
-    strlen_from = strlen(from);
-    }
-
-  switch(field->type)
-    {
-    case FldGroup:
-    case FldAlphanumeric:
-    case FldAlphaEdited:
-      {
-      char *to = reinterpret_cast<char *>(field->data + offset);
-      size_t dest_length = length ? length : field->capacity;
-      size_t source_length = strlen_from;
-
-      // We need to convert the source string to the destination encoding:
-      size_t charsout;
-      const char *converted = __gg__iconverter(src_encoding,
-                                               field->encoding,
-                                               from,
-                                               source_length,
-                                               &charsout);
-
-      size_t count = std::min(dest_length, source_length);
-      if( source_length >= dest_length )
-        {
-        // We have more source characters than places to put them
-        if( field->attr & rjust_e )
-          {
-          // Destination is right-justified, so we
-          // discard the leading source characters:
-          memmove(to,
-                  converted + (source_length - count),
-                  count);
-          }
-        else
-          {
-          // Destination is right-justified, so we
-          // discard the trailing source characters:
-          memmove(to,
-                  converted,
-                  count);
-          }
-        }
-      else
-        {
-        // We have too few source characters to fill the destination.
-        if( field->attr & rjust_e )
-          {
-          // The destination is right-justified, and the source is an
-          // ordinary string too short to fill it.  So, we space-fill
-          // the leading characters.
-          memmove(to + (dest_length-count),
-                  converted,
-                  count);
-          // Get the charmap after the move, because it can mess with the
-          // static 'to' buffer.
-          charmap_t *charmap = __gg__get_charmap(field->encoding);
-          charmap->memset(to, charmap->mapped_character(ascii_space), dest_length-count);
-          }
-        else
-          {
-          // The destination is left-justified
-          // We do the move first, in case this is an overlapping move
-          // involving characters that will be space-filled
-          memmove(to,
-                  converted,
-                  count);
-          charmap_t *charmap = __gg__get_charmap(field->encoding);
-          memset( to + count,
-                  charmap->mapped_character(ascii_space),
-                  dest_length-count);
-          }
-        }
-      break;
-      }
-
-    case FldNumericBinary:
-    case FldPacked:
-    case FldNumericDisplay:
-    case FldNumericEdited:
-    case FldNumericBin5:
-    case FldIndex:
-      {
-      // We are starting with a string, and setting it to a numerical
-      // target.
-      int rdigits;
-      __int128 value = __gg__dirty_to_binary(from,
-                                             src_encoding,
-                                             strlen_from,
-                                             &rdigits);
-      __gg__int128_to_qualified_field(field,
-                                      offset,
-                                      length,
-                                      value,
-                                      rdigits,
-                                      truncation_e,
-                                      NULL);
-      break;
-      }
-
-    default:
-      moved = false;
-      break;
-    }
-  if( !moved )
-    {
-    fprintf(stderr, "%s() %s:%d -- We were unable move a string to "
-            "field type %d\n",
-            __func__, __FILE__, __LINE__,
-            field->type);
-    abort();
-    }
-  }
-
-static char *
-brute_force_trim(char *str, cbl_encoding_t encoding)
-  {
-  charmap_t *charmap = __gg__get_charmap(encoding);
-  int stride = charmap->stride();
-
-  char *retval = str;
-
-  while(   charmap->getch(retval, size_t(0))
-        == charmap->mapped_character(ascii_space) )
-    {
-    retval += stride;
-    }
-  char *p = retval + strlen(retval)-stride;
-  while(    p > retval
-        && (   charmap->getch(p, size_t(0))
-            == charmap->mapped_character(ascii_space)) )
-    {
-    charmap->putch(NULLCH, p, size_t(0));
-    p -= stride;
-    }
-  return retval;
-  }
-
-extern "C"
-int
-__gg__string(const size_t integers[])
-  {
-  // The first integer is the count of identifier-2 values.  Call it N
-  // The following N integers are the counts of each of the identifier-1 values,
-  // one for each identifier-1.  Call them M.
-
-  // The first refer is the target
-  // The second refer is the pointer
-  // The third refer is identifier-2 for N1
-  // That's followed by M1 identifier-1 values
-  // That's followed by identifier2 for N2
-  // And so on
-
-  cblc_field_t **ref   = __gg__treeplet_1f;
-  const size_t  *ref_o = __gg__treeplet_1o;
-  const size_t  *ref_s = __gg__treeplet_1s;
-
-  static const int INDEX_OF_POINTER = 1;
-
-  size_t index_cblc = 0 ;
-
-  // Pick up the target
-  const cblc_field_t *tgt = ref[index_cblc];
-
-  // Pick up the target encoding, which according to the ISO specification
-  // controls all the parameters.
-  cbl_encoding_t tgt_encoding = tgt->encoding;
-  charmap_t *charmap = __gg__get_charmap(tgt_encoding);
-  int stride = charmap->stride();
-
-  // Pick up the rest of the parameters
-  size_t tgt_o              = ref_o[index_cblc];
-  size_t tgt_s              = ref_s[index_cblc];
-  index_cblc += 1;
-
-  char  *dest         = reinterpret_cast<char *>(tgt->data + tgt_o);
-  size_t dest_length = tgt_s/stride;
-
-  // Skip over the index of POINTER:
-  index_cblc += 1;
-
-  // Pick up the pointer, if any
-  size_t pointer = 0;
-  int overflow = 0;
-  if( ref[INDEX_OF_POINTER] )
-    {
-    int rdigits;
-    int p  = (size_t)__gg__binary_value_from_qualified_field(
-                                                    &rdigits,
-                                                    ref  [INDEX_OF_POINTER],
-                                                    ref_o[INDEX_OF_POINTER],
-                                                    ref_s[INDEX_OF_POINTER]
-                                                    );
-    if( p<0 )
-      {
-      overflow = 1;
-      }
-    pointer = p - 1;
-    }
-
-  // Make sure that the destination pointer is within the destination
-  if( pointer < dest_length )
-    {
-    // We are go for looping through identifier-2 values:
-
-    size_t index_int  = 0;
-
-    // Pick up the number of identifier-2 values
-    size_t N = integers[index_int++];
-
-    for( size_t i=0; i<N; i++ )
-      {
-      // Pick up the number of M identifier-1 values for this list of
-      // identifier-2 values:
-      size_t M = integers[index_int++];
-
-      // Pick up the identifier_2 DELIMITED BY value
-      std::u32string str_id2 = normalize_for_inspect_format_4(
-                                                        ref[index_cblc],
-                                                        ref_o[index_cblc],
-                                                        ref_s[index_cblc],
-                                                        tgt_encoding);
-      index_cblc += 1;
-
-      for(size_t j=0; j<M; j++)
-        {
-        // Pick up the next id-1 source string for the current id-2 delimiter
-        std::u32string str_id1 = normalize_for_inspect_format_4(
-                                                        ref[index_cblc],
-                                                        ref_o[index_cblc],
-                                                        ref_s[index_cblc],
-                                                        tgt_encoding);
-        index_cblc += 1;
-
-        size_t nfound;
-        if( str_id2.size() == 0 )
-          {
-          // No given delimiter means DELIMITED BY SIZE
-          nfound = str_id1.size();
-          }
-        else
-          {
-          // We have an id2, so we look for it inside id1
-          nfound = str_id1.find(str_id2);
-          if( nfound == std::u32string::npos )
-            {
-            nfound = str_id1.size();
-            }
-          }
-
-
-          {
-          // We have found id2 inside id1 at location nfound.
-
-          // Convert the UTF32 to the original encoding:
-          size_t bytes_converted;
-          char *converted = __gg__miconverter(DEFAULT_32_ENCODING,
-                                              tgt_encoding,
-                                              str_id1.data(),
-                                              nfound*width_of_utf32,
-                                              &bytes_converted );
-          size_t k = 0;
-          while(k < nfound)
-            {
-            if( pointer >= dest_length )
-              {
-              overflow = 1;
-              break;
-              }
-            cbl_char_t ch = charmap->getch(converted, k*stride);
-            charmap->putch(ch, dest, pointer*stride);
-            k += 1;
-            pointer += 1;
-            }
-          free(converted);
-          }
-        if( overflow )
-          {
-          break;
-          }
-        }
-      }
-
-    // Update the pointer, if there is one
-    if( ref[INDEX_OF_POINTER] )
-      {
-      __gg__int128_to_qualified_field(ref  [INDEX_OF_POINTER],
-                                      ref_o[INDEX_OF_POINTER],
-                                      ref_s[INDEX_OF_POINTER],
-                                      (__int128)(pointer+1),
-                                      0,
-                                      truncation_e,
-                                      NULL );
-      }
-    }
-  else
-    {
-    // The initial pointer is not inside the destination
-    overflow = 1;
-    }
-
-  return overflow;
-  }
-
 static
 void
 display_both(cblc_field_t  *field,
              unsigned char *qual_data,
              size_t         qual_size,
-             int            flags,
              int            file_descriptor,
-             int            advance )
+             int            flags )
   {
   static size_t display_string_size = MINIMUM_ALLOCATION_SIZE;
-  static char *display_string = static_cast<char *>(malloc(display_string_size));
+  static char *display_string =
+    static_cast<char *>(malloc(display_string_size));
+
+  bool advance = !!(flags & 1);
+  bool address_of = !!(flags & REFER_T_ADDRESS_OF);
+
+  if( field->type == FldLiteralA && field->encoding == custom_encoding_e )
+    {
+    field->encoding = DEFAULT_SOURCE_ENCODING;
+    }
 
   cbl_encoding_t encoding = format_for_display_internal(
                                             &display_string,
@@ -9808,12 +7820,12 @@ display_both(cblc_field_t  *field,
                                             field,
                                             qual_data,
                                             qual_size,
-                                            !!(flags & REFER_T_ADDRESS_OF) );
+                                            address_of );
 
   cbl_encoding_t encout = __gg__console_encoding;
 
   // It can be the case in COBOL programs that a variable set to HIGH-VALUE is
-  // displayed.  In CP1252, the result for 0xFF is a y-with diaresis.
+  // displayed.  In CP1252, the result for 0xFF is a y-with diaeresis.
 
   // In EBCDIC CP1140, however, the 0xFF character is non-printing.  It's my
   // opinion that's protentially confusing, especially when debugging.
@@ -9825,8 +7837,8 @@ display_both(cblc_field_t  *field,
 
   // There are valid arguments against doing this.  But when I was doing some
   // debugging, I found the EBCDIC behavior of displaying nothing for
-  // HIGH-VALUE to be more astonishing than printing a y-with-diaresis.  There
-  // is, of course, the potential for confusing a real y-with-diaresis with a
+  // HIGH-VALUE to be more astonishing than printing a y-with-diaeresis.  There
+  // is, of course, the potential for confusing a real y-with-diaeresis with a
   // a HIGH-VALUE character.  But it is my opinion that those will be resolved
   // by examining the context.
 
@@ -9874,28 +7886,26 @@ __gg__display(    cblc_field_t *field,
                   size_t offset,
                   size_t size,
                   int file_descriptor,
-                  int advance )
+                  int flags )
   {
   display_both( field,
                 field->data + offset,
                 size,
-                0,
                 file_descriptor,
-                advance);
+                flags);
   }
 
 extern "C"
 void
 __gg__display_clean(cblc_field_t *field,
                     int file_descriptor,
-                    int advance )
+                    int flags )
   {
   display_both( field,
                 field->data,
                 field->capacity,
-                0,
                 file_descriptor,
-                advance);
+                flags);
   }
 
 #pragma GCC diagnostic push
@@ -10169,10 +8179,14 @@ we_are_done:
                                       length,
                                       value,
                                       rdigits,
-                                      truncation_e,
-                                      NULL);
+                                      truncation_e);
       break;
       }
+
+    case FldLiteralN:
+      // It is a quirk of the parser that for ACCEPT OMITTED, it passes us
+      // a FldLiteralN.
+      break;
 
     default:
       {
@@ -10187,8 +8201,7 @@ we_are_done:
                                       length,
                                       value,
                                       rdigits,
-                                      truncation_e,
-                                      NULL);
+                                      truncation_e);
       break;
       }
     }
@@ -10214,17 +8227,37 @@ __gg__binary_value_from_field(   int *rdigits,
                                    var->capacity);
   }
 
-extern "C"
 __int128
-__gg__binary_value_from_qualified_field(int          *rdigits,
-                                        const cblc_field_t *var,
+__gg__int128_from_qualified_field(const cblc_field_t *var,
                                         size_t        offset,
                                         size_t        size)
   {
-  return  get_binary_value_local(  rdigits,
+  // Use this version when rdigits isn't relevant
+  int rdigits;
+  return  get_binary_value_local( &rdigits,
                                    var,
                                    var->data + offset,
                                    size);
+  }
+
+__int128
+__gg__int128_from_qualified_field(int128             &i128,
+                                  const cblc_field_t *var,
+                                  size_t             offset,
+                                  size_t             size)
+  {
+  // This routine does double-duty.  It converts VAR to a fixed-point
+  // int128 that carries an rdigits value.  It also returns the __int128
+  // portion of that value, because many routines that know there are no
+  // rdigits also call this routine.  This is a holdover from the time
+  // before this routine was refactored to carry the rdigits, which were
+  // maintained in the external logic before int128::rdigits was implemented/
+
+  i128.i128 = get_binary_value_local(&i128.rdigits,
+                                     var,
+                                     var->data + offset,
+                                     size);
+  return i128.i128;
   }
 
 extern "C"
@@ -10250,7 +8283,9 @@ __gg__float128_from_field( cblc_field_t *field )
 
 extern "C"
 GCOB_FP128
-__gg__float128_from_qualified_field(const cblc_field_t *field, size_t offset, size_t size)
+__gg__float128_from_qualified_field(const cblc_field_t *field,
+                                      size_t              offset,
+                                      size_t              size)
   {
   GCOB_FP128 retval=0;
   if( field->type == FldFloat || field->type == FldLiteralN )
@@ -10259,11 +8294,14 @@ __gg__float128_from_qualified_field(const cblc_field_t *field, size_t offset, si
     }
   else
     {
-    int rdigits;
-    retval = (GCOB_FP128)__gg__binary_value_from_qualified_field(&rdigits, field, offset, size);
-    if( rdigits )
+    int128 i128;
+    retval = (GCOB_FP128)__gg__int128_from_qualified_field(i128,
+                                                           field,
+                                                           offset,
+                                                           size);
+    if( i128.rdigits )
       {
-      retval /= (GCOB_FP128)__gg__power_of_ten(rdigits);
+      retval /= (GCOB_FP128)__gg__power_of_ten(i128.rdigits);
       }
     }
   return retval;
@@ -10308,22 +8346,23 @@ __gg__int128_to_field(cblc_field_t   *tgt,
   }
 
 extern "C"
-void
+int
 __gg__int128_to_qualified_field(cblc_field_t   *tgt,
                                 size_t          offset,
                                 size_t          length,
                                 __int128        value,
                                 int             source_rdigits,
-                                enum cbl_round_t  rounded,
-                                int            *compute_error)
+                                enum cbl_round_t  rounded)
   {
+  int            compute_error = 0;
   int128_to_field(tgt,
                   tgt->data + offset,
                   length ? length : tgt->capacity,
                   value,
                   source_rdigits,
                   rounded,
-                  compute_error);
+                  &compute_error);
+  return compute_error;
   }
 
 static __int128
@@ -10349,12 +8388,14 @@ float128_to_int128( int                *rdigits,
 
     if( field->attr & intermediate_e )
       {
-      // Our target doesn't have a fixed number of rdigits.  We will look at the
+      // Our target doesn't have a fixed number of rdigits.  We will look at
+      // the
       // value, and from that calculate the maximum number of rdigits we can
       // get away with.
 
       // Calculate the number of digits to the left of the decimal point:
-      int digits = (int)(FP128_FUNC(floor)(FP128_FUNC(log)(FP128_FUNC(fabs)(value)))+1);
+      int digits = (int)(FP128_FUNC(floor)(
+        FP128_FUNC(log)(FP128_FUNC(fabs)(value)))+1);
 
       // Make sure it is not a negative number
       digits = std::max(0, digits);
@@ -10371,7 +8412,8 @@ float128_to_int128( int                *rdigits,
     // We now multiply our value by 10**rdigits, in order to make the
     // floating-point value have the same magnitude as our target __int128
 
-    value *= FP128_FUNC(pow)(GCOB_FP128_LITERAL (10.0), (GCOB_FP128)(*rdigits));
+    value *= FP128_FUNC(pow)(GCOB_FP128_LITERAL (10.0),
+                               (GCOB_FP128)(*rdigits));
 
     // We are ready to cast value to an __int128.  But this value could be
     // too large to fit, which is an error condition we want to flag:
@@ -10413,22 +8455,23 @@ float128_to_location( cblc_field_t   *tgt,
               }
             if( value < 0 )
               {
-              *PTRCAST(float, data) = -INFINITY;
+              store_unaligned<float>(data, -INFINITY);
               }
             else
               {
-              *PTRCAST(float, data) = INFINITY;
+              store_unaligned<float>(data, INFINITY);
               }
             }
           else
             {
-            *PTRCAST(float, data) = static_cast<float>(value);
+            store_unaligned<float>(data, static_cast<float>(value));
             }
           break;
 
         case 8:
           if(    FP128_FUNC(fabs)(value) == (GCOB_FP128)INFINITY
-              || FP128_FUNC(fabs)(value) > GCOB_FP128_LITERAL (1.7976931348623157E308) )
+              || FP128_FUNC(fabs)(value)
+                   > GCOB_FP128_LITERAL (1.7976931348623157E308) )
             {
             if( compute_error )
               {
@@ -10436,16 +8479,16 @@ float128_to_location( cblc_field_t   *tgt,
               }
             if( value < 0 )
               {
-              *PTRCAST(double, data) = -INFINITY;
+              store_unaligned<double>(data, -INFINITY);
               }
             else
               {
-              *PTRCAST(double, data) = INFINITY;
+              store_unaligned<double>(data, INFINITY);
               }
             }
           else
             {
-            *PTRCAST(double, data) = static_cast<double>(value);
+            store_unaligned<double>(data, static_cast<double>(value));
             }
           break;
 
@@ -10486,7 +8529,8 @@ float128_to_location( cblc_field_t   *tgt,
           maximum = __gg__power_of_ten(digits);
           }
 
-        // When digits is zero, this is a binary value without a PICTURE string.
+        // When digits is zero, this is a binary value without a PICTURE
+        // string.
         // we don't truncate in that case
         if( digits && FP128_FUNC(fabs)(value) >= maximum )
           {
@@ -10641,7 +8685,9 @@ __gg__onetime_initialization( )
 
   // We need to establish the initial value of the UPSI-1 switch register We
   // are using IBM's conventions:
-  // https://www.ibm.com/docs/en/zvse/6.2?topic=SSB27H_6.2.0/fa2sf_communicate_appl_progs_via_job_control.html
+  // IBM z/VSE documentation: communicating with application programs
+  // through job control.  The original URL was longer than the GCC line
+  // length recommendation.
   // UPSI 10000110 means that bits 0, 5, and 6 are on, which means that SW-0,
   // SW-5, and SW-6 are on.
 
@@ -10663,8 +8709,16 @@ __gg__onetime_initialization( )
       bit <<= 1 ;
       }
     }
-  __gg__data_upsi_0[0] = (value>>0) & 0xFF;
-  __gg__data_upsi_0[1] = (value>>8) & 0xFF;
+  if( cobol_target_big_endian() ) // cppcheck-suppress knownConditionTrueFalse
+    {
+    __gg__data_upsi_0[1] = (value>>0) & 0xFF;
+    __gg__data_upsi_0[0] = (value>>8) & 0xFF;
+    }
+  else
+    {
+    __gg__data_upsi_0[0] = (value>>0) & 0xFF;
+    __gg__data_upsi_0[1] = (value>>8) & 0xFF;
+    }
   }
 
 static int
@@ -10675,88 +8729,144 @@ is_numeric_edited_numeric(cblc_field_t *, size_t, size_t )
   }
 
 static int
-is_numeric_display_numeric(cblc_field_t *field, size_t offset, size_t size)
+is_numeric_display_numeric(const cblc_field_t *field, size_t offset, size_t size)
   {
-  charmap_t *charmap = __gg__get_charmap(field->encoding);
-  int stride = charmap->stride();
+  const charmap_t *charmap = __gg__get_charmap(field->encoding);
 
-  int retval = 1;
+  size_t nbytes;
+  char *digits = __gg__iconverter(field->encoding,
+                                  DEFAULT_SOURCE_ENCODING,
+                                  field->data+offset,
+                                  size,
+                                 &nbytes);
   bool signable = !!(field->attr & signable_e);
   bool leading  = !!(field->attr & leading_e);
   bool separate = !!(field->attr & separate_e);
 
-  char *digits   = reinterpret_cast<char *>(field->data + offset);
-  char *digits_e = digits + size;
+  char *digits_r = digits+nbytes;
+
+  int retval = 1;
+  if( size == 0 )
+    {
+    // No digits means not numeric
+    retval = 0;
+    goto done;
+    }
+
+  if( separate && size < 2 )
+    {
+    // Validity requires at least one digit plus a sign
+    retval = 0;
+    goto done;
+    }
 
   if( leading && separate && signable )
     {
     // First character must be +/-
-    cbl_char_t ch = charmap->getch(digits, size_t(0));
-    if(     digits < digits_e
-        || (   ch != charmap->mapped_character(ascii_plus)
-            && ch !=  charmap->mapped_character(ascii_minus)) )
+    if(    *digits != ascii_plus
+        && *digits != ascii_minus )
       {
       retval = 0;
+      goto done;
       }
-    digits += stride;
+    digits += 1;
+    goto done;
     }
 
   if( !leading && separate && signable )
     {
     // Last character must be +/-
-    digits_e -= stride;
-    cbl_char_t ch = charmap->getch(digits_e, size_t(0));
-    if(     digits < digits_e
-        || (   ch != charmap->mapped_character(ascii_plus)
-            && ch !=  charmap->mapped_character(ascii_minus)) )
+    digits_r -= 1;
+    if(    *digits_r != ascii_plus
+        && *digits_r != ascii_minus )
       {
       retval = 0;
+      goto done;
       }
+    goto done;
     }
 
   if( leading && !separate && signable )
     {
-    // The first character is allowed to have a sign bit. Let's make sure that
-    // making that first digit unsigned leaves us with zero through nine:
-    if( digits < digits_e )
+    // The first character is allowed to have a sign bit
+    if( isdigit(*digits) )
       {
-      cbl_char_t first_char = charmap->getch(digits, size_t(0));
-      first_char = charmap->set_digit_negative(first_char, false);
-      if(  first_char < charmap->mapped_character(ascii_0)
-        || first_char > charmap->mapped_character(ascii_9))
-        {
-        retval = 0;
-        }
+      goto done;
       }
-    digits += 1;
+
+    if( charmap->is_like_ebcdic() )
+      {
+      if(    *digits == ascii_rbrace
+          || (*digits >= ascii_J && *digits <= ascii_R) )
+        {
+        *digits = ascii_zero;
+        goto done;
+        }
+      // First character is out of range:
+      retval = 0;
+      goto done;
+      }
+    else
+      {
+      if( *digits >= ascii_p && *digits <= ascii_y )
+        {
+        *digits = ascii_zero;
+        goto done;
+        }
+      // First character is out of range:
+      retval = 0;
+      goto done;
+      }
     }
 
   if( !leading && !separate && signable )
     {
     // The final character is allowed to have a sign bit.
-    if( digits < digits_e )
+    digits_r -= 1;
+    if( isdigit(*digits_r) )
       {
-      digits_e -= 1;
-      cbl_char_t final_char = charmap->getch(digits, size_t(0));
-      final_char = charmap->set_digit_negative(final_char, false);
-      if(   final_char<charmap->mapped_character(ascii_0)
-         || final_char>charmap->mapped_character(ascii_9) )
+      goto done;
+      }
+
+    if( charmap->is_like_ebcdic() )
+      {
+      if(    *digits_r == ascii_rbrace
+          || (*digits_r >= ascii_J && *digits_r <= ascii_R) )
         {
-        retval = 0;
+        *digits_r = ascii_zero;
+        goto done;
         }
+      // First character is out of range:
+      retval = 0;
+      goto done;
+      }
+    else
+      {
+      if( *digits_r >= ascii_p && *digits_r <= ascii_y )
+        {
+        *digits_r = ascii_zero;
+        goto done;
+        }
+      // First character is out of range:
+      retval = 0;
+      goto done;
       }
     }
 
-  // all remaining characters are supposed to be zero through nine
-  while( digits < digits_e )
+  done:
+  if( retval )
     {
-    if(     (unsigned char)(*digits)<charmap->mapped_character(ascii_0)
-        ||  (unsigned char)(*digits)>charmap->mapped_character(ascii_9) )
+    // all remaining characters are supposed to be zero through nine
+    while( digits < digits_r )
       {
-      retval = 0;
-      break;
+      if(     *digits<ascii_0
+          ||  *digits>ascii_9 )
+        {
+        retval = 0;
+        break;
+        }
+      digits += 1;
       }
-    digits += 1;
     }
   return retval;
   }
@@ -10905,11 +9015,11 @@ classify_alphabetic_type( const cblc_field_t *field,
                           int (checker)( std::wint_t ch ))
   {
   int retval = 1;
-  charmap_t *charmap = __gg__get_charmap(DEFAULT_32_ENCODING);
+  charmap_t *charmap = __gg__get_charmap(HOST_32_ENCODING);
   cbl_char_t space = charmap->mapped_character(ascii_space);
   size_t nbytes_converted;
   const char *converted = __gg__iconverter(field->encoding,
-                                           DEFAULT_32_ENCODING,
+                                           HOST_32_ENCODING,
                                            field->data+offset,
                                            size,
                                            &nbytes_converted);
@@ -10976,48 +9086,6 @@ __gg__classify( classify_t type,
   return retval;
   }
 
-extern "C"
-void
-__gg__convert_encoding( char *psz,
-                        cbl_encoding_t from,
-                        cbl_encoding_t to )
-  {
-  // This does an in-place conversion of psz
-  charmap_t *charmap_from = __gg__get_charmap(from);
-  const charmap_t *charmap = __gg__get_charmap(to);
-  if( from > custom_encoding_e )
-    {
-    size_t charsout;
-    const char *converted  = __gg__iconverter(from,
-                                              to,
-                                              psz,
-                                              charmap_from->strlen(psz),
-                                              &charsout);
-    // Copy over the converted string, including the final NUL
-    memcpy(psz, converted, charsout + charmap->stride());
-    }
-  }
-
-extern "C"
-void
-__gg__convert_encoding_length(char *pch,
-                              size_t length,
-                              cbl_encoding_t from,
-                              cbl_encoding_t to )
-  {
-  // This does an in-place conversion of length characters at pch
-  if( from > custom_encoding_e )
-    {
-    size_t charsout;
-    const char *converted  = __gg__iconverter(from,
-                                              to,
-                                              pch,
-                                              length,
-                                              &charsout);
-    memcpy(pch, converted, length);
-    }
-  }
-
 static
 int
 accept_envar( cblc_field_t  *tgt,
@@ -11030,7 +9098,7 @@ accept_envar( cblc_field_t  *tgt,
 
   if( psz_name )
     {
-    charmap_t *charmap = __gg__get_charmap(encoding);
+    const charmap_t *charmap = __gg__get_charmap(encoding);
     size_t psz_name_length = charmap->strlen(psz_name);
 
     // convert psz_name to the console encoding:
@@ -11069,7 +9137,7 @@ accept_envar( cblc_field_t  *tgt,
 
   if( retval == 1 )
     {
-    // Could't find that environment variable
+    // Couldn't find that environment variable
     exception_raise(ec_argument_imp_environment_e);
     }
 
@@ -11119,38 +9187,35 @@ __gg__set_envar(cblc_field_t    *name,
   static size_t  env_length = 0;
   static char   *val        = NULL;
   static size_t  val_length = 0;
-  if( env_length < name_length+1 )
-    {
-    env_length = name_length+1;
-    env = static_cast<char *>(realloc(env, env_length));
-    }
-  if( val_length < value_length+1 )
-    {
-    val_length = value_length+1;
-    val = static_cast<char *>(realloc(val, val_length));
-    }
-
-  massert(val);
-  massert(env);
 
   const char *converted;
   size_t charsout;
 
   converted = __gg__iconverter(name->encoding,
                                __gg__console_encoding,
-                               PTRCAST(char, name->data+name_offset),
+                               as_chars(name->data + name_offset),
                                name_length,
                                &charsout );
-  memcpy(env, converted, name_length);
-  env[name_length] = '\0';
+  if( env_length < charsout + 1 )
+    {
+    env_length = charsout + 1;
+    env = static_cast<char *>(checked_realloc(env, env_length));
+    }
+  memcpy(env, converted, charsout);
+  env[charsout] = '\0';
 
   converted = __gg__iconverter(value->encoding,
                                __gg__console_encoding,
-                               PTRCAST(char, value->data+value_offset),
+                               as_chars(value->data + value_offset),
                                value_length,
                                &charsout );
-  memcpy(val, converted, value_length);
-  val[value_length] = '\0';
+  if( val_length < charsout + 1 )
+    {
+    val_length = charsout + 1;
+    val = static_cast<char *>(checked_realloc(val, val_length));
+    }
+  memcpy(val, converted, charsout);
+  val[charsout] = '\0';
 
   // Get rid of leading and trailing space characters
   char *trimmed_env = brute_force_trim(env, __gg__console_encoding);
@@ -11218,8 +9283,8 @@ command_line_plan_b()
           if( prior_char == '\0' )
             {
             stashed_argc += 1;
-            stashed_argv = static_cast<char **>(realloc(stashed_argv,
-                                            stashed_argc * sizeof(char *)));
+            stashed_argv = static_cast<char **>(
+              checked_realloc(stashed_argv, stashed_argc * sizeof(char *)));
             stashed_argv[stashed_argc-1] = p;
             }
           prior_char = *p++;
@@ -11311,7 +9376,7 @@ __gg__get_command_line( cblc_field_t *field,
     while( strlen(retval) + strlen(stashed_argv[i]) + 2 > length )
       {
       length *= 2;
-      retval = static_cast<char *>(realloc(retval, length));
+      retval = static_cast<char *>(checked_realloc(retval, length));
       massert(retval);
       }
     if( *retval )
@@ -11365,7 +9430,7 @@ __gg__set_pointer(cblc_field_t       *target,
     // This is SET <something> TO POINTER
     if( source )
       {
-      source_address = *reinterpret_cast<void **>(source->data + source_o);
+      source_address = load_unaligned<void *>(source->data + source_o);
       }
     else
       {
@@ -11378,8 +9443,8 @@ __gg__set_pointer(cblc_field_t       *target,
     {
     // This is SET ADDRESS OF target TO ....
     // We know it has to be an unqualified LINKAGE level 01 or level 77
-    target->data  = reinterpret_cast<unsigned char *>(source_address);
-    // The caller will propogate data + offset to their children.
+    target->data = static_cast<unsigned char *>(source_address);
+    // The caller will propagate data + offset to their children.
     }
   else
     {
@@ -11389,12 +9454,12 @@ __gg__set_pointer(cblc_field_t       *target,
       // This is [almost certainly] INITIALIZE <pointer> when -fdefaultbyte
       // was specified.
       memset( target->data+target_o,
-              *reinterpret_cast<unsigned char *>(source_address),
+              *static_cast<unsigned char *>(source_address),
               target->capacity);
       }
     else
       {
-      *reinterpret_cast<void **>(target->data+target_o) = source_address;
+      store_unaligned<void *>(target->data+target_o, source_address);
       }
     }
   }
@@ -11478,7 +9543,8 @@ __gg__alphabet_use( cbl_encoding_t display_encoding,
 
       if( it == __gg__alphabet_states.end() )
         {
-        __gg__abort("__gg__alphabet_use() fell off the end of __gg__alphabet_states");
+        __gg__abort("__gg__alphabet_use() fell off the end of "
+                      "__gg__alphabet_states");
         }
       __gg__low_value_character  = it->second.low_char;
       __gg__high_value_character = it->second.high_char;
@@ -11570,55 +9636,6 @@ __gg__routine_to_call(const char *name,
   }
 
 extern "C"
-__int128
-__gg__fetch_call_by_value_value(const cblc_field_t *field,
-                                size_t field_o,
-                                size_t field_s)
-
-  {
-  int rdigits;
-  unsigned char *data   = field->data + field_o;
-  const size_t   length = field_s;
-
-  __int128 retval = 0;
-  switch(field->type)
-    {
-    case FldGroup:
-    case FldAlphanumeric:
-    case FldAlphaEdited:
-    case FldLiteralA:
-      retval = *reinterpret_cast<char *>(data);
-      break;
-
-    case FldFloat:
-      {
-      memcpy(&retval, data, length);
-      break;
-      }
-
-    case FldNumericBinary:
-    case FldPacked:
-    case FldNumericBin5:
-    case FldNumericDisplay:
-    case FldNumericEdited:
-    case FldLiteralN:
-    case FldIndex:
-    case FldPointer:
-      retval = __gg__binary_value_from_qualified_field( &rdigits,
-                                                        field,
-                                                        field_o,
-                                                        field_s);
-      if( rdigits )
-        {
-        retval /= __gg__power_of_ten(rdigits);
-        }
-    default:
-      break;
-    }
-  return retval;
-  }
-
-extern "C"
 void
 __gg__assign_value_from_stack(cblc_field_t *dest, __int128 parameter)
   {
@@ -11660,372 +9677,10 @@ __gg__assign_value_from_stack(cblc_field_t *dest, __int128 parameter)
     }
   }
 
-extern "C"
-int
-__gg__literaln_alpha_compare(      char         *left_side,
-                             const cblc_field_t *right,
-                             size_t              offset,
-                             size_t              length,
-                             int                 flags)
-  {
-  int retval;
-  if( length == 0 )
-    {
-    length = right->capacity;
-    }
-
-  cbl_encoding_t right_encoding = right->encoding;
-  if( right->attr & hex_encoded_e )
-    {
-    right_encoding = iconv_CP1252_e;
-    }
-  retval = compare_strings(   left_side,
-                              strlen(left_side),
-                              false,
-                              reinterpret_cast<char *>((right->data + offset)),
-                              length,
-                              !!(flags & REFER_T_MOVE_ALL),
-                              right_encoding,
-                              right_encoding);
-  return retval;
-  }
+static std::set<void *> to_be_canceled;
 
 extern "C"
-int
-__gg__unstring( const cblc_field_t *id1,        // The string being unstring
-                size_t              id1_o,
-                size_t              id1_s,
-                size_t ndelimiteds,       // The number of DELIMITED entries
-                const char *all_flags,    // The number of ALL flags, one per ndelimiteds
-                size_t nreceivers,        // The number of DELIMITER receivers
-                cblc_field_t *id7,        // The index of characters, both for starting updated at end
-                size_t        id7_o,
-                size_t        id7_s,
-                cblc_field_t *id8,        // Count of the number of times identifier-4 was updated
-                size_t        id8_o,
-                size_t        id8_s)
-  {
-  // The names of the parameters are based on the ISO 1989:2014 specification.
-
-  // There are complexities because of figurative constants, including the
-  // LOW-VALUE figurative constant, which precludes the use of string
-  // operations that would be confused by embedded NUL characters.  Dammit.
-
-  // For each delimiter, there is an identifier-4 receiver that must be
-  // resolved.  Each might have an identifier-5 delimiter, and each might have
-  // an identifier-6 count.
-
-  // The delimiting strings; one per ndelimiteds
-  cblc_field_t **id2         = __gg__treeplet_1f;
-  const size_t        *id2_o = __gg__treeplet_1o;
-  const size_t        *id2_s = __gg__treeplet_1s;
-  // The delimited string; one per nreceiver
-  cblc_field_t **id4         = __gg__treeplet_2f;
-  const size_t        *id4_o = __gg__treeplet_2o;
-  const size_t        *id4_s = __gg__treeplet_2s;
-  // The delimiting string; one per receiver
-  cblc_field_t **id5         = __gg__treeplet_3f;
-  const size_t        *id5_o = __gg__treeplet_3o;
-  const size_t        *id5_s = __gg__treeplet_3s;
-  // The count of characters examined;  one per receiver
-  cblc_field_t **id6         = __gg__treeplet_4f;
-  const size_t        *id6_o = __gg__treeplet_4o;
-  const size_t        *id6_s = __gg__treeplet_4s;
-
-  // Initialize the state variables
-  int overflow = 0;
-  int tally = 0;
-  size_t pointer = 1;
-  size_t nreceiver;
-  size_t left=0;
-  size_t right=0;
-
-  std::u32string str_id1;
-  std::vector<std::u32string> delimiters;
-
-  const charmap_t *charmap_id1 = __gg__get_charmap(id1->encoding);
-  int stride_id1 = charmap_id1->stride();
-
-  if( id8  )
-    {
-    int rdigits;
-    tally = (int)__gg__binary_value_from_qualified_field(&rdigits,
-                                                         id8,
-                                                         id8_o,
-                                                         id8_s);
-    }
-
-  if( id7 )
-    {
-    int rdigits;
-    int p = (int)__gg__binary_value_from_qualified_field(&rdigits,
-                                                         id7,
-                                                         id7_o,
-                                                         id7_s);
-    if( p < 1 )
-      {
-      overflow = 1;
-      goto done;
-      }
-    pointer = p;
-    }
-
-  // As per the spec, if the string is zero-length; we are done.
-  if( id1_s == 0 )
-    {
-    goto done;
-    }
-
-  // As per the spec, we have an overflow condition if pointer is out of
-  // range:
-  if( pointer > id1_s/stride_id1 )
-    {
-    overflow = 1;
-    goto done;
-    }
-  // pointer is one-based throughout; don't forget that
-
-  /* I thought long and hard about converting things to UTF32 for UNSTRING. It
-     was not obviously necessary.  But, darn it all, sooner or later somebody
-     is going to demand UTF-8 capability and I can't think of any obvious way
-     of being able to handle multibyte codepoints as single characters without
-     doing something like converting to UTF32.  */
-
-  str_id1 = normalize_for_inspect_format_4( id1,
-                                            id1_o,
-                                            id1_s,
-                                            id1->encoding);
-  left = pointer-1;
-  right = str_id1.size();
-  if( ndelimiteds == 0 )
-    {
-    // There are no DELIMITED BY identifier-2 values, so we just peel off
-    // characters from identifier-1 and put them into each identifier-4:
-    for( size_t receiver=0; receiver<nreceivers; receiver++ )
-      {
-      if( left >= right )
-        {
-        // We have run out of input characters.
-        break;
-        }
-      // We will peel off enough characters to fit the receiving id4:
-      size_t id_4_size = id4_s[receiver]/stride_id1;
-      if( id4[receiver]->attr & separate_e )
-        {
-        // The receiver is NumericDisplay with a separate sign, so, as per
-        // the spec, we reduce the size by one character.
-        id_4_size = id4_s[receiver] - 1;
-        }
-
-      // Make sure id_4_size doesn't take us past the end of the universe
-      if( left + id_4_size > right )
-        {
-        id_4_size = right - left;
-        }
-
-      // Convert the specified str_id1 characters back to id1->encoding.
-      size_t bytes_converted;
-      const char *converted = __gg__iconverter(DEFAULT_32_ENCODING,
-                                               id1->encoding,
-                                               &str_id1[left],
-                                               (right-left)*width_of_utf32,
-                                               &bytes_converted );
-      char *duped = static_cast<char *>(__gg__memdup(converted, bytes_converted));
-      // Put the converted string into place:
-      __gg__field_from_string(id4[receiver],
-                        id4_o[receiver],
-                        id4_s[receiver],
-                        duped,
-                        bytes_converted);
-      free(duped);
-      // Update the state variables:
-      left += id_4_size;
-      pointer += id_4_size;
-      tally += 1;
-      }
-    goto done;
-    }
-
-  // Arriving here means there is some number of ndelimiteds
-
-  // Convert them to the same encoding as str_id1:
-  for( size_t i=0; i<ndelimiteds; i++ )
-    {
-    std::u32string delimiter
-        = normalize_for_inspect_format_4(id2[i],
-                                         id2_o[i],
-                                         id2_s[i],
-                                         id1->encoding);
-    delimiters.push_back(delimiter);
-    }
-
-  nreceiver = 0;
-  while( left < right )
-    {
-    // Starting at 'left', see if we can find any of the delimiters.  For each
-    // 'left' position, we look through all of the delimiters,
-
-    int    best_delimiter = -1;
-    size_t best_leftmost = right; // This is the location of the start of ALL
-    size_t best_location = right; // This is the location of the last of ALL
-    for( size_t i=0; i<ndelimiteds; i++ )
-      {
-      std::u32string str_id2 = delimiters[i];
-      size_t nfound = str_id1.find(str_id2, left);
-      if( nfound != std::u32string::npos )
-        {
-        // We found a delimiter
-        if( nfound > best_leftmost )
-          {
-          // This delimiter lives to the right of the best one we found so far.
-          // Ignore it, and proceed to the next delimiter.
-          continue;
-          }
-        // This delimiter is the leftmost we've seen so far:
-        best_delimiter = i;
-        best_leftmost  = nfound;
-        best_location  = nfound;
-
-        if( all_flags[i] == ascii_1 )
-          {
-          // This delimiter is flagged as ALL, so we need to see if we have
-          // a flock of them:
-          size_t next = nfound + str_id2.size() ;
-          while( str_id1.find(str_id2, next ) == next )
-            {
-            // We found another consecutive one at next:
-            best_location = next;
-            next += str_id2.size();
-            }
-          }
-        }
-      }
-
-    // If we've used up all receivers, we bail at this point
-    if( nreceiver >= nreceivers )
-      {
-      break;
-      }
-
-    if( best_delimiter == -1 )
-      {
-      // We were unable to find a delimiter, so we eat up the remainder
-      // of the sender:
-      best_leftmost = right;
-      best_location = right;
-      }
-
-    // Apply what we have learned to the next receiver:
-
-    size_t examined = best_leftmost - left;
-
-    // Convert the data from left to leftmost_delimiter back to encoding of
-    // id1:
-    size_t bytes_converted;
-    const char *converted = __gg__iconverter(
-                           DEFAULT_32_ENCODING,
-                           id1->encoding,
-                           &str_id1[left],
-                           (best_leftmost-left)*width_of_utf32,
-                           &bytes_converted );
-    char *duped = static_cast<char *>(__gg__memdup(converted, bytes_converted));
-    // Put the converted string into place:
-    __gg__field_from_string(id4[nreceiver],
-                      id4_o[nreceiver],
-                      id4_s[nreceiver],
-                      duped,
-                      bytes_converted);
-    free(duped);
-    // Update the left edge
-    left = best_location + (best_delimiter > -1
-                            ? delimiters[best_delimiter].size()
-                            : 0) ;
-    if( id5[nreceiver] )
-      {
-      // The caller wants to know what the delimiter was:
-      if( best_delimiter > -1 )
-        {
-        converted = __gg__iconverter(
-                             DEFAULT_32_ENCODING,
-                             id1->encoding,
-                             delimiters[best_delimiter].data(),
-                             delimiters[best_delimiter].size()*width_of_utf32,
-                             &bytes_converted );
-        duped = static_cast<char *>(__gg__memdup(converted, bytes_converted));
-        __gg__field_from_string(id5[nreceiver],
-                          id5_o[nreceiver],
-                          id5_s[nreceiver],
-                          duped,
-                          bytes_converted);
-        free(duped);
-        }
-      else
-        {
-        // We didn't find a delimiter
-        __gg__field_from_string(id5[nreceiver],
-                          id5_o[nreceiver],
-                          id5_s[nreceiver],
-                          "",
-                          0);
-        }
-      }
-
-    if( id6[nreceiver] )
-      {
-      __gg__int128_to_qualified_field(id6[nreceiver],
-                                      id6_o[nreceiver],
-                                      id6_s[nreceiver],
-                                      (__int128)examined,
-                                      0,
-                                      truncation_e,
-                                      NULL );
-      }
-
-    // Update the state variables:
-    tally += 1;
-    nreceiver += 1;
-    if( best_delimiter > -1  )
-      {
-      pointer = left+1 ;
-      }
-    }
-
-done:
-
-  if( id8 )
-    {
-    __gg__int128_to_qualified_field(id8,
-                                    id8_o,
-                                    id8_s,
-                                    (__int128)tally,
-                                    0,
-                                    truncation_e,
-                                    NULL );
-    }
-
-  if( id7 )
-    {
-    __gg__int128_to_qualified_field(id7,
-                                    id7_o,
-                                    id7_s,
-                                    (__int128)pointer,
-                                    0,
-                                    truncation_e,
-                                    NULL );
-    }
-
-  if( left < right )
-    {
-    overflow = 1;
-    }
-
-  return overflow;
-  }
-
-static std::set<size_t> to_be_canceled;
-
-extern "C"
-void __gg__to_be_canceled(size_t function_pointer)
+void __gg__to_be_canceled(void * function_pointer)
   {
   if( function_pointer )
     {
@@ -12034,19 +9689,9 @@ void __gg__to_be_canceled(size_t function_pointer)
   }
 
 extern "C"
-int __gg__is_canceled(size_t function_pointer)
+int __gg__is_canceled(void * function_pointer)
   {
-  int retval = 0;
-  std::set<size_t>::iterator it = to_be_canceled.find(function_pointer);
-  if( it == to_be_canceled.end() )
-    {
-    retval = 0;
-    }
-  else
-    {
-    retval = 1;
-    to_be_canceled.erase(it);
-    }
+  int retval = to_be_canceled.erase(function_pointer);
   return retval;
   }
 
@@ -12098,7 +9743,7 @@ struct cbl_exception_t {
 };
 
 /*
- * Compare the raised exception, cbl_exception_t, to the USE critera
+ * Compare the raised exception, cbl_exception_t, to the USE criteria
  * of a declarative, cbl_declarative_t.
  */
 static bool
@@ -12107,7 +9752,8 @@ match_declarative( bool enabled,
                    const cbl_declarative_t& dcl )
 {
   if( MATCH_DECLARATIVE && raised.type) {
-    warnx("match_declarative: checking:    ec %s vs. dcl %s (%s enabled and %s format_1)",
+    warnx("match_declarative: checking:    ec %s vs. dcl %s "
+          "(%s enabled and %s format_1)",
           local_ec_type_str(raised.type),
           local_ec_type_str(dcl.type),
           enabled? "is" : "not",
@@ -12158,7 +9804,8 @@ void open_syslog(int option, int facility)
   /* Avoid a NULL entry.  */
     static const char * const ident = "unnamed_COBOL_program";
 #endif
-    // TODO: Program to set option in library via command-line and/or environment.
+    // TODO: Program to set option in library via command-line and/or
+    // environment.
     //       Library listens to program, not to the environment.
     openlog(ident, option, facility);
     first_time = false;
@@ -12174,7 +9821,9 @@ void open_syslog(int option, int facility)
 static void
 default_exception_handler( ec_type_t ec )
 {
-  static const int priority = LOG_INFO, option = LOG_PERROR, facility = LOG_USER;
+  static const int priority = LOG_INFO;
+  static const int option   = LOG_PERROR;
+  static const int facility = LOG_USER;
   open_syslog(option, facility);
 
   ec_disposition_t disposition = ec_category_fatal_e;
@@ -12192,10 +9841,9 @@ default_exception_handler( ec_type_t ec )
     }
     /*
      * An enabled, unhandled fatal EC normally results in termination. But
-     * EC-I-O is a special case:
-     *   OPEN and CLOSE never result in termination.
-     *   A SELECT statement with FILE STATUS indicates the user will handle the error.
-     *   Only I/O statements are considered.
+     * EC-I-O is a special case becase a SELECT statement with FILE STATUS
+     * indicates the user will handle the error.
+     *
      * Declaratives are handled first.  We are in the default handler here,
      * which is reached only if no Declarative was matched.
      */
@@ -12208,9 +9856,7 @@ default_exception_handler( ec_type_t ec )
       case file_op_none:   // not an I/O statement
         break;
       case file_op_open:
-      case file_op_close:  // No OPEN/CLOSE results in a fatal error.
-        disposition = ec_category_none_e;
-        break;
+      case file_op_close:
       default:
         if( file.user_status ) {
           // Not fatal if FILE STATUS is part of the file's SELECT statement.
@@ -12221,6 +9867,21 @@ default_exception_handler( ec_type_t ec )
     } else {
       assert( ec_status.is_enabled() );
       assert( ec_status.is_enabled(ec) );
+    }
+
+    if( !filename && last_exception_call) {
+      char *callname = strdup(last_exception_call);
+      massert(callname);
+      char *p = callname+strlen(callname)-1;
+      while(p >= callname)
+        {
+        if( *p != ascii_space )
+          {
+          break;
+          }
+        *p-- = '\0';
+        }
+      filename = callname;
     }
 
     switch( disposition ) {
@@ -12265,10 +9926,44 @@ default_exception_handler( ec_type_t ec )
   }
 }
 
+static const ec_descr_t *
+ec_type_descr( ec_type_t type ) {
+  auto p = std::find( __gg__exception_table, __gg__exception_table_end, type );
+  return p == __gg__exception_table_end ? nullptr : &*p;
+}
+
+static ec_disposition_t
+ec_type_disposition( ec_type_t type ) {
+  auto p = ec_type_descr(type);
+  return p?  p->disposition : ec_category_none_e;
+}
+
+static bool
+ec_is_fatal( ec_type_t type ) {
+  ec_disposition_t disp = ec_type_disposition(type);
+
+  switch(disp) {
+  case ec_category_nonfatal_e:
+  case uc_category_nonfatal_e:
+    return false;
+  case ec_category_none_e:  // should be unreachable
+  case ec_category_fatal_e:
+  case ec_category_implementor_e:
+    break;
+  case uc_category_none_e:
+  case uc_category_fatal_e:
+  case uc_category_implementor_e:
+    if( MATCH_DECLARATIVE )
+      warnx("%s: %s is unimplemented", __func__, local_ec_type_str(type));
+    break;
+  }
+  return true;
+}
+
 /*
  * To reach the default handler, an EC must have effect and not have been
  * handled by program logic.  To have effect, it must have been enabled
- * explictly, or be of type EC-I-O.  An EC may be handled by the statement or
+ * explicitly, or be of type EC-I-O.  An EC may be handled by the statement or
  * by a Declarative.
  *
  * Any EC handled by statement's conditional clause (e.g. ON SIZE ERROR)
@@ -12344,16 +10039,22 @@ __gg__check_fatal_exception()
     case file_op_none:
       assert(false);
       abort();
-    case file_op_open: // implicit, no Declarative, no FILE STATUS, but ok
+    case file_op_open:
     case file_op_close:
-      ec_status.clear();
-      return;
     case file_op_start:
     case file_op_read:
     case file_op_write:
     case file_op_rewrite:
     case file_op_delete:
     case file_op_remove:
+      if( !ec_status.is_enabled() && !ec_is_fatal(ec) ) {
+        if( MATCH_DECLARATIVE )
+          warnx("%s: %s is not enabled and nonfatal",
+                __func__,
+                local_ec_type_str(ec));
+        ec_status.clear();
+        return;
+      }
       break;
     }
   } else {
@@ -12505,24 +10206,24 @@ __gg__match_exception( cblc_field_t *index )
 }
 
 static std::vector<void *>proc_signatures;
-static std::vector<void *>return_addresses;
+static std::vector<size_t>return_addresses;
 static std::vector<size_t>bookmarks;
 
 extern "C"
 void
 __gg__pseudo_return_push( void *proc_signature,
-                          void *return_address)
+                            size_t index)
   {
   proc_signatures.push_back(proc_signature);
-  return_addresses.push_back(return_address);
+  return_addresses.push_back(index);
   __gg__exit_address = proc_signature;
   }
 
 extern "C"
-void *
+size_t
 __gg__pseudo_return_pop()
   {
-  void *retval = return_addresses.back();
+  size_t retval = return_addresses.back();
 
   return_addresses.pop_back();
   proc_signatures.pop_back();
@@ -12575,15 +10276,13 @@ __gg__float128_from_location( const cblc_field_t *var,
     {
     case 4:
       {
-      retval = *reinterpret_cast<_Float32 *>(
-                                    const_cast<unsigned char *>(location));
+      retval = load_unaligned<_Float32>(location);
       break;
       }
 
     case 8:
       {
-      retval = *reinterpret_cast<_Float64 *>(
-                                    const_cast<unsigned char *>(location));
+      retval = load_unaligned<_Float64>(location);
       break;
       }
 
@@ -12634,7 +10333,7 @@ __gg__adjust_encoding(cblc_field_t *field)
   size_t nbytes;
   const char *converted = __gg__iconverter(DEFAULT_SOURCE_ENCODING,
                                            field->encoding,
-                                           PTRCAST(char, field->data),
+                                           as_chars( field->data),
                                            field->capacity,
                                            &nbytes);
   __gg__adjust_dest_size(field, nbytes);
@@ -12767,7 +10466,8 @@ __gg__func_exception_file(cblc_field_t      *dest,
     // This is where we process FUNCTION EXCEPTION-FILE <no parameter>
     if( !(last_exception_code & ec_io_e) )
       {
-      // There is no EC-I-O exception code, so we return two alphanumeric zeros.
+      // There is no EC-I-O exception code, so we return two alphanumeric
+      // zeros.
       strcpy(ach, "00");
       }
     else
@@ -12829,6 +10529,7 @@ __gg__set_exception_code(ec_type_t ec, int from_raise_statement)
     last_exception_paragraph      = NULL         ;
     last_exception_source_file    = NULL         ;
     last_exception_line_number    = 0            ;
+    last_exception_call           = NULL         ;
     last_exception_statement      = NULL         ;
     last_exception_file_operation = file_op_none ;
     last_exception_file_status    = FsSuccess    ;
@@ -12950,10 +10651,12 @@ __gg__is_float_infinite(const cblc_field_t *source, size_t offset)
   switch(source->capacity)
     {
     case 4:
-      retval = fpclassify(  *reinterpret_cast<_Float32*>(source->data+offset)) == FP_INFINITE;
+      retval = fpclassify(load_unaligned<_Float32>(source->data+offset))
+               == FP_INFINITE;
       break;
     case 8:
-      retval = fpclassify(  *reinterpret_cast<_Float64*>(source->data+offset)) == FP_INFINITE;
+      retval = fpclassify(load_unaligned<_Float64>(source->data+offset))
+               == FP_INFINITE;
       break;
     case 16:
       // retval = *(_Float128*)(source->data+offset) == INFINITY;
@@ -12982,7 +10685,8 @@ __gg__float32_from_128( const cblc_field_t *dest,
     }
   else
     {
-    *reinterpret_cast<_Float32 *>(dest->data+dest_offset) = (_Float32)value;
+    store_unaligned<_Float32>(dest->data+dest_offset,
+                               static_cast<_Float32>(value));
     }
   return retval;
   }
@@ -12995,14 +10699,15 @@ __gg__float32_from_64(  const cblc_field_t *dest,
                         size_t              source_offset)
   {
   int retval = 0;
-  _Float64 value = *reinterpret_cast<_Float64*>(source->data+source_offset);
+  _Float64 value = load_unaligned<_Float64>(source->data+source_offset);
   if( FP128_FUNC(fabs)(value) > GCOB_FP128_LITERAL (3.4028235E38) )
     {
     retval = 1;
     }
   else
     {
-    *reinterpret_cast<_Float32 *>(dest->data+dest_offset) = (_Float32)value;
+    store_unaligned<_Float32>(dest->data+dest_offset,
+                               static_cast<_Float32>(value));
     }
   return retval;
   }
@@ -13024,7 +10729,8 @@ __gg__float64_from_128( const cblc_field_t *dest,
     }
   else
     {
-    *reinterpret_cast<_Float64 *>(dest->data+dest_offset) = (_Float64)value;
+    store_unaligned<_Float64>(dest->data+dest_offset,
+                               static_cast<_Float64>(value));
     }
   return retval;
   }
@@ -13112,7 +10818,7 @@ __gg__codeset_figurative_constants()
   {
   // This routine gets called after the codeset has been changed
 
-  // __gg__data_space and __gg__data_zeros don't change because they are
+  // __gg__data_spaces and __gg__data_zeros don't change because they are
   // permanently encoded as iconv_CP1252_e.  These other three can be changed
   // as either compiler options or ALPHABET clauses.
   *__gg__data_low_values  = __gg__low_value_character;
@@ -13135,7 +10841,7 @@ __gg__get_figconst_data(const cblc_field_t *field)
       retval = __gg__data_zeros;
       break;
     case space_value_e  :
-      retval = __gg__data_space;
+      retval = __gg__data_spaces;
       break;
     case quote_value_e  :
       retval = __gg__data_quotes;
@@ -13292,17 +10998,28 @@ __gg__just_mangle_name( const cblc_field_t  *field,
   static char ach_unmangled[1024];
   static char ach_mangled[1024];
 
+
   assert(field);
   assert(field->data);
 
   size_t         length;
   length = field->capacity;
 
+  cbl_encoding_t encoding = field->encoding;
+  if( field->type == FldLiteralA )
+    {
+    // This is a little complicated.  FldLiteralA means somebody said
+    // CALL "LiteralName"m and we know that such things are in the
+    // display_encoding.  The parser assumes this, and so it doesn't set the
+    // encoding in the field, although it probably should.
+    encoding = DEFAULT_SOURCE_ENCODING;
+    }
+
   // We need ach_name to be in ASCII:
   size_t charsout;
-  const char *converted = __gg__iconverter(field->encoding,
+  const char *converted = __gg__iconverter(encoding,
                                            __gg__console_encoding,
-                                           PTRCAST(char, field->data),
+                                           as_chars( field->data),
                                            length,
                                            &charsout);
   memcpy(ach_name, converted, charsout);
@@ -13319,6 +11036,7 @@ __gg__just_mangle_name( const cblc_field_t  *field,
     {
     strcpy(ach_name, "<pointer>");
     }
+  length = strlen(ach_name);
 
   // At this point we have a null-terminated ascii function name.
 
@@ -13393,10 +11111,11 @@ __gg__function_handle_from_name(int                 program_id,
   size_t charsout;
   const char *converted = __gg__iconverter(field->encoding,
                                            DEFAULT_SOURCE_ENCODING,
-                                           PTRCAST(char, field->data + offset),
+                                           as_chars( field->data + offset),
                                            length,
                                            &charsout);
-  memcpy(ach_name, converted, length);
+  memcpy(ach_name, converted, charsout);
+  ach_name[charsout] = '\0';
   char *p = strchr(ach_name, ascii_space);
   if(p)
     {
@@ -13434,7 +11153,7 @@ __gg__function_handle_from_name(int                 program_id,
 
 extern "C"
 void
-__gg__variables_to_init(cblc_field_t *array[], const char *clear)
+__gg__variables_to_init(cblc_field_t *array[], const int flag_bits)
   {
   int i=0;
   for(;;)
@@ -13444,10 +11163,6 @@ __gg__variables_to_init(cblc_field_t *array[], const char *clear)
       {
       break;
       }
-    int flag_bits  = 0;
-    flag_bits     |=  clear
-                      ? DEFAULTBYTE_BIT + (*clear & DEFAULT_BYTE_MASK)
-                      : 0;
     __gg__initialize_variable_clean(field, flag_bits);
     }
   }
@@ -13570,7 +11285,8 @@ __gg__mirror_range( size_t         nrows,
                  source + left ,
                  right - left);
           left = right + subtable_rows * subtable_width;
-          // Set right to stride, in case this is the final 'subtable' iteration
+          // Set right to stride, in case this is the final 'subtable'
+          // iteration
           right = stride;
           }
 
@@ -13824,7 +11540,8 @@ __gg__allocate( cblc_field_t       *first,
         }
       else
         {
-        // This is ISO 2023 rule 8 (OPT_INIT if specified, otherwise defaultbyte, otherwise zero)")
+        // This is ISO 2023 rule 8 (OPT_INIT if specified, otherwise
+        // defaultbyte, otherwise zero)")
         if( default_byte >= 0 )
           {
           fill_char = default_byte;
@@ -13852,7 +11569,8 @@ __gg__allocate( cblc_field_t       *first,
   if( returning )
     {
     // 'returning' has to be a FldPointer variable; assign the retval to it.
-    *reinterpret_cast<unsigned char **>(returning->data + returning_offset) = retval;
+    store_unaligned<unsigned char *>(returning->data + returning_offset,
+                                    retval);
     }
   }
 
@@ -13893,7 +11611,8 @@ __gg__module_name(cblc_field_t *dest, module_type_t type)
     case module_activating_e:
     /* 5) If the ACTIVATING keyword is specified and the function is in a COBOL
     main program, then the returned value shall be a single space. The
-    implementor shall document how a main program is identified. If the function
+    implementor shall document how a main program is identified. If the
+    function
     is not specified in a main program, then the returned value is the name of
     the runtime element that activated the currently running runtime element.
     This may be by a CALL statement, an INVOKE statement, a function reference,
@@ -13935,7 +11654,8 @@ __gg__module_name(cblc_field_t *dest, module_type_t type)
 
     case module_current_e:
       // 7) If the CURRENT keyword is specified then the returned value is the
-      // name of the runtime element of the outermost program of the compilation
+      // name of the runtime element of the outermost program of the
+      // compilation
       // unit’s code that is currently running.
 
       // Look upward for our parent T.
@@ -13968,10 +11688,13 @@ __gg__module_name(cblc_field_t *dest, module_type_t type)
         if(    module_name_stack[i][0] == 'T'
             || module_name_stack[i][0] == 'N' )
           {
-          if( strlen(result) + module_name_stack[i].substr(1).length() + 4 > result_size)
+          if( strlen(result)
+              + module_name_stack[i].substr(1).length()
+              + 4 > result_size)
             {
             result_size *= 2;
-            result = static_cast<char *>(realloc(result, result_size));
+            result = static_cast<char *>(
+              checked_realloc(result, result_size));
             }
           strcat(result, module_name_stack[i].substr(1).c_str());
           strcat(result, ";");
@@ -14094,7 +11817,8 @@ __gg__set_exception_environment( uint64_t *ecs, uint64_t *dcls )
 	      static_cast<unsigned int>(ecs[0] / 3));
       }
       cbl_enabled_exceptions_t enabled;
-      enabled_ECs = enabled.decode( std::vector<uint64_t>(ecs_begin, ecs_end) );
+      enabled_ECs = enabled.decode(
+        std::vector<uint64_t>(ecs_begin, ecs_end) );
       if( MATCH_DECLARATIVE ) enabled_ECs.dump("set_exception_environment");
     }
   } else {
@@ -14132,18 +11856,18 @@ __gg__set_env_name( const cblc_field_t *var,
   {
   // implements DISPLAY UPON ENVIRONMENT-NAME
   free(sv_envname);
-  sv_envname = static_cast<char *>(malloc(length+1));
-  massert(sv_envname);
 
   // We need to convert the name to the console encoding:
   size_t charsout;
   const char *converted = __gg__iconverter(var->encoding,
                                            __gg__console_encoding,
-                                           PTRCAST(char, var->data+offset),
+                                           as_chars(var->data + offset),
                                            length,
                                            &charsout);
-  memcpy(sv_envname, converted, length);
-  sv_envname[length] = '\0';
+  sv_envname = static_cast<char *>(malloc(charsout + 1));
+  massert(sv_envname);
+  memcpy(sv_envname, converted, charsout);
+  sv_envname[charsout] = '\0';
   brute_force_trim(sv_envname, __gg__console_encoding);
   }
 
@@ -14187,31 +11911,19 @@ __gg__set_env_value(const cblc_field_t *value,
                     size_t              length )
   {
   // implements DISPLAY UPON ENVIRONMENT-VALUE
-  size_t value_length = length;
-
-  static size_t  val_length = 0;
-  static char   *val        = nullptr;
-  if( val_length < length+1 )
-    {
-    val_length = length+1;
-    val = static_cast<char *>(realloc(val, val_length));
-    }
-  massert(val);
-
-  memcpy(val, value->data+offset, value_length);
-  val[value_length] = '\0';
-
-  __gg__convert_encoding( val,
-                          value->encoding,
-                          __gg__console_encoding);
-
-
-  // Get rid of leading and trailing space characters
-  char *trimmed_val = brute_force_trim(val, __gg__console_encoding);
-
-  // And now, anticlimactically, set the variable:
   if( sv_envname )
     {
+    size_t nbytes;
+    char *val = __gg__iconverter(value->encoding,
+                                __gg__console_encoding,
+                                as_chars(value->data) + offset,
+                                length,
+                                &nbytes);
+
+    // Get rid of leading and trailing space characters
+    char *trimmed_val = brute_force_trim(val, __gg__console_encoding);
+
+    // And now, anticlimactically, set the variable:
     setenv(sv_envname, trimmed_val, 1);
     }
   }
@@ -14338,7 +12050,7 @@ __gg__refer_from_string(cblc_field_t *field,
   // might, or might not, be nul-terminated, and you don't want a
   // nul-terminator in the data of the target field.  For intermediates, the
   // string must be nul-terminated
-  charmap_t *charmap = __gg__get_charmap(field->encoding);
+  const charmap_t *charmap = __gg__get_charmap(field->encoding);
   if( field->attr & intermediate_e )
     {
     field_size = SSIZE_MAX;
@@ -14361,7 +12073,7 @@ __gg__refer_from_psz(cblc_field_t *field,
   {
   // 'string' has to be in the 'field' encoding. If the target is intermediate,
   // It has to be nul-terminated in the field's encoding.
-  charmap_t *charmap = __gg__get_charmap(field->encoding);
+  const charmap_t *charmap = __gg__get_charmap(field->encoding);
 
   if( field->attr & intermediate_e )
     {
@@ -14509,7 +12221,7 @@ convert_for_convert(      cbl_encoding_t dest_enc,
                           size_t        input_s,
                           size_t       *nbytes)
   {
-  // iconverter takes care of untranslateable characters.
+  // iconverter takes care of untranslatable characters.
   char *retval = __gg__miconverter(input->encoding,
                                    dest_enc,
                                    input->data + input_o,
@@ -14527,7 +12239,7 @@ __gg__convert(cblc_field_t *dest,
               int           /*source_format*/,
               int           dest_format)
   {
-  /* convert formulations: 
+  /* convert formulations:
    *  1. ANY to ALNUM HEX, or NAT HEX
    *  2. HEX to BYTE
    *  3. ALNUM to NAT, ALNUM HEX, or NAT HEX
@@ -14540,18 +12252,18 @@ __gg__convert(cblc_field_t *dest,
    *convert_any_e        = 0x03, // i.e., both
    *convert_byte_e       = 0x04,
    *convert_hex_e        = 0x08, // may be combined with alpha or national
-   *convert_just_bit_e   = 0x10, 
+   *convert_just_bit_e   = 0x10,
    *convert_just_e       = 0x18, // combined with HEX
-   *convert_rjust_bit_e  = 0x20, 
+   *convert_rjust_bit_e  = 0x20,
    *convert_rjust_e      = 0x38, // combined with JUSTIFY
    */
-  cbl_encoding_t tgt_enc = (dest_format & convert_nat_e) 
+  cbl_encoding_t tgt_enc = (dest_format & convert_nat_e)
                          ? __gg__national_encoding
                          : __gg__display_encoding;
   const charmap_t *charmap_tgt = __gg__get_charmap(tgt_enc);
 
   charmap_t *charmap_dest = __gg__get_charmap(dest->encoding);
-  
+
   if( dest_format & convert_hex_e )
     {
     size_t nbytes;
@@ -14642,6 +12354,14 @@ __gg__convert(cblc_field_t *dest,
     }
   }
 
+/*
+   gg_printf("Message: \n", NULL_TREE);
+   gg_call(VOID,
+          "__gg__show_int128",
+          value,
+          NULL_TREE);
+   gg_printf("\n", NULL_TREE);
+*/
 
 extern "C"
 __int128
@@ -14665,3 +12385,1222 @@ __gg__look_at_pointer(void *ptr)
   // See comment for __gg__look_at_int128
   return ptr;
   }
+
+extern "C"
+void
+__gg__show_int128(__int128 val)
+  {
+  if( val < 0 )
+    {
+    fprintf(stderr, "-");
+    val = -val;
+    }
+  char ach[128];
+  if(val == 0)
+    {
+    fprintf(stderr, "0");
+    return;
+    }
+  int index = 0;
+  while(val)
+    {
+    ach[index++] = '0' + val % 10;
+    val /= 10;
+    }
+  ach[index++] = '\0';
+  while( index > 0 )
+    {
+    fprintf(stderr, "%c", ach[--index]);
+    }
+  }
+
+extern "C"
+int
+__gg__compare_string_all(const unsigned char  *left,
+                               size_t          length_left,
+                               int             stride,
+                         const unsigned char  *right,
+                               size_t          length_right)
+  {
+  // "all" in the name is in the confusing COBOL sense, as in VALUE ALL "A".
+
+  // We are comparing the left data to the right data, where the right
+  // data is repeated as necessary to match the length of the left.
+
+  /* There are unanswered questions about display, versus national, and
+     how to handle different user-defined alphabets for display and national
+     and so on.  So, for now if the stride is one, we use the display
+     alphabet. */
+
+  int result = 0;
+  size_t index = 0;
+  if( stride == 1 )
+    {
+    while( index < length_left )
+      {
+      unsigned char ch_l = collated(left[index]);
+      unsigned char ch_r = collated(right[index % length_right]);
+
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        break;
+        }
+      index += 1;
+      }
+    }
+  else if ( stride == 2 )
+    {
+    length_left /= 2;
+    length_right /= 2;
+    while( index < length_left )
+      {
+      uint16_t ch_l = load_unaligned<uint16_t>(left + index * 2);
+      uint16_t ch_r = load_unaligned<uint16_t>(right
+                                               + (index % length_right) * 2);
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        break;
+        }
+      index += 1;
+      }
+    }
+  else
+    {
+    length_left /= 4;
+    length_right /= 4;
+    while( index < length_left )
+      {
+      uint32_t ch_l = load_unaligned<uint32_t>(left + index * 4);
+      uint32_t ch_r = load_unaligned<uint32_t>(right
+                                               + (index % length_right) * 4);
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        break;
+        }
+      index += 1;
+      }
+    }
+  return result;
+  }
+
+extern "C"
+int
+__gg__compare_string_1( const unsigned char  *left,
+                              size_t          length_left,
+                        const unsigned char  *right,
+                              size_t          length_right,
+                        const unsigned char  *char_space)
+  {
+  // This is the the routine that will probably do all of the real-world work,
+  // the following routines not withstanding.  It does single-byte comparisons
+  // through the collation table.
+  int result = 0;
+
+  size_t length = std::min(length_left, length_right);
+  size_t index = 0;
+  while( index < length )
+    {
+    unsigned char ch_l = collated(left[index]);
+    unsigned char ch_r = collated(right[index]);
+    if( ch_l != ch_r )
+      {
+      result =  ch_l < ch_r ? -1 : +1 ;
+      goto done;
+      }
+    index += 1;
+    }
+  if( result == 0 )
+    {
+    while( index < length_left )
+      {
+      unsigned char ch_l = collated(left[index]);
+      if( ch_l != *char_space )
+        {
+        result =  ch_l < *char_space ? -1 : +1 ;
+        goto done;
+        }
+      index += 1;
+      }
+    while( index < length_right )
+      {
+      unsigned char ch_r = collated(right[index]);
+      if( *char_space != ch_r )
+        {
+        result =  *char_space < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      index += 1;
+      }
+    }
+  done:
+  return result;
+  }
+
+#define ASCII_16 "                "
+#define ASCII_64    ASCII_16  ASCII_16  ASCII_16  ASCII_16
+#define ASCII_256   ASCII_64  ASCII_64  ASCII_64  ASCII_64
+#define ASCII_1024  ASCII_256 ASCII_256 ASCII_256 ASCII_256
+
+#define EBCDIC_16 "@@@@@@@@@@@@@@@@"
+#define EBCDIC_64    EBCDIC_16  EBCDIC_16  EBCDIC_16  EBCDIC_16
+#define EBCDIC_256   EBCDIC_64  EBCDIC_64  EBCDIC_64  EBCDIC_64
+#define EBCDIC_1024  EBCDIC_256 EBCDIC_256 EBCDIC_256 EBCDIC_256
+
+static const unsigned char  ascii_1024[1025] =  ASCII_1024;
+static const unsigned char ebcdic_1024[1025] = EBCDIC_1024;
+
+extern "C"
+int
+__gg__compare_string_1a(
+                   const unsigned char  *left,
+                         size_t          length_left,
+                   const unsigned char  *right,
+                         size_t          length_right,
+                   const unsigned char  *             )
+  {
+  // This is the rarely-seen, but simplest routine of all, comparing
+  // single-byte ASCII characters in the same encoding without fear or favor.
+  int result = 0;
+
+  size_t length = std::min(length_left, length_right);
+  result = memcmp(left, right, length);
+  if( result == 0 )
+    {
+    if( length < length_left ) // Right is shorter than Left
+      {
+      // We need to compare the trailing characters of left to inferred spaces
+      // on the right.
+      left += length;
+      length_left -= length;
+      while( length_left )
+        {
+        size_t this_time = std::min(1024UL, length_left);
+        result = memcmp(left, ascii_1024, this_time);
+        if( result )
+          {
+          break;
+          }
+        left += this_time;
+        length_left -= this_time;
+        }
+      }
+    else if( length < length_right ) // Left is shorter than Right
+      {
+      // We need to compare the trailing characters of left to inferred spaces
+      // on the right.
+      right += length;
+      length_right -= length;
+      while( length_right )
+        {
+        size_t this_time = std::min(1024UL, length_right);
+        result = memcmp(ascii_1024, right, this_time);
+        if( result )
+          {
+          break;
+          }
+        right += this_time;
+        length_right -= this_time;
+        }
+      }
+    }
+  return result;
+  }
+
+extern "C"
+int
+__gg__compare_string_1e(
+                   const unsigned char  *left,
+                         size_t          length_left,
+                   const unsigned char  *right,
+                         size_t          length_right,
+                         cbl_char_t      )
+  {
+  // This is the rarely-seen, but simplest routine of all, comparing
+  // single-byte EBCDIC characters in the same encoding without fear or favor.
+  int result = 0;
+
+  size_t length = std::min(length_left, length_right);
+  result = memcmp(left, right, length);
+  if( result == 0 )
+    {
+    if( length < length_left ) // Right is shorter than Left
+      {
+      // We need to compare the trailing characters of left to inferred spaces
+      // on the right.
+      left += length;
+      length_left -= length;
+      while( length_left )
+        {
+        size_t this_time = std::min(1024UL, length_left);
+        result = memcmp(left, ebcdic_1024, this_time);
+        if( result )
+          {
+          break;
+          }
+        left += this_time;
+        length_left -= this_time;
+        }
+      }
+    else if( length < length_right ) // Left is shorter than Right
+      {
+      // We need to compare the trailing characters of left to inferred spaces
+      // on the right.
+      right += length;
+      length_right -= length;
+      while( length_right )
+        {
+        size_t this_time = std::min(1024UL, length_right);
+        result = memcmp(ebcdic_1024, right, this_time);
+        if( result )
+          {
+          break;
+          }
+        right += this_time;
+        length_right -= this_time;
+        }
+      }
+    }
+  return result;
+  }
+
+extern "C"
+int
+__gg__compare_string_2(
+                   const unsigned char  *left,
+                         size_t          length_left,
+                   const unsigned char  *right,
+                         size_t          length_right,
+                   const unsigned char  *char_space)
+  {
+  // This compares two-byte character strings.  It theoretically does it
+  // through a collation table.  We haven't implemented that yet.  So, this
+  // routine attempts to use the existing collation table for values less
+  // than 256.  It's an unsatisfactory kludge.
+
+  bool is_little_endian = *char_space != 0;
+
+  int result = 0;
+
+  size_t length = std::min(length_left, length_right);
+  size_t index = 0;
+  while( index < length )
+    {
+    size_t index_l;
+    size_t index_r;
+    if( is_little_endian )
+      {
+      index_l = 256*left[index+1]  + left[index+0];
+      index_r = 256*right[index+1] + right[index+0];
+      }
+    else
+      {
+      index_l = 256*left[index+0]  + left[index+1];
+      index_r = 256*right[index+0] + right[index+1];
+      }
+
+    index_l %= 256;
+    index_r %= 256;
+
+    uint32_t ch_l = collated(index_l);
+    uint32_t ch_r = collated(index_r);
+    if( ch_l != ch_r )
+      {
+      result =  ch_l < ch_r ? -1 : +1 ;
+      goto done;
+      }
+    index += 2;
+    }
+  while( index < length_left )
+    {
+    size_t index_l;
+    if( is_little_endian )
+      {
+      index_l = 256*left[index+1]  + left[index+0];
+      }
+    else
+      {
+      index_l = 256*left[index+0]  + left[index+1];
+      }
+    index_l %= 256;
+    uint32_t ch_l = collated(index_l);
+    if( ch_l != ascii_space )
+      {
+      result =  ch_l < ascii_space ? -1 : +1 ;
+      goto done;
+      }
+    index += 2;
+    }
+  while( index < length_right )
+    {
+    size_t index_r;
+    if( is_little_endian )
+      {
+      index_r = 256*right[index+1]  + right[index+0];
+      }
+    else
+      {
+      index_r = 256*right[index+0]  + right[index+1];
+      }
+    index_r %= 256;
+    uint32_t ch_r = collated(index_r);
+    if( ascii_space != ch_r )
+      {
+      result =  ascii_space < ch_r ? -1 : +1 ;
+      goto done;
+      }
+    index += 2;
+    }
+  done:
+  return result;
+  }
+
+extern "C"
+int
+__gg__compare_string_2a(
+                   const unsigned char  *left,
+                         size_t          length_left,
+                   const unsigned char  *right,
+                         size_t          length_right,
+                   const char           *char_space)
+  {
+  // This compares two-byte character strings.
+  int result = 0;
+
+  length_left/=2;
+  length_left*=2;
+  length_right/=2;
+  length_right*=2;
+
+  size_t length = std::min(length_left, length_right);
+  size_t index = 0;
+
+  // The two-byte characters and the two-byte char_space are in the same
+  // encoding.  We need to know if it is big- or little-endian, so that we can
+  // do the comparison in a numerically valid way:
+
+  static const int stride = 2;
+  if( *char_space )
+    {
+    // We know that the space encodes as U+0020, so if the first byte is non-
+    // zero, this must a little-endian encoding:
+
+    while( index < length )
+      {
+      // Compare the high bytes
+      uint8_t ch_l;
+      uint8_t ch_r;
+
+      ch_l =  left[index+1];
+      ch_r = right[index+1];
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      // And then compare the low bytes
+      ch_l =  left[index];
+      ch_r = right[index];
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      index += stride;
+      }
+    // Arriving here means the common strings are the same.  We need to check
+    // the longer against spaces.
+
+    while( index < length_left )
+      {
+      uint8_t ch_l;
+      ch_l = left[index+1];
+      if( ch_l != char_space[1] )
+        {
+        result =  ch_l < char_space[1] ? -1 : +1 ;
+        goto done;
+        }
+      ch_l = left[index];
+      if( ch_l != char_space[0] )
+        {
+        result =  ch_l < char_space[0] ? -1 : +1 ;
+        goto done;
+        }
+      index += stride;
+      }
+    while( index < length_right )
+      {
+      uint8_t ch_r;
+      ch_r = right[index+1];
+      if( char_space[1] != ch_r )
+        {
+        result =  char_space[1] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      ch_r = right[index];
+      if( char_space[0] != ch_r )
+        {
+        result =  char_space[0] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      index += stride;
+      }
+    }
+  else
+    {
+    // This is a big-endian encoding, so we can just look at the bytes in
+    // order.
+    while( index < length )
+      {
+      uint8_t ch_l;
+      uint8_t ch_r;
+      ch_l =  left[index];
+      ch_r = right[index];
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      index += 1;
+      }
+    // Arriving here means the common parts of the strings are the same, and so
+    // we have to compare the longer against spaces
+    while( index < length_left )
+      {
+      uint8_t ch_l;
+      ch_l = left[index++];
+      if( ch_l != char_space[0] )
+        {
+        result =  ch_l < char_space[0] ? -1 : +1 ;
+        goto done;
+        }
+      ch_l = left[index++];
+      if( ch_l != char_space[1] )
+        {
+        result =  ch_l < char_space[1] ? -1 : +1 ;
+        goto done;
+        }
+      }
+    while( index < length_right )
+      {
+      uint8_t ch_r;
+      ch_r = right[index++];
+      if( char_space[0] != ch_r )
+        {
+        result =  char_space[0] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      ch_r = right[index++];
+      if( char_space[1] != ch_r )
+        {
+        result =  char_space[1] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      }
+    }
+  done:
+  return result;
+  }
+
+extern "C"
+int
+__gg__compare_string_4(
+                   const unsigned char  *left,
+                         size_t          length_left,
+                   const unsigned char  *right,
+                         size_t          length_right,
+                   const unsigned char  *char_space)
+  {
+  // This compares four-byte character strings.  It theoretically does it
+  // through a collation table.  We haven't implemented that yet.  So, this
+  // routine attempts to use the existing collation table for values less
+  // than 256.  It's an unsatisfactory kludge.
+
+  bool is_little_endian = *char_space != 0;
+
+  int result = 0;
+
+  size_t length = std::min(length_left, length_right);
+  size_t index = 0;
+  while( index < length )
+    {
+    size_t index_l;
+    size_t index_r;
+    if( is_little_endian )
+      {
+      index_l =  16777216*left[index+3]
+                +   65536*left[index+2]
+                +     256*left[index+1]
+                +         left[index+0];
+      index_r =  16777216*right[index+3]
+                +   65536*right[index+2]
+                +     256*right[index+1]
+                +         right[index+0];
+      }
+    else
+      {
+      index_l =  16777216*left[index+0]
+                +   65536*left[index+1]
+                +     256*left[index+2]
+                +         left[index+3];
+      index_r =  16777216*right[index+0]
+                +   65536*right[index+2]
+                +     256*right[index+3]
+                +         right[index+0];
+      }
+
+    index_l %= 256;
+    index_r %= 256;
+
+    uint32_t ch_l = collated(index_l);
+    uint32_t ch_r = collated(index_r);
+    if( ch_l != ch_r )
+      {
+      result =  ch_l < ch_r ? -1 : +1 ;
+      goto done;
+      }
+    index += 2;
+    }
+  while( index < length_left )
+    {
+    size_t index_l;
+    if( is_little_endian )
+      {
+      index_l =  16777216*left[index+3]
+                +   65536*left[index+2]
+                +     256*left[index+1]
+                +         left[index+0];
+      }
+    else
+      {
+      index_l =  16777216*left[index+0]
+                +   65536*left[index+1]
+                +     256*left[index+2]
+                +         left[index+3];
+      }
+    index_l %= 256;
+    uint32_t ch_l = collated(index_l);
+    if( ch_l != ascii_space )
+      {
+      result =  ch_l < ascii_space ? -1 : +1 ;
+      goto done;
+      }
+    index += 2;
+    }
+  while( index < length_right )
+    {
+    size_t index_r;
+    if( is_little_endian )
+      {
+      index_r =  16777216*right[index+3]
+                +   65536*right[index+2]
+                +     256*right[index+1]
+                +         right[index+0];
+      }
+    else
+      {
+      index_r =  16777216*right[index+0]
+                +   65536*right[index+1]
+                +     256*right[index+2]
+                +         right[index+3];
+      }
+    index_r %= 256;
+    uint32_t ch_r = collated(index_r);
+    if( ascii_space != ch_r )
+      {
+      result =  ascii_space < ch_r ? -1 : +1 ;
+      goto done;
+      }
+    index += 2;
+    }
+  done:
+  return result;
+  }
+
+extern "C"
+int
+__gg__compare_string_4a(
+                   const unsigned char  *left,
+                         size_t          length_left,
+                   const unsigned char  *right,
+                         size_t          length_right,
+                   const char           *char_space)
+  {
+  // This compares four-byte character strings.
+  int result = 0;
+
+  length_left/=4;
+  length_left*=4;
+  length_right/=4;
+  length_right*=4;
+
+  size_t length = std::min(length_left, length_right);
+  size_t index = 0;
+
+  // The two-byte characters and the two-byte char_space are in the same
+  // encoding.  We need to know if it is big- or little-endian, so that we can
+  // do the comparison in a numerically valid way:
+
+  static const int stride = 4;
+  if( *char_space )
+    {
+    // We know that the space encodes as U+0020, so if the first byte is non-
+    // zero, this must a little-endian encoding:
+
+    while( index < length )
+      {
+      // Compare the high bytes down to the low bytes
+      uint8_t ch_l;
+      uint8_t ch_r;
+
+      ch_l =  left[index+3];
+      ch_r = right[index+3];
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      ch_l =  left[index+2];
+      ch_r = right[index+2];
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      ch_l =  left[index+1];
+      ch_r = right[index+1];
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      // And then compare the low bytes
+      ch_l =  left[index];
+      ch_r = right[index];
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      index += stride;
+      }
+    // Arriving here means the common strings are the same.  We need to check
+    // the longer against spaces.
+
+    while( index < length_left )
+      {
+      uint8_t ch_l;
+      ch_l = left[index+3];
+      if( ch_l != char_space[3] )
+        {
+        result =  ch_l < char_space[3] ? -1 : +1 ;
+        goto done;
+        }
+      ch_l = left[index+2];
+      if( ch_l != char_space[2] )
+        {
+        result =  ch_l < char_space[2] ? -1 : +1 ;
+        goto done;
+        }
+      ch_l = left[index+1];
+      if( ch_l != char_space[1] )
+        {
+        result =  ch_l < char_space[1] ? -1 : +1 ;
+        goto done;
+        }
+      ch_l = left[index];
+      if( ch_l != char_space[0] )
+        {
+        result =  ch_l < char_space[0] ? -1 : +1 ;
+        goto done;
+        }
+      index += stride;
+      }
+    while( index < length_right )
+      {
+      uint8_t ch_r;
+      ch_r = right[index+3];
+      if( char_space[3] != ch_r )
+        {
+        result =  char_space[1] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      ch_r = right[index+2];
+      if( char_space[2] != ch_r )
+        {
+        result =  char_space[1] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      ch_r = right[index+1];
+      if( char_space[1] != ch_r )
+        {
+        result =  char_space[1] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      ch_r = right[index];
+      if( char_space[0] != ch_r )
+        {
+        result =  char_space[0] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      index += stride;
+      }
+    }
+  else
+    {
+    // This is a big-endian encoding, so we can just look at the bytes in
+    // order.
+    while( index < length )
+      {
+      uint8_t ch_l;
+      uint8_t ch_r;
+      ch_l =  left[index];
+      ch_r = right[index];
+      if( ch_l != ch_r )
+        {
+        result =  ch_l < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      index += 1;
+      }
+    // Arriving here means the common parts of the strings are the same, and so
+    // we have to compare the longer against spaces
+    while( index < length_left )
+      {
+      uint8_t ch_l;
+      ch_l = left[index++];
+      if( ch_l != char_space[0] )
+        {
+        result =  ch_l < char_space[0] ? -1 : +1 ;
+        goto done;
+        }
+      ch_l = left[index++];
+      if( ch_l != char_space[1] )
+        {
+        result =  ch_l < char_space[1] ? -1 : +1 ;
+        goto done;
+        }
+      if( ch_l != char_space[2] )
+        {
+        result =  ch_l < char_space[2] ? -1 : +1 ;
+        goto done;
+        }
+      if( ch_l != char_space[3] )
+        {
+        result =  ch_l < char_space[3] ? -1 : +1 ;
+        goto done;
+        }
+      }
+    while( index < length_right )
+      {
+      uint8_t ch_r;
+      ch_r = right[index++];
+      if( char_space[0] != ch_r )
+        {
+        result =  char_space[0] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      ch_r = right[index];
+      if( char_space[1] != ch_r )
+        {
+        result =  char_space[1] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      if( char_space[2] != ch_r )
+        {
+        result =  char_space[2] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      if( char_space[3] != ch_r )
+        {
+        result =  char_space[3] < ch_r ? -1 : +1 ;
+        goto done;
+        }
+      index += stride;
+      }
+    }
+  done:
+  return result;
+  }
+
+extern "C"
+int
+__gg_compare_string_different(const unsigned char  *left,
+                                    size_t          length_left,
+                                    cbl_encoding_t  encoding_left,
+                              const unsigned char  *right,
+                                    size_t          length_right,
+                                    cbl_encoding_t  encoding_right)
+  {
+  /*  This routine converts the right string to the left encoding, and then
+      compares the results.  In the case where the left side is the
+      __gg__display_encoding, the `collated` table is used. */
+  int result = 0;
+  const charmap_t *charmap = __gg__get_charmap(encoding_left);
+  int stride = charmap->stride();
+  unsigned char ach_space[4];
+  char ch = ascii_space;
+  size_t nbytes;
+  char *converted;
+  converted = __gg__iconverter(DEFAULT_SOURCE_ENCODING,
+                               encoding_left,
+                               &ch,
+                               1,
+                               &nbytes);
+  memcpy(ach_space, converted, nbytes);
+  converted = __gg__iconverter(encoding_right,
+                               encoding_left,
+                               right,
+                               length_right,
+                              &nbytes);
+  switch(stride)
+    {
+    case 1:
+      {
+      result = __gg__compare_string_1a(left,
+                                       length_left,
+                                       as_unsigned_chars(converted),
+                                       nbytes,
+                                       NULL);
+      break;
+      }
+
+    case 2:
+      {
+      result = __gg__compare_string_2( left,
+                                       length_left,
+                                       as_unsigned_chars(converted),
+                                       nbytes,
+                                       ach_space);
+      break;
+      }
+
+    case 4:
+      {
+      result = __gg__compare_string_4( left,
+                                       length_left,
+                                       as_unsigned_chars(converted),
+                                       nbytes,
+                                       ach_space);
+      break;
+      }
+    }
+  return result;
+  }
+
+extern "C"
+int
+__gg__compare_numeric_all(__int128 value,
+                          size_t digits,
+                          const unsigned char *string,
+                          size_t length,
+                          cbl_encoding_t encoding )
+  {
+  int result = 0;
+  char ach[128];
+  unsigned char *pach = as_unsigned_chars(ach);
+  if( digits == 0 )
+    {
+    // Go for maximum length:
+    __gg__binary_to_string_ascii(ach, 38, value);
+    // Find the first non-zero digit:
+    while(digits > 1)
+      {
+      if( *pach != ascii_zero )
+        {
+        break;
+        }
+      digits -= 1;
+      pach += 1;
+      }
+    }
+  else
+    {
+    __gg__binary_to_string_ascii(ach, digits, value);
+    }
+
+  // we need to convert the ascii numeric string to the same encoding as the
+  // string:
+  const charmap_t *charmap = __gg__get_charmap(encoding);
+  size_t nbytes;
+  const char *converted = __gg__iconverter( DEFAULT_SOURCE_ENCODING,
+                                            encoding ,
+                                            ach,
+                                            digits,
+                                            &nbytes);
+  for(size_t i=0; i<digits; i++)
+    {
+    cbl_char_t chl = charmap->getch(converted, i);
+    cbl_char_t chr = charmap->getch(string, i % length);
+
+    chl = collated(chl);
+    chr = collated(chr);
+    if( chl > chr )
+      {
+      result = 1;
+      break;
+      }
+    else if( chl < chr )
+      {
+      result = -1;
+      break;
+      }
+    }
+  return result;
+  }
+
+extern "C"
+int
+__gg__compare_binary_to_string( __int128 value,
+                                size_t digits,
+                                char *right,
+                                size_t length,
+                                cbl_encoding_t encoding)
+  {
+  int result = 0;
+  char ach[128];
+  unsigned char *pach = as_unsigned_chars(ach);
+  if( digits == 0 )
+    {
+    // Go for maximum length:
+    __gg__binary_to_string_ascii(ach, 38, value);
+    // Find the first non-zero digit:
+    while(digits > 1)
+      {
+      if( *pach != ascii_zero )
+        {
+        break;
+        }
+      digits -= 1;
+      pach += 1;
+      }
+    }
+  else
+    {
+    __gg__binary_to_string_ascii(ach, digits, value);
+    }
+  // ach is digits characters in DEFAULT_SOURCE_ENCODING.
+  // we need to convert the ascii numeric string to the right-side encoding
+  const charmap_t *charmap = __gg__get_charmap(encoding);
+  unsigned char ach_space[4];
+  char ch = ascii_space;
+  size_t nbytes;
+  char *converted;
+  converted = __gg__iconverter(DEFAULT_SOURCE_ENCODING,
+                               encoding,
+                               &ch,
+                               1,
+                               &nbytes);
+  memcpy(ach_space, converted, nbytes);
+  converted = __gg__iconverter( DEFAULT_SOURCE_ENCODING,
+                                      encoding ,
+                                      ach,
+                                      digits,
+                                      &nbytes);
+  switch( charmap->stride() )
+    {
+    case 1:
+      result = __gg__compare_string_1(
+                             as_unsigned_chars(converted),
+                             nbytes,
+                             as_unsigned_chars(right),
+                             length,
+                             ach_space);
+      break;
+    case 2:
+      result = __gg__compare_string_2(
+                             as_unsigned_chars(converted),
+                             nbytes,
+                             as_unsigned_chars(right),
+                             length,
+                             ach_space);
+      break;
+    case 4:
+      result = __gg__compare_string_4(
+                             as_unsigned_chars(converted),
+                             nbytes,
+                             as_unsigned_chars(right),
+                             length,
+                             ach_space);
+      break;
+    }
+  return result;
+  }
+
+extern "C"
+void
+__gg__set_exception_call(const cblc_field_t *field,
+                         size_t offset)
+  {
+  size_t nbytes;
+  cbl_encoding_t enc = field->encoding;
+  if( field->encoding == custom_encoding_e)
+    {
+    enc = DEFAULT_SOURCE_ENCODING;
+    }
+  last_exception_call = __gg__miconverter(enc,
+                                          DEFAULT_SOURCE_ENCODING,
+                                          field->data + offset,
+                                          field->capacity,
+                                          &nbytes);
+  }
+
+extern "C"
+int
+__gg__prohibited(const cblc_field_t *field, __int128 value)
+  {
+  // This is the test for ROUNDING MODE PROHIBITED.  Returns non-zero when
+  // value can't fit into field.
+  int retval;
+  if(value < 0)
+    {
+    value = -value;
+    }
+  char ach[128];
+  int index = 0;
+  // Convert value to a stream of "digits", low-order first.
+  while(value)
+    {
+    ach[index++] = value % 10;
+    value /= 10;
+    }
+  if( index <= field->digits )
+    {
+    // We peeled off index digits, and value can hold that many.
+    retval = 0;
+    }
+  else
+    {
+    // we know that index is greater than field->digits
+
+    // Count the number of low-order zeroes in ach[].
+    int trailing_zeroes = 0;
+    for(int i=0; i<index; i++)
+      {
+      if( ach[i] )
+        {
+        break;
+        }
+      trailing_zeroes += 1;
+      }
+    // Subtracting trailing zeroes from index gives us the number of non-zero
+    // digits in ach:
+    index -= trailing_zeroes;
+    if( index <= field->digits )
+      {
+      retval = 0;
+      }
+    else
+      {
+      retval = 1;
+      }
+    }
+  return retval;
+  }
+
+struct move_stash_slot
+  {
+  unsigned char *data;
+  size_t capacity;
+
+  move_stash_slot()
+    : data(NULL),
+      capacity(0)
+    {
+    }
+  };
+
+struct move_stash_pool
+  {
+  std::vector<move_stash_slot> slots;
+  size_t depth;
+
+  move_stash_pool()
+    : depth(0)
+    {
+    }
+
+  ~move_stash_pool()
+    {
+    for( move_stash_slot &slot : slots )
+      {
+      std::free(slot.data);
+      }
+    }
+  };
+
+static thread_local move_stash_pool move_stashes;
+
+static size_t
+next_stash_capacity(size_t old_capacity, size_t required)
+  {
+  size_t capacity = old_capacity ? old_capacity : 1024;
+
+  while( capacity < required )
+    {
+    if( capacity > std::numeric_limits<size_t>::max() / 2 )
+      {
+      capacity = required;
+      break;
+      }
+
+    capacity *= 2;
+    }
+
+  return capacity;
+  }
+
+extern "C" unsigned char *
+__gg__move_stash_acquire(size_t size)
+  {
+  // Return a non-null pointer even for a zero-byte request.
+  size_t required = size ? size : 1;
+  size_t slot_number = move_stashes.depth++;
+
+  if( slot_number == move_stashes.slots.size() )
+    {
+    move_stashes.slots.emplace_back();
+    }
+
+  move_stash_slot &slot = move_stashes.slots[slot_number];
+
+  if( slot.capacity < required )
+    {
+    size_t new_capacity =
+                       next_stash_capacity(slot.capacity, required);
+    void *new_data = std::realloc(slot.data, new_capacity);
+
+    if( !new_data )
+      {
+      std::abort();
+      }
+
+    slot.data = static_cast<unsigned char *>(new_data);
+    slot.capacity = new_capacity;
+    }
+
+  return slot.data;
+  }
+
+extern "C" void
+__gg__move_stash_release(const unsigned char *stash)
+  {
+  if( move_stashes.depth == 0 )
+    {
+    std::abort();
+    }
+
+  const move_stash_slot &slot =
+                    move_stashes.slots[move_stashes.depth-1];
+
+  // This also verifies that acquisition and release remain LIFO.
+  if( slot.data != stash )
+    {
+    std::abort();
+    }
+
+  move_stashes.depth -= 1;
+  }
+

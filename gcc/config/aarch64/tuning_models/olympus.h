@@ -95,7 +95,7 @@ static sve_vec_cost olympus_sve_vector_cost =
 
 static aarch64_scalar_vec_issue_info olympus_scalar_issue_info =
 {
-  4, /* loads_stores_per_cycle  */
+  6, /* loads_stores_per_cycle  */
   2, /* stores_per_cycle  */
   8, /* general_ops_per_cycle  */
   0, /* fp_simd_load_general_ops  */
@@ -105,7 +105,7 @@ static aarch64_scalar_vec_issue_info olympus_scalar_issue_info =
 static aarch64_advsimd_vec_issue_info olympus_advsimd_issue_info =
 {
   {
-    3, /* loads_stores_per_cycle  */
+    6, /* loads_stores_per_cycle  */
     2, /* stores_per_cycle  */
     6, /* general_ops_per_cycle  */
     0, /* fp_simd_load_general_ops  */
@@ -120,7 +120,7 @@ static aarch64_sve_vec_issue_info olympus_sve_issue_info =
 {
   {
     {
-      3, /* loads_stores_per_cycle  */
+      6, /* loads_stores_per_cycle  */
       2, /* stores_per_cycle  */
       6, /* general_ops_per_cycle  */
       0, /* fp_simd_load_general_ops  */
@@ -545,9 +545,9 @@ static struct tune_params olympus_tunings =
   }, /* memmov_cost.  */
   10, /* issue_rate  */
   AARCH64_FUSE_NEOVERSE_BASE, /* fusible_ops  */
-  "32:16",	/* function_align.  */
-  "4",		/* jump_align.  */
-  "32:16",	/* loop_align.  */
+  "32:25",	/* function_align.  */
+  "16:9",		/* jump_align.  */
+  "64:33:32",	/* loop_align.  */
   8,	/* int_reassoc_width.  */
   6,	/* fp_reassoc_width.  */
   4,	/* fma_reassoc_width.  */
@@ -560,7 +560,8 @@ static struct tune_params olympus_tunings =
    | AARCH64_EXTRA_TUNE_CSE_SVE_VL_CONSTANTS
    | AARCH64_EXTRA_TUNE_MATCHED_VECTOR_THROUGHPUT
    | AARCH64_EXTRA_TUNE_AVOID_PRED_RMW
-   | AARCH64_EXTRA_TUNE_DISPATCH_SCHED),	/* tune_flags.  */
+   | AARCH64_EXTRA_TUNE_DISPATCH_SCHED
+   | AARCH64_EXTRA_TUNE_NARROW_GP_WRITES),	/* tune_flags.  */
   &olympus_prefetch_tune,
   AARCH64_LDP_STP_POLICY_ALWAYS,   /* ldp_policy_model.  */
   AARCH64_LDP_STP_POLICY_ALWAYS,   /* stp_policy_model.  */

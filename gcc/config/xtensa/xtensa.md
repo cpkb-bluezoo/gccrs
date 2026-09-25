@@ -693,15 +693,25 @@
   DONE;
 })
 
-(define_insn "negsf2"
+(define_insn_and_split "negsf2"
   [(set (match_operand:SF 0 "register_operand")
         (neg:SF (match_operand:SF 1 "register_operand")))
    (clobber (match_scratch:SI 2))]
   "TARGET_HARD_FLOAT"
   {@ [cons: =0, 1, =2; attrs: type, length]
-     [D, D, &a; arith , 7] movi.n\t%2, 1\;slli\t%2, %2, 31\;add.n\t%0, %1, %2
+     [D, D, &a; arith , 7] #
      [f, f,  X; farith, 3] neg.s\t%0, %1
   }
+  "&& reload_completed && REG_P (operands[2])"
+  [(set (match_dup 2)
+	(const_int 1))
+   (set (match_dup 2)
+	(ashift:SI (match_dup 2)
+		   (const_int 31)))
+   (set (subreg:SI (match_dup 0) 0)
+	(plus:SI (subreg:SI (match_dup 1) 0)
+		 (match_dup 2)))]
+  ""
   [(set_attr "mode" "SF")])
 
 
@@ -859,57 +869,22 @@
    (set_attr "mode"	"SI")
    (set_attr "length"	"3")])
 
-(define_insn_and_split "*splice_bits"
-  [(set (match_operand:SI 0 "register_operand" "=a")
-	(ior:SI (and:SI (match_operand:SI 1 "register_operand" "r")
-			(match_operand:SI 3 "const_int_operand" ""))
-		(and:SI (match_operand:SI 2 "register_operand" "r")
-			(match_operand:SI 4 "const_int_operand" ""))))]
-
-  "!optimize_debug && optimize
-   && INTVAL (operands[3]) + INTVAL (operands[4]) == -1
-   && (exact_log2 (INTVAL (operands[3]) + 1) > 16
-       || exact_log2 (INTVAL (operands[4]) + 1) > 16)"
-  "#"
-  "&& can_create_pseudo_p ()"
-  [(set (match_dup 5)
-	(ashift:SI (match_dup 1)
-		   (match_dup 4)))
-   (set (match_dup 6)
-	(lshiftrt:SI (match_dup 2)
-		     (match_dup 3)))
-   (set (match_dup 0)
-	(ior:SI (lshiftrt:SI (match_dup 5)
-			     (match_dup 4))
-		(ashift:SI (match_dup 6)
-			   (match_dup 3))))]
-{
-  int shift;
-  if (INTVAL (operands[3]) < 0)
-    {
-      rtx x;
-      x = operands[1], operands[1] = operands[2], operands[2] = x;
-      x = operands[3], operands[3] = operands[4], operands[4] = x;
-    }
-  shift = floor_log2 (INTVAL (operands[3]) + 1);
-  operands[3] = GEN_INT (shift);
-  operands[4] = GEN_INT (32 - shift);
-  operands[5] = gen_reg_rtx (SImode);
-  operands[6] = gen_reg_rtx (SImode);
-}
-  [(set_attr "type"	"arith")
-   (set_attr "mode"	"SI")
-   (set (attr "length")
-	(if_then_else (match_test "TARGET_DENSITY
-				   && (INTVAL (operands[3]) == 0x7FFFFFFF
-				       || INTVAL (operands[4]) == 0x7FFFFFFF)")
-		      (const_int 11)
-		      (const_int 12)))])
-
 
 ;; Zero-extend instructions.
 
-(define_insn "zero_extend<mode>si2"
+(define_expand "zero_extend<mode>si2"
+  [(set (match_operand:SI 0 "register_operand")
+	(zero_extend:SI (match_operand:HQI 1 "nonimmed_operand")))]
+  ""
+{
+  if (xtensa_expand_load_force_l32 (operands, SImode, <MODE>mode, true))
+    ;
+  else
+    emit_insn (gen_zero_extend<mode>si2_internal (operands[0], operands[1]));
+  DONE;
+})
+
+(define_insn "zero_extend<mode>si2_internal"
   [(set (match_operand:SI 0 "register_operand")
 	(zero_extend:SI (match_operand:HQI 1 "nonimmed_operand")))]
   ""
@@ -927,7 +902,9 @@
 	(sign_extend:SI (match_operand:HI 1 "register_operand" "")))]
   ""
 {
-  if (sext_operand (operands[1], HImode))
+  if (xtensa_expand_load_force_l32 (operands, SImode, HImode, false))
+    ;
+  else if (sext_operand (operands[1], HImode))
     emit_insn (gen_extendhisi2_internal (operands[0], operands[1]));
   else
     xtensa_extend_reg (operands[0], operands[1]);
@@ -949,7 +926,9 @@
 	(sign_extend:SI (match_operand:QI 1 "register_operand" "")))]
   ""
 {
-  if (TARGET_SEXT)
+  if (xtensa_expand_load_force_l32 (operands, SImode, QImode, false))
+    ;
+  else if (TARGET_SEXT)
     emit_insn (gen_extendqisi2_internal (operands[0], operands[1]));
   else
     xtensa_extend_reg (operands[0], operands[1]);
@@ -1100,7 +1079,35 @@
    (set_attr "mode"	"SI")
    (set_attr "length"	"6")])
 
-(define_insn "insvsi"
+(define_expand "insvsi"
+  [(set (zero_extract:SI (match_operand:SI 0 "register_operand")
+			 (match_operand:SI 1 "extui_fldsz_operand")
+			 (match_operand:SI 2 "const_int_operand"))
+	(match_operand:SI 3 "register_operand"))]
+  ""
+{
+  if (TARGET_DEPBITS)
+    emit_insn (gen_insvsi_internal (operands[0], operands[1], operands[2],
+				    operands[3]));
+  else
+    {
+      int fldsz = INTVAL (operands[1]), shift;
+      rtx temp = gen_reg_rtx (SImode), mask;
+      if (BITS_BIG_ENDIAN)
+	shift = (32 - (fldsz + INTVAL (operands[2]))) & 0x1f;
+      else
+	shift = INTVAL (operands[2]) & 0x1f;
+      mask = GEN_INT (((1 << fldsz) - 1) << shift);
+      emit_insn (shift ? gen_ashlsi3 (temp, operands[3], GEN_INT (shift))
+		       : gen_rtx_SET (temp, operands[3]));
+      emit_insn (gen_xorsi3 (temp, operands[0], temp));
+      emit_insn (gen_andsi3 (temp, temp, force_reg (SImode, mask)));
+      emit_insn (gen_xorsi3 (operands[0], operands[0], temp));
+    }
+  DONE;
+})
+
+(define_insn "insvsi_internal"
   [(set (zero_extract:SI (match_operand:SI 0 "register_operand" "+a")
 			 (match_operand:SI 1 "extui_fldsz_operand" "")
 			 (match_operand:SI 2 "const_int_operand" ""))
@@ -1221,7 +1228,7 @@
 
 (define_insn_and_split "movdi_internal"
   [(set (match_operand:DI 0 "nonimmed_operand")
-	(match_operand:DI 1 "move_operand"))]
+	(match_operand:DI 1 "move_int_operand"))]
   "register_operand (operands[0], DImode)
    || register_operand (operands[1], DImode)"
   {@ [cons: =0, 1; attrs: type, length]
@@ -1253,7 +1260,7 @@
 
 (define_insn "movsi_internal"
   [(set (match_operand:SI 0 "nonimmed_operand")
-	(match_operand:SI 1 "move_operand"))]
+	(match_operand:SI 1 "move_int_operand"))]
   "xtensa_valid_move (SImode, operands)"
   {@ [cons: =0, 1; attrs: type, length]
      [ D,  M; move , 2] movi.n\t%0, %x1
@@ -1292,13 +1299,15 @@
 	(match_operand:HI 1 "general_operand" ""))]
   ""
 {
+  if (xtensa_expand_load_force_l32 (operands, HImode, HImode, true))
+    DONE;
   if (xtensa_emit_move_sequence (operands, HImode))
     DONE;
 })
 
 (define_insn "movhi_internal"
   [(set (match_operand:HI 0 "nonimmed_operand")
-	(match_operand:HI 1 "move_operand"))]
+	(match_operand:HI 1 "move_int_operand"))]
   "xtensa_valid_move (HImode, operands)"
   {@ [cons: =0, 1; attrs: type, length]
      [ D,  M; move , 2] movi.n\t%0, %x1
@@ -1321,13 +1330,15 @@
 	(match_operand:QI 1 "general_operand" ""))]
   ""
 {
+  if (xtensa_expand_load_force_l32 (operands, QImode, QImode, true))
+    DONE;
   if (xtensa_emit_move_sequence (operands, QImode))
     DONE;
 })
 
 (define_insn "movqi_internal"
   [(set (match_operand:QI 0 "nonimmed_operand")
-	(match_operand:QI 1 "move_operand"))]
+	(match_operand:QI 1 "move_int_operand"))]
   "xtensa_valid_move (QImode, operands)"
   {@ [cons: =0, 1; attrs: type, length]
      [ D,  M; move , 2] movi.n\t%0, %x1
@@ -1382,15 +1393,13 @@
 	(match_operand:SF 1 "general_operand" ""))]
   ""
 {
-  if (!TARGET_CONST16 && !TARGET_AUTO_LITPOOLS && CONSTANT_P (operands[1]))
+  if (! satisfies_constraint_Gz (operands[1])
+      && ! satisfies_constraint_Gc (operands[1])
+      && !TARGET_CONST16 && !TARGET_AUTO_LITPOOLS && CONST_DOUBLE_P (operands[1]))
     operands[1] = force_const_mem (SFmode, operands[1]);
 
-  if ((!register_operand (operands[0], SFmode)
-       && !register_operand (operands[1], SFmode))
-      || (FP_REG_P (xt_true_regnum (operands[0]))
-	  && can_create_pseudo_p ()
-	  && (constantpool_mem_p (operands[1])
-	      || CONSTANT_P (operands[1]))))
+  if (! register_operand (operands[0], SFmode)
+      && ! register_operand (operands[1], SFmode))
     operands[1] = force_reg (SFmode, operands[1]);
 
   operands[1] = xtensa_copy_incoming_a7 (operands[1]);
@@ -1398,26 +1407,27 @@
 
 (define_insn "movsf_internal"
   [(set (match_operand:SF 0 "nonimmed_operand")
-	(match_operand:SF 1 "move_operand"))]
-  "((register_operand (operands[0], SFmode)
-     || register_operand (operands[1], SFmode))
-    && !(FP_REG_P (xt_true_regnum (operands[0]))
-	 && (constantpool_mem_p (operands[1]) || CONSTANT_P (operands[1]))))"
+	(match_operand:SF 1 "move_fp_operand"))]
+  "register_operand (operands[0], SFmode)
+   || register_operand (operands[1], SFmode)"
   {@ [cons: =0, 1; attrs: type, length]
-     [W, iF; move  , 6] const16\t%0, %t1\;const16\t%0, %b1
-     [a,  Y; load  , 3] movi\t%0, %y1
-     [a,  T; load  , 3] %v1l32r\t%0, %1
-     [D,  d; move  , 2] mov.n\t%0, %1
-     [a,  r; move  , 3] mov\t%0, %1
-     [f,  f; farith, 3] mov.s\t%0, %1
-     [f,  r; farith, 3] wfr\t%0, %1
-     [a,  f; farith, 3] rfr\t%0, %1
-     [D,  R; load  , 2] %v1l32i.n\t%0, %1
-     [a,  U; load  , 3] %v1l32i\t%0, %1
-     [f,  U; fload , 3] %v1lsi\t%0, %1
-     [R,  d; store , 2] %v0s32i.n\t%1, %0
-     [U,  r; store , 3] %v0s32i\t%1, %0
-     [U,  f; fstore, 3] %v0ssi\t%1, %0
+     [ D, Gz; move  , 2] movi.n\t%0, 0
+     [ a, Gz; move  , 3] movi\t%0, 0
+     [ f, Gc; farith, 3] const.s\t%0, %G1
+     [ W, iF; move  , 6] const16\t%0, %t1\;const16\t%0, %b1
+     [ a,  Y; load  , 3] movi\t%0, %y1
+     [ a,  T; load  , 3] %v1l32r\t%0, %1
+     [ D,  d; move  , 2] mov.n\t%0, %1
+     [ a,  r; move  , 3] mov\t%0, %1
+     [ f,  f; farith, 3] mov.s\t%0, %1
+     [ f,  r; farith, 3] wfr\t%0, %1
+     [ a,  f; farith, 3] rfr\t%0, %1
+     [ D,  R; load  , 2] %v1l32i.n\t%0, %1
+     [ a,  U; load  , 3] %v1l32i\t%0, %1
+     [*f,  U; fload , 3] %v1lsi\t%0, %1
+     [ R,  d; store , 2] %v0s32i.n\t%1, %0
+     [ U,  r; store , 3] %v0s32i\t%1, %0
+     [ U, *f; fstore, 3] %v0ssi\t%1, %0
   }
   [(set_attr "mode" "SF")])
 
@@ -1492,7 +1502,7 @@
 	(match_operand:DF 1 "general_operand" ""))]
   ""
 {
-  if (CONSTANT_P (operands[1]) && !TARGET_CONST16 && !TARGET_AUTO_LITPOOLS)
+  if (!TARGET_CONST16 && !TARGET_AUTO_LITPOOLS && CONST_DOUBLE_P (operands[1]))
     operands[1] = force_const_mem (DFmode, operands[1]);
 
   if (!register_operand (operands[0], DFmode)
@@ -1504,7 +1514,7 @@
 
 (define_insn_and_split "movdf_internal"
   [(set (match_operand:DF 0 "nonimmed_operand")
-	(match_operand:DF 1 "move_operand"))]
+	(match_operand:DF 1 "move_fp_operand"))]
   "register_operand (operands[0], DFmode)
    || register_operand (operands[1], DFmode)"
   {@ [cons: =0, 1; attrs: type, length]
@@ -1611,7 +1621,7 @@
 		[(match_operand:SI 1 "register_operand" "r")
 		 (ashift:SI (match_operand:SI 2 "register_operand" "r")
 			    (const_int 3))]))]
-  "!optimize_debug && optimize"
+  ""
 {
   switch (GET_CODE (operands[3]))
     {

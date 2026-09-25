@@ -58,6 +58,9 @@ along with GCC; see the file COPYING3.  If not see
 #define TARGET_SALT		(XTENSA_MARCH_EARLIEST >= 270000)
 
 #define TARGET_DEFAULT (MASK_SERIALIZE_VOLATILE)
+#define TARGET_HARD_FLOAT_CONST_S					\
+		(TARGET_HARD_FLOAT_DIV || TARGET_HARD_FLOAT_RECIP	\
+		 || TARGET_HARD_FLOAT_SQRT || TARGET_HARD_FLOAT_RSQRT)
 
 #ifndef HAVE_AS_TLS
 #define HAVE_AS_TLS 0
@@ -254,6 +257,10 @@ along with GCC; see the file COPYING3.  If not see
 }
 #define ADJUST_REG_ALLOC_ORDER xtensa_adjust_reg_alloc_order ()
 
+/* Tell IRA to use the order we define rather than messing it up with its
+   own cost calculations.  */
+#define HONOR_REG_ALLOC_ORDER 1
+
 /* Internal macros to classify a register number.  */
 
 /* 16 address registers + fake registers */
@@ -317,6 +324,13 @@ along with GCC; see the file COPYING3.  If not see
    call an address kept in a register.  */
 #define NO_FUNCTION_CSE 1
 
+/* Named address spaces.  */
+#define ADDR_SPACE_FORCE_L32 1
+#define REGISTER_TARGET_PRAGMAS()					\
+  do {									\
+    c_register_addr_space ("__force_l32", ADDR_SPACE_FORCE_L32);	\
+  } while (0)
+
 /* Xtensa processors have "register windows".  GCC does not currently
    take advantage of the possibility for variable-sized windows; instead,
    we use a fixed window size of 8.  */
@@ -333,6 +347,9 @@ along with GCC; see the file COPYING3.  If not see
      ((unsigned) ((IN) - GP_REG_FIRST) < WINDOW_SIZE)) ?		\
     (IN) + WINDOW_SIZE : (IN)) : (IN))
 
+#define LOCAL_REGNO(REGNO)						\
+  (TARGET_WINDOWED_ABI && GP_REG_P (REGNO)				\
+   && ((unsigned) ((REGNO) - GP_REG_FIRST) < WINDOW_SIZE))
 
 /* Define the classes of registers for register constraints in the
    machine description.  */

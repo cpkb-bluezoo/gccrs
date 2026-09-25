@@ -575,7 +575,7 @@ remap_type_1 (tree type, copy_body_data *id)
       gcc_unreachable ();
     }
 
-  /* All variants of type share the same size, so use the already remaped data.  */
+  /* All variants of type share the same size, so use the already remapped data.  */
   if (TYPE_MAIN_VARIANT (new_tree) != new_tree)
     {
       tree s = TYPE_SIZE (type);
@@ -1475,8 +1475,8 @@ copy_tree_body_r (tree *tp, int *walk_subtrees, void *data)
 	      for (int i = 0; i <= 4; i++)
 		walk_tree (&TREE_VEC_ELT (TREE_PURPOSE (t), i),
 			   copy_tree_body_r, id, NULL);
-	      if (TREE_VEC_ELT (TREE_PURPOSE (t), 5))
-		remap_block (&TREE_VEC_ELT (TREE_PURPOSE (t), 5), id);
+	      if (OMP_ITERATOR_BLOCK (TREE_PURPOSE (t)))
+		remap_block (&OMP_ITERATOR_BLOCK (TREE_PURPOSE (t)), id);
 	      walk_tree (&TREE_VALUE (t), copy_tree_body_r, id, NULL);
 	    }
 	}
@@ -3372,7 +3372,9 @@ copy_debug_stmts (copy_body_data *id)
     return;
 
   for (gdebug *stmt : id->debug_stmts)
-    copy_debug_stmt (stmt, id);
+    /* But avoid re-processing debug stmts that have been elided.  */
+    if (gimple_bb (stmt))
+      copy_debug_stmt (stmt, id);
 
   id->debug_stmts.release ();
 }
@@ -3758,9 +3760,11 @@ initialize_inlined_parameters (copy_body_data *id, gimple *stmt,
   gcc_assert (fn != current_function_decl);
   if (p)
     {
-      /* No static chain?  Seems like a bug in tree-nested.cc.  */
-      gcc_assert (static_chain);
-
+      /* Calling a function that requires a static chain directly
+	 without setting up the static chain has undefined behavior
+	 at run-time.  */
+      if (!static_chain)
+	static_chain = null_pointer_node;
       setup_one_parameter (id, p, static_chain, fn, bb, &vars);
     }
 
@@ -3970,7 +3974,7 @@ declare_return_variable (copy_body_data *id, tree return_slot, tree modify_dest,
 }
 
 /* Determine if the function can be copied.  If so return NULL.  If
-   not return a string describng the reason for failure.  */
+   not return a string describing the reason for failure.  */
 
 const char *
 copy_forbidden (struct function *fun)
@@ -4148,7 +4152,7 @@ inline_forbidden_p (tree fndecl)
     return true;
 
   /* Next, walk the statements of the function looking for
-     constraucts we can't handle, or are non-optimal for inlining.  */
+     constructs we can't handle, or are non-optimal for inlining.  */
   hash_set<tree> visited_nodes;
   memset (&wi, 0, sizeof (wi));
   wi.info = (void *) fndecl;
@@ -4543,7 +4547,7 @@ estimate_num_insns (gimple *stmt, eni_weights *weights)
 	    if ((node = cgraph_node::get (decl))
 		&& node->definition)
 	      ;
-	    /* For buitins that are likely expanded to nothing or
+	    /* For builtins that are likely expanded to nothing or
 	       inlined do not account operand costs.  */
 	    else if (is_simple_builtin (decl))
 	      return 0;
@@ -6055,24 +6059,6 @@ copy_gimple_seq_and_replace_locals (gimple_seq seq)
 }
 
 
-/* Allow someone to determine if SEARCH is a child of TOP from gdb.  */
-
-static tree
-debug_find_tree_1 (tree *tp, int *walk_subtrees ATTRIBUTE_UNUSED, void *data)
-{
-  if (*tp == data)
-    return (tree) data;
-  else
-    return NULL;
-}
-
-DEBUG_FUNCTION bool
-debug_find_tree (tree top, tree search)
-{
-  return walk_tree_without_duplicates (&top, debug_find_tree_1, search) != 0;
-}
-
-
 /* Declare the variables created by the inliner.  Add all the variables in
    VARS to BIND_EXPR.  */
 
@@ -6149,7 +6135,7 @@ copy_decl_for_dup_finish (copy_body_data *id, tree decl, tree copy)
   return copy;
 }
 
-/* Create a new VAR_DECL that is indentical in all respect to DECL except that
+/* Create a new VAR_DECL that is identical in all respect to DECL except that
    DECL can be either a VAR_DECL, a PARM_DECL or RESULT_DECL.  The original
    DECL must come from ID->src_fn and the copy will be part of ID->dst_fn.  */
 

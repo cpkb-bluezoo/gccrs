@@ -164,7 +164,7 @@ namespace __detail
 }
 /// @endcond
 
-  /** Return an object that asssociates timezone info with a local time.
+  /** Return an object that associates timezone info with a local time.
    *
    * A `chrono::local_time` object has no timezone associated with it. This
    * function creates an object that allows formatting a `local_time` as
@@ -884,11 +884,13 @@ namespace __format
       static constexpr const _CharT* _S_minus_empty_spec = _S_chars + 17;
       static constexpr const _CharT* _S_empty_spec = _S_chars + 18;
 
+    public:
       [[__gnu__::__always_inline__]]
-      static _Runtime_format_string<_CharT>
+      static _Dynamic_format_string<_CharT>
       _S_empty_fs()
-      { return _Runtime_format_string<_CharT>(_S_empty_spec); }
+      { return _Dynamic_format_string<_CharT>(_S_empty_spec); }
 
+    protected:
       static constexpr const _CharT* _S_weekdays[]
       {
 	_GLIBCXX_WIDEN("Sunday"),
@@ -1313,6 +1315,8 @@ namespace __format
 
 	  int __yi = (int)__y;
 	  const bool __is_neg = __yi < 0;
+	  // _GLIBCXX_RESOLVE_LIB_DEFECTS
+	  // 3831. Two-digit formatting of negative year is ambiguous
 	  __yi = __builtin_abs(__yi);
 	  int __ci = __yi / 100;
 	  // For floored division -123//100 is -2 and -100//100 is -1
@@ -1321,7 +1325,7 @@ namespace __format
 
 	  if (__conv != 'y' && __ci >= 100) [[unlikely]]
 	    {
-	      using _FmtStr = _Runtime_format_string<_CharT>;
+	      using _FmtStr = _Dynamic_format_string<_CharT>;
 	      __string_view __fs = _S_minus_empty_spec + !__is_neg;
 	      __out = std::format_to(std::move(__out), _FmtStr(__fs),
 				     __conv == 'C' ? __ci : __yi);
@@ -1360,7 +1364,7 @@ namespace __format
 
 	  if (__mi >= 100 || __di >= 100) [[unlikely]]
 	    {
-	      using _FmtStr = _Runtime_format_string<_CharT>;
+	      using _FmtStr = _Dynamic_format_string<_CharT>;
 	      __string_view __fs = _GLIBCXX_WIDEN("{:02d}/{:02d}/{:02d}");
 	      __out = std::format_to(std::move(__out), _FmtStr(__fs),
 				     __mi, __di, __yi);
@@ -1416,7 +1420,7 @@ namespace __format
 
 	  if (__yi >= 10000 || __mi >= 100 || __di >= 100) [[unlikely]]
 	    {
-	      using _FmtStr = _Runtime_format_string<_CharT>;
+	      using _FmtStr = _Dynamic_format_string<_CharT>;
 	      __string_view __fs
 		= _GLIBCXX_WIDEN("-{:04d}-{:02d}-{:02d}") + !__is_neg;
 	      __out = std::format_to(std::move(__out), _FmtStr(__fs),
@@ -1652,6 +1656,7 @@ namespace __format
 	}
 
       template<typename _OutIter, typename _FormatContext>
+	[[__gnu__::__always_inline__]]
 	_OutIter
 	_M_subsecs(const _ChronoData<_CharT>& __t, _OutIter __out,
 		   _FormatContext& __ctx) const
@@ -1706,7 +1711,7 @@ namespace __format
 	  else if (__prec > __max_prec)
 	    __prec = __max_prec;
 
-	  using _FmtStr = _Runtime_format_string<_CharT>;
+	  using _FmtStr = _Dynamic_format_string<_CharT>;
 	  return std::format_to(__out, _FmtStr(_GLIBCXX_WIDEN("{0:0{1}}")),
 				__subs, __prec);
 	}
@@ -2110,7 +2115,7 @@ namespace __format
 	 _Out
 	 _M_format_to(_Out __out, const chrono::sys_info& __si) const
 	 {
-	   using _FmtStr = _Runtime_format_string<_CharT>;
+	   using _FmtStr = _Dynamic_format_string<_CharT>;
 	   // n.b. only decimal separator is locale dependent for specifiers
 	   // used below, as sys_info uses seconds and minutes duration, the
 	   // output is locale-independent.
@@ -3356,7 +3361,7 @@ namespace __format
 		__cd._M_zone_abbrev = *__zt._M_abbrev;
 	      else
 		{
-		  // TODO: use resize_for_override
+		  // TODO: use resize_and_overwrite
 		  __zone_store.resize(__zt._M_abbrev->size());
 		  auto& __ct = use_facet<ctype<_CharT>>(_M_f._M_locale(__fc));
 		  __ct.widen(__zt._M_abbrev->data(),
@@ -3605,6 +3610,49 @@ namespace __detail
 	}
     }
 
+  // Format into a stack buffer via std::format_to_n with the empty
+  // chrono-spec (_S_empty_fs), then write through __ostream_insert.
+  // The empty spec lets each formatter use its __defSpec, producing
+  // output equivalent to the corresponding operator<<.
+  // _BufSize allows per-type tuning of the stack buffer size.
+  template<size_t _BufSize, typename _CharT, typename _Traits,
+	   typename _Arg, typename... _OptLocale>
+    inline basic_ostream<_CharT, _Traits>&
+    __chrono_write(basic_ostream<_CharT, _Traits>& __os,
+		   const _Arg& __arg, const _OptLocale&... __loc)
+    {
+      static_assert(sizeof...(_OptLocale) <= 1);
+      constexpr auto __fs
+	= __format::__formatter_chrono<_CharT>::_S_empty_fs;
+      constexpr size_t __bufsize = _BufSize;
+      _CharT __buf[__bufsize];
+      auto __res = std::format_to_n(__buf, __bufsize, __loc...,
+				    __fs(), __arg);
+
+      if (static_cast<size_t>(__res.size) <= __bufsize) [[likely]]
+	return std::__ostream_insert(__os, __buf, __res.size);
+
+      auto __s = std::format(__loc..., __fs(), __arg);
+      return std::__ostream_insert(__os, __s.data(), __s.size());
+    }
+
+  // Wrapper around __chrono_write that skips locale for
+  // integer-second time_points.
+  template<size_t _BufSize, typename _TimePoint, typename _CharT,
+	   typename _Traits>
+    [[__gnu__::__always_inline__]]
+    inline basic_ostream<_CharT, _Traits>&
+    __chrono_write_time(basic_ostream<_CharT, _Traits>& __os,
+			const _TimePoint& __tp)
+    {
+      using _Duration = typename _TimePoint::duration;
+      if constexpr (!treat_as_floating_point_v<typename _Duration::rep>
+		    && _Duration::period::den == 1)
+	return __chrono_write<_BufSize>(__os, __tp);
+      else
+	return __chrono_write<_BufSize>(__os, __tp, __os.getloc());
+    }
+
 } // namespace __detail
 /// @endcond
 
@@ -3626,16 +3674,7 @@ namespace __detail
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const day& __d)
-    {
-      using _Ctx = __format::__format_context<_CharT>;
-      using _Str = basic_string_view<_CharT>;
-      _Str __s = _GLIBCXX_WIDEN("{:02d} is not a valid day");
-      if (__d.ok())
-	__s = __s.substr(0, 6);
-      auto __u = (unsigned)__d;
-      __os << std::vformat(__s, make_format_args<_Ctx>(__u));
-      return __os;
-    }
+    { return __detail::__chrono_write<32>(__os, __d); }
 
   template<typename _CharT, typename _Traits,
 	   typename _Alloc = allocator<_CharT>>
@@ -3654,20 +3693,7 @@ namespace __detail
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const month& __m)
-    {
-      using _Ctx = __format::__format_context<_CharT>;
-      using _Str = basic_string_view<_CharT>;
-      _Str __s = _GLIBCXX_WIDEN("{:L%b}{} is not a valid month");
-      if (__m.ok())
-	__os << std::vformat(__os.getloc(), __s.substr(0, 6),
-			     make_format_args<_Ctx>(__m));
-      else
-	{
-	  auto __u = (unsigned)__m;
-	  __os << std::vformat(__s.substr(6), make_format_args<_Ctx>(__u));
-	}
-      return __os;
-    }
+    { return __detail::__chrono_write<64>(__os, __m, __os.getloc()); }
 
   template<typename _CharT, typename _Traits,
 	   typename _Alloc = allocator<_CharT>>
@@ -3686,20 +3712,7 @@ namespace __detail
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const year& __y)
-    {
-      using _Ctx = __format::__format_context<_CharT>;
-      using _Str = basic_string_view<_CharT>;
-      _Str __s = _GLIBCXX_WIDEN("-{:04d} is not a valid year");
-      if (__y.ok())
-	__s = __s.substr(0, 7);
-      int __i = (int)__y;
-      if (__i >= 0) [[likely]]
-	__s.remove_prefix(1);
-      else
-	__i = -__i;
-      __os << std::vformat(__s, make_format_args<_Ctx>(__i));
-      return __os;
-    }
+    { return __detail::__chrono_write<32>(__os, __y); }
 
   template<typename _CharT, typename _Traits,
 	   typename _Alloc = allocator<_CharT>>
@@ -3718,20 +3731,7 @@ namespace __detail
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const weekday& __wd)
-    {
-      using _Ctx = __format::__format_context<_CharT>;
-      using _Str = basic_string_view<_CharT>;
-      _Str __s = _GLIBCXX_WIDEN("{:L%a}{} is not a valid weekday");
-      if (__wd.ok())
-	__os << std::vformat(__os.getloc(), __s.substr(0, 6),
-			     make_format_args<_Ctx>(__wd));
-      else
-	{
-	  auto __c = __wd.c_encoding();
-	  __os << std::vformat(__s.substr(6), make_format_args<_Ctx>(__c));
-	}
-      return __os;
-    }
+    { return __detail::__chrono_write<64>(__os, __wd, __os.getloc()); }
 
   template<typename _CharT, typename _Traits,
 	   typename _Alloc = allocator<_CharT>>
@@ -3751,55 +3751,18 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const weekday_indexed& __wdi)
-    {
-      // The standard says to format wdi.weekday() and wdi.index() using
-      // either "{:L}[{}]" or "{:L}[{} is not a valid index]". The {:L} spec
-      // means to format the weekday using ostringstream, so just do that.
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      __os2 << __wdi.weekday();
-      const auto __i = __wdi.index();
-      basic_string_view<_CharT> __s
-	= _GLIBCXX_WIDEN("[ is not a valid index]");
-      __os2 << __s[0];
-      __os2 << std::format(_GLIBCXX_WIDEN("{}"), __i);
-      if (__i >= 1 && __i <= 5)
-	__os2 << __s.back();
-      else
-	__os2 << __s.substr(1);
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __wdi, __os.getloc()); }
 
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const weekday_last& __wdl)
-    {
-      // As above, just write straight to a stringstream, as if by "{:L}[last]"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      __os2 << __wdl.weekday() << _GLIBCXX_WIDEN("[last]");
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __wdl, __os.getloc()); }
 
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const month_day& __md)
-    {
-      // As above, just write straight to a stringstream, as if by "{:L}/{}"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      __os2 << __md.month();
-      if constexpr (is_same_v<_CharT, char>)
-	__os2 << '/';
-      else
-	__os2 << L'/';
-      __os2 << __md.day();
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __md, __os.getloc()); }
 
   template<typename _CharT, typename _Traits,
 	   typename _Alloc = allocator<_CharT>>
@@ -3821,67 +3784,24 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const month_day_last& __mdl)
-    {
-      // As above, just write straight to a stringstream, as if by "{:L}/last"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      __os2 << __mdl.month() << _GLIBCXX_WIDEN("/last");
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __mdl, __os.getloc()); }
 
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const month_weekday& __mwd)
-    {
-      // As above, just write straight to a stringstream, as if by "{:L}/{:L}"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      __os2 << __mwd.month();
-      if constexpr (is_same_v<_CharT, char>)
-	__os2 << '/';
-      else
-	__os2 << L'/';
-      __os2 << __mwd.weekday_indexed();
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __mwd, __os.getloc()); }
 
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const month_weekday_last& __mwdl)
-    {
-      // As above, just write straight to a stringstream, as if by "{:L}/{:L}"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      __os2 << __mwdl.month();
-      if constexpr (is_same_v<_CharT, char>)
-	__os2 << '/';
-      else
-	__os2 << L'/';
-      __os2 << __mwdl.weekday_last();
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __mwdl, __os.getloc()); }
 
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const year_month& __ym)
-    {
-      // As above, just write straight to a stringstream, as if by "{}/{:L}"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      __os2 << __ym.year();
-      if constexpr (is_same_v<_CharT, char>)
-	__os2 << '/';
-      else
-	__os2 << L'/';
-      __os2 << __ym.month();
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __ym, __os.getloc()); }
 
   template<typename _CharT, typename _Traits,
 	   typename _Alloc = allocator<_CharT>>
@@ -3903,14 +3823,7 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const year_month_day& __ymd)
-    {
-      using _Ctx = __format::__format_context<_CharT>;
-      using _Str = basic_string_view<_CharT>;
-      _Str __s = _GLIBCXX_WIDEN("{:%F} is not a valid date");
-      __os << std::vformat(__ymd.ok() ? __s.substr(0, 5) : __s,
-			   make_format_args<_Ctx>(__ymd));
-      return __os;
-    }
+    { return __detail::__chrono_write<64>(__os, __ymd); }
 
   template<typename _CharT, typename _Traits,
 	   typename _Alloc = allocator<_CharT>>
@@ -3933,66 +3846,30 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const year_month_day_last& __ymdl)
-    {
-      // As above, just write straight to a stringstream, as if by "{}/{:L}"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      __os2 << __ymdl.year();
-      if constexpr (is_same_v<_CharT, char>)
-	__os2 << '/';
-      else
-	__os2 << L'/';
-      __os2 << __ymdl.month_day_last();
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __ymdl, __os.getloc()); }
 
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const year_month_weekday& __ymwd)
-    {
-      // As above, just write straight to a stringstream, as if by
-      // "{}/{:L}/{:L}"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      _CharT __slash;
-      if constexpr (is_same_v<_CharT, char>)
-	__slash = '/';
-      else
-	__slash = L'/';
-      __os2 << __ymwd.year() << __slash << __ymwd.month() << __slash
-	    << __ymwd.weekday_indexed();
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __ymwd, __os.getloc()); }
 
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const year_month_weekday_last& __ymwdl)
-    {
-      // As above, just write straight to a stringstream, as if by
-      // "{}/{:L}/{:L}"
-      basic_stringstream<_CharT> __os2;
-      __os2.imbue(__os.getloc());
-      _CharT __slash;
-      if constexpr (is_same_v<_CharT, char>)
-	__slash = '/';
-      else
-	__slash = L'/';
-      __os2 << __ymwdl.year() << __slash << __ymwdl.month() << __slash
-	    << __ymwdl.weekday_last();
-      __os << __os2.view();
-      return __os;
-    }
+    { return __detail::__chrono_write<128>(__os, __ymwdl, __os.getloc()); }
 
   template<typename _CharT, typename _Traits, typename _Duration>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const hh_mm_ss<_Duration>& __hms)
     {
-      return __os << format(__os.getloc(), _GLIBCXX_WIDEN("{:L%T}"), __hms);
+      if constexpr (!treat_as_floating_point_v<typename _Duration::rep>
+		    && _Duration::period::den == 1)
+	return __detail::__chrono_write<64>(__os, __hms);
+      else
+	return __detail::__chrono_write<64>(__os, __hms, __os.getloc());
     }
 
 #if _GLIBCXX_USE_CXX11_ABI || ! _GLIBCXX_USE_DUAL_ABI
@@ -4000,40 +3877,20 @@ namespace __detail
   template<typename _CharT, typename _Traits>
     basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const sys_info& __i)
-    {
-      return __os << std::format(__os.getloc(), _GLIBCXX_WIDEN("{}"), __i);
-    }
+    { return __detail::__chrono_write<128>(__os, __i); }
 
   /// Writes a local_info object to an ostream in an unspecified format.
   template<typename _CharT, typename _Traits>
     basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const local_info& __li)
-    {
-      __os << __format::_Separators<_CharT>::_S_squares()[0];
-      if (__li.result == local_info::unique)
-	__os << __li.first;
-      else
-	{
-	  if (__li.result == local_info::nonexistent)
-	    __os << _GLIBCXX_WIDEN("nonexistent");
-	  else
-	    __os << _GLIBCXX_WIDEN("ambiguous");
-	  __os << _GLIBCXX_WIDEN(" local time between ") << __li.first;
-	  __os << _GLIBCXX_WIDEN(" and ") << __li.second;
-	}
-      __os << __format::_Separators<_CharT>::_S_squares()[1];
-      return __os;
-    }
+    { return __detail::__chrono_write<256>(__os, __li); }
 
   template<typename _CharT, typename _Traits, typename _Duration,
 	   typename _TimeZonePtr>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const zoned_time<_Duration, _TimeZonePtr>& __t)
-    {
-      __os << format(__os.getloc(), _GLIBCXX_WIDEN("{:L%F %T %Z}"), __t);
-      return __os;
-    }
+    { return __detail::__chrono_write_time<128>(__os, __t); }
 #endif
 
   template<typename _CharT, typename _Traits, typename _Duration>
@@ -4042,18 +3899,12 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const sys_time<_Duration>& __tp)
-    {
-      __os << std::format(__os.getloc(), _GLIBCXX_WIDEN("{:L%F %T}"), __tp);
-      return __os;
-    }
+    { return __detail::__chrono_write_time<64>(__os, __tp); }
 
   template<typename _CharT, typename _Traits>
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os, const sys_days& __dp)
-    {
-      __os << year_month_day{__dp};
-      return __os;
-    }
+    { return __detail::__chrono_write<32>(__os, __dp); }
 
   template<typename _CharT, typename _Traits, typename _Duration,
 	   typename _Alloc = allocator<_CharT>>
@@ -4087,10 +3938,7 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const utc_time<_Duration>& __t)
-    {
-      __os << std::format(__os.getloc(), _GLIBCXX_WIDEN("{:L%F %T}"), __t);
-      return __os;
-    }
+    { return __detail::__chrono_write_time<64>(__os, __t); }
 
   template<typename _CharT, typename _Traits, typename _Duration,
 	   typename _Alloc = allocator<_CharT>>
@@ -4122,10 +3970,7 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const tai_time<_Duration>& __t)
-    {
-      __os << std::format(__os.getloc(), _GLIBCXX_WIDEN("{:L%F %T}"), __t);
-      return __os;
-    }
+    { return __detail::__chrono_write_time<64>(__os, __t); }
 
   template<typename _CharT, typename _Traits, typename _Duration,
 	   typename _Alloc = allocator<_CharT>>
@@ -4161,10 +4006,7 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const gps_time<_Duration>& __t)
-    {
-      __os << std::format(__os.getloc(), _GLIBCXX_WIDEN("{:L%F %T}"), __t);
-      return __os;
-    }
+    { return __detail::__chrono_write_time<64>(__os, __t); }
 
   template<typename _CharT, typename _Traits, typename _Duration,
 	   typename _Alloc = allocator<_CharT>>
@@ -4199,10 +4041,7 @@ namespace __detail
     inline basic_ostream<_CharT, _Traits>&
     operator<<(basic_ostream<_CharT, _Traits>& __os,
 	       const file_time<_Duration>& __t)
-    {
-      __os << std::format(__os.getloc(), _GLIBCXX_WIDEN("{:L%F %T}"), __t);
-      return __os;
-    }
+    { return __detail::__chrono_write_time<64>(__os, __t); }
 
   template<typename _CharT, typename _Traits, typename _Duration,
 	   typename _Alloc = allocator<_CharT>>
@@ -4225,10 +4064,7 @@ namespace __detail
     // _GLIBCXX_RESOLVE_LIB_DEFECTS
     // 4257. Stream insertion for chrono::local_time should be constrained
     requires requires(const sys_time<_Duration>& __st) { __os << __st; }
-    {
-      __os << sys_time<_Duration>{__lt.time_since_epoch()};
-      return __os;
-    }
+    { return __detail::__chrono_write_time<64>(__os, __lt); }
 
   template<typename _CharT, typename _Traits, typename _Duration,
 	   typename _Alloc = allocator<_CharT>>
@@ -4923,22 +4759,22 @@ namespace __detail
 		    {
 		      auto __val = __read_unsigned(2);
 		      if (__val == -1 || __val > 23) [[unlikely]]
-			{
-			  if ((_M_need & _ChronoParts::_TimeOfDay) != 0)
+			if ((_M_need & _ChronoParts::_TimeOfDay) != 0)
+			  {
 			    __err |= ios_base::failbit;
-			  break;
-			}
+			    break;
+			  }
 		      if (!__read_chr(':')) [[unlikely]]
 			break;
 		      __h = hours(__val);
 
 		      __val = __read_unsigned(2);
 		      if (__val == -1 || __val > 60) [[unlikely]]
-			{
-			  if ((_M_need & _ChronoParts::_TimeOfDay) != 0)
+			if ((_M_need & _ChronoParts::_TimeOfDay) != 0)
+			  {
 			    __err |= ios_base::failbit;
-			  break;
-			}
+			    break;
+			  }
 		      __min = minutes(__val);
 
 		      if (__c == 'R')
@@ -5232,8 +5068,12 @@ namespace __detail
 		      else
 			{
 			  // Read hh
-			  __hh = 10 * _S_try_read_digit(__is, __err);
-			  __hh += _S_try_read_digit(__is, __err);
+			  auto __d1 = _S_try_read_digit(__is, __err);
+			  auto __d2 = _S_try_read_digit(__is, __err);
+			  if (__d1 >= 0 && __d2 >= 0) [[likely]]
+			    __hh = 10 * __d1 + __d2;
+			  else
+			    __err |= ios_base::failbit;
 			}
 
 		      if (__is_failed(__err))
@@ -5267,8 +5107,12 @@ namespace __detail
 		      int_least32_t __mm = 0;
 		      if (__read_mm)
 			{
-			  __mm = 10 * _S_try_read_digit(__is, __err);
-			  __mm += _S_try_read_digit(__is, __err);
+			  auto __d1 = _S_try_read_digit(__is, __err);
+			  auto __d2 = _S_try_read_digit(__is, __err);
+			  if (__d1 >= 0 && __d2 >= 0) [[likely]]
+			    __mm = 10 * __d1 + __d2;
+			  else
+			    __err |= ios_base::failbit;
 			}
 
 		      if (!__is_failed(__err))

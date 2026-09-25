@@ -61,7 +61,7 @@ libgfortran_la_DEPENDENCIES = $(version_dep) libgfortran.spec $(LIBQUADLIB_DEP)
 libcaf_shared_DEPS = caf/libcaf.h caf/caf_error.h
 libcaf_shared_SRCS = caf/caf_error.c
 
-cafexeclib_LTLIBRARIES = libcaf_single.la libcaf_shmem.la
+cafexeclib_LTLIBRARIES = libcaf_single.la
 cafexeclibdir = $(libdir)/gcc/$(target_alias)/$(gcc_version)$(MULTISUBDIR)
 libcaf_single_la_SOURCES = caf/single.c $(libcaf_shared_SRCS)
 libcaf_single_la_LDFLAGS = -static
@@ -69,6 +69,7 @@ libcaf_single_la_DEPENDENCIES = $(libcaf_shared_DEPS)
 libcaf_single_la_LINK = $(LINK) $(libcaf_single_la_LDFLAGS)
 
 if ENABLE_CAF_SHMEM
+cafexeclib_LTLIBRARIES += libcaf_shmem.la
 libcaf_shmem_la_CFLAGS = $(CAF_SHMEM_CFLAGS)
 libcaf_shmem_la_SOURCES = $(libcaf_shared_SRCS) \
 	caf/shmem.c caf/shmem/alloc.c caf/shmem/allocator.c \
@@ -1066,7 +1067,8 @@ generated/_mod_r17.F90 \
 generated/misc_specifics.F90 \
 intrinsics/dprod_r8.f90 \
 intrinsics/f2c_specifics.F90 \
-intrinsics/random_init.f90
+intrinsics/random_init.f90 \
+intrinsics/trigd_specific.F90
 
 # Turn on vectorization and loop unrolling for matmul.
 $(patsubst %.c,%.lo,$(i_matmul_c)): AM_CFLAGS += -ffast-math -ftree-vectorize -funroll-loops --param max-unroll-times=4

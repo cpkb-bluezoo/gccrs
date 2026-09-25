@@ -321,7 +321,7 @@ AC_CHECK_SIZEOF([int])
 AC_CHECK_SIZEOF([long])
 AC_CHECK_SIZEOF([size_t])
 
-# Check for presense of long long
+# Check for presence of long long
 AC_CHECK_TYPE([long long],
   [AC_DEFINE(HAVE_LONG_LONG, 1, [Define if you have the `long long' type.]) AC_CHECK_SIZEOF([long long])],
   [])
@@ -329,30 +329,30 @@ AC_CHECK_TYPE([long long],
 # Look for a 64-bit type.
 AC_MSG_CHECKING([for a 64-bit type])
 AC_CACHE_VAL(liberty_cv_uint64,
-[AC_TRY_COMPILE(
-[#ifdef HAVE_STDINT_H
+[AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+[[#ifdef HAVE_STDINT_H
 #include <stdint.h>
-#endif],
-[extern uint64_t foo;],
-liberty_cv_uint64=uint64_t,
-[AC_TRY_COMPILE(
-[#ifdef HAVE_LIMITS_H
+#endif]],
+[[extern uint64_t foo;]])],
+[liberty_cv_uint64=uint64_t],
+[AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+[[#ifdef HAVE_LIMITS_H
 #include <limits.h>
 #endif
 #ifndef CHAR_BIT
 #define CHAR_BIT 8
-#endif],
-[extern char foo[sizeof(long) * CHAR_BIT >= 64 ? 1 : -1];],
-liberty_cv_uint64="unsigned long",
-[AC_TRY_COMPILE(
-[#ifdef HAVE_LIMITS_H
+#endif]],
+[[extern char foo[sizeof(long) * CHAR_BIT >= 64 ? 1 : -1];]])],
+[liberty_cv_uint64="unsigned long"],
+[AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+[[#ifdef HAVE_LIMITS_H
 #include <limits.h>
 #endif
 #ifndef CHAR_BIT
 #define CHAR_BIT 8
-#endif],
-[extern char foo[sizeof(long long) * CHAR_BIT >= 64 ? 1 : -1];],
-liberty_cv_uint64="unsigned long long", liberty_cv_uint64=none)])])])
+#endif]],
+[[extern char foo[sizeof(long long) * CHAR_BIT >= 64 ? 1 : -1];]])],
+[liberty_cv_uint64="unsigned long long"], [liberty_cv_uint64=none])])])])
 AC_MSG_RESULT($liberty_cv_uint64)
 if test "$liberty_cv_uint64" != none; then
   AC_DEFINE_UNQUOTED(UNSIGNED_64BIT_TYPE, $liberty_cv_uint64,
@@ -701,7 +701,7 @@ if test -z "${setobjs}"; then
 
   # We haven't set the list of objects yet.  Use the standard autoconf
   # tests.  This will only work if the compiler works.
-  AC_ISC_POSIX
+  AC_SEARCH_LIBS([strerror],[cposix])
   AC_REPLACE_FUNCS($funcs)
   libiberty_AC_FUNC_C_ALLOCA
   AC_FUNC_FORK

@@ -32,6 +32,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "trans-array.h"
 #include "trans-types.h"
 #include "trans-const.h"
+#include "trans-descriptor.h"
 #include "options.h"
 
 /* Members of the ioparm structure.  */
@@ -416,7 +417,7 @@ gfc_build_io_library_fndecls (void)
 	integer_type_node, gfc_charlen_type_node);
 
   iocall[IOCALL_X_DERIVED] = gfc_build_library_function_decl_with_spec (
-	get_identifier (PREFIX("transfer_derived")), ". w r ",
+	get_identifier (PREFIX("transfer_derived")), ". w w ",
 	void_type_node, 2, dt_parm_type, pvoid_type_node);
 
   /* Library entry points */

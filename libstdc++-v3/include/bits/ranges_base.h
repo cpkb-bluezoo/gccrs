@@ -558,6 +558,26 @@ namespace ranges
   template<sized_range _Range>
     using range_size_t = decltype(ranges::size(std::declval<_Range&>()));
 
+#if __cplusplus > 202302L
+  template<typename _Tp>
+    concept __static_sized_range = sized_range<_Tp> && requires (_Tp& __t)
+      { static_cast<char(*)[size_t(ranges::size(__t) >= 0)]>(nullptr); };
+
+  template<__static_sized_range _Range>
+    consteval range_size_t<_Range>
+    __static_size()
+    {
+      auto __conjure = [](_Range& __r)
+      {
+	if constexpr (ranges::size(__r) <= size_t(-1))
+	  return integral_constant<size_t, size_t(ranges::size(__r))>{};
+	else
+	  return integral_constant<range_size_t<_Range>, ranges::size(__r)>{};
+      };
+      return range_size_t<_Range>(decltype(__conjure(std::declval<_Range&>()))::value);
+    }
+#endif // C++26
+
   template<typename _Derived>
     requires is_class_v<_Derived> && same_as<_Derived, remove_cv_t<_Derived>>
     class view_interface; // defined in <bits/ranges_util.h>
@@ -974,6 +994,17 @@ namespace ranges
       constexpr iter_difference_t<_It>
       operator()[[nodiscard]](_It __first, _Sent __last) const
       {
+	if constexpr (__segmented_iterator<_It> && same_as<_It, _Sent>)
+	  {
+	    iter_difference_t<_It> __n = 0;
+	    auto __func = [this, &__n](auto __sfirst, auto __slast) {
+	      __n += iter_difference_t<_It>(this->operator()(__sfirst, __slast));
+	      return __slast;
+	    };
+	    std::__for_each_segment(__first, __last, __func);
+	    return __n;
+	  }
+
 	iter_difference_t<_It> __n = 0;
 	while (__first != __last)
 	  {

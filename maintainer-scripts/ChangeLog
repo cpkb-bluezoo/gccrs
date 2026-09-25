@@ -1,3 +1,17 @@
+2026-09-12  Gerald Pfeifer  <gerald@pfeifer.com>
+
+	* update_web_docs_git: Stop generating .pdf.gz copies of
+	.pdf files.
+
+2026-09-04  Richard Biener  <rguenther@suse.de>
+
+	* crontab: Remove entry for gcc-13 branch snapshots.
+
+2026-04-22  Jakub Jelinek  <jakub@redhat.com>
+
+	* crontab: Snapshots from trunk are now GCC 17 related.
+	Add GCC 16 snapshots from the respective branch.
+
 2026-01-26  Pietro Monteiro  <pietro@sociotechnical.xyz>
 
 	* update_web_docs_git (MANUALS): Add ga68-coding-guidelines.

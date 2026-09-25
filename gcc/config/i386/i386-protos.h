@@ -47,6 +47,8 @@ extern enum calling_abi ix86_function_type_abi (const_tree);
 extern bool ix86_use_pseudo_pic_reg (void);
 
 extern void ix86_reset_previous_fndecl (void);
+extern call_saved_registers_type
+  ix86_fntype_call_saved_registers (const_tree, location_t * = nullptr);
 
 extern bool ix86_using_red_zone (void);
 
@@ -78,7 +80,7 @@ extern void substitute_vpternlog_operands (rtx[]);
 extern bool ix86_expand_strlen (rtx, rtx, rtx, rtx);
 extern bool ix86_expand_set_or_cpymem (rtx, rtx, rtx, rtx, rtx, rtx,
 				       rtx, rtx, rtx, rtx, bool);
-extern bool ix86_expand_movmem (rtx[]);
+extern bool ix86_expand_set_or_movmem (rtx[], bool, bool);
 extern bool ix86_expand_cmpstrn_or_cmpmem (rtx, rtx, rtx, rtx, rtx, bool);
 
 extern enum reg_class ix86_insn_base_reg_class (rtx_insn *);
@@ -231,6 +233,7 @@ extern void ix86_expand_floorceil (rtx, rtx, bool);
 extern void ix86_expand_floorceildf_32 (rtx, rtx, bool);
 extern void ix86_expand_trunc (rtx, rtx);
 extern void ix86_expand_truncdf_32 (rtx, rtx);
+extern void ix86_expand_truncsfbf2 (rtx, rtx);
 extern void ix86_expand_round (rtx, rtx);
 extern void ix86_expand_rounddf_32 (rtx, rtx);
 extern void ix86_expand_round_sse4 (rtx, rtx);
@@ -263,6 +266,7 @@ extern rtx ix86_expand_ternlog (machine_mode mode, rtx op0, rtx op1, rtx op2,
 				int idx, rtx target);
 extern void ix86_expand_vector_sf2bf_with_vec_perm (rtx, rtx);
 extern void ix86_expand_vector_bf2sf_with_vec_perm (rtx, rtx);
+extern void ix86_expand_gfni_bitreverse (rtx, rtx);
 
 
 #ifdef TREE_CODE
@@ -283,7 +287,6 @@ extern tree ix86_valid_target_attribute_tree (tree, tree,
 					      struct gcc_options *,
 					      struct gcc_options *, bool);
 extern unsigned int ix86_get_callcvt (const_tree);
-extern bool ix86_type_no_callee_saved_registers_p (const_tree);
 
 #endif
 
@@ -292,6 +295,8 @@ extern bool ix86_gpr_tls_address_pattern_p (rtx);
 extern bool ix86_tls_address_pattern_p (rtx);
 extern rtx ix86_rewrite_tls_address (rtx);
 extern rtx ix86_tls_get_addr (void);
+class predefined_function_abi;
+extern const predefined_function_abi & ix86_tls_get_addr_abi (void);
 
 extern void ix86_expand_vector_init (bool, rtx, rtx);
 extern void ix86_expand_vector_set (bool, rtx, rtx, int);
@@ -313,6 +318,8 @@ extern bool ix86_expand_vector_init_one_nonzero (bool, machine_mode, rtx,
 						 rtx, int);
 extern bool ix86_extract_perm_from_pool_constant (int*, rtx);
 
+extern void ix86_expand_lcp_stall_peephole (rtx_insn *, rtx *, bool);
+
 /* In i386-c.cc  */
 extern void ix86_target_macros (void);
 extern void ix86_register_pragmas (void);
@@ -326,18 +333,11 @@ extern void i386_pe_asm_output_aligned_decl_common (FILE *, tree,
 						    HOST_WIDE_INT,
 						    HOST_WIDE_INT);
 extern void i386_pe_start_function (FILE *, const char *, tree);
-extern void i386_pe_end_function (FILE *, const char *, tree);
-extern void i386_pe_end_cold_function (FILE *, const char *, tree);
 extern void i386_pe_assemble_visibility (tree, int);
 extern tree i386_pe_mangle_decl_assembler_name (tree, tree);
 extern tree i386_pe_mangle_assembler_name (const char *);
 
-extern void i386_pe_seh_init (FILE *);
-extern void i386_pe_seh_end_prologue (FILE *);
-extern void i386_pe_seh_cold_init (FILE *, const char *);
 extern void i386_pe_seh_unwind_emit (FILE *, rtx_insn *);
-extern void i386_pe_seh_emit_except_personality (rtx);
-extern void i386_pe_seh_init_sections (void);
 
 /* In winnt-cxx.cc and winnt-stubs.cc  */
 extern void i386_pe_adjust_class_at_definition (tree);

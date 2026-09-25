@@ -42,7 +42,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-iterator.h"
 #include "gimple-fold.h"
 #include "tree-eh.h"
-#include "gimplify.h"
 #include "flags.h"
 #include "dojump.h"
 #include "explow.h"
@@ -840,7 +839,7 @@ vn_reference_eq (const_vn_reference_t const vr1, const_vn_reference_t const vr2,
       /* Vector boolean types can have padding, verify we are dealing with
 	 the same number of elements, aka the precision of the types.
 	 For example, In most architecture the precision_size of vbool*_t
-	 types are caculated like below:
+	 types are calculated like below:
 	 precision_size = type_size * 8
 
 	 Unfortunately, the RISC-V will adjust the precision_size for the
@@ -933,7 +932,7 @@ vn_reference_eq (const_vn_reference_t const vr1, const_vn_reference_t const vr2,
 	      || (get_deref_alias_set (vro1->opcode == MEM_REF
 				       ? TREE_TYPE (vro1->op0)
 				       : TREE_TYPE (vro1->op2))
-		  != get_deref_alias_set (vro1->opcode == MEM_REF
+		  != get_deref_alias_set (vro2->opcode == MEM_REF
 					  ? TREE_TYPE (vro2->op0)
 					  : TREE_TYPE (vro2->op2)))))
 	return false;
@@ -1508,6 +1507,9 @@ vn_reference_maybe_forwprop_address (vec<vn_reference_op_s> *ops,
 		      = wide_int_to_tree (TREE_TYPE (mem_op->op0),
 					  wi::to_poly_wide (new_mem_op->op0));
 		}
+	      /* Do not forward addresses of TARGET_MEM_REF.  */
+	      else if (tem[0].opcode == TARGET_MEM_REF)
+		return changed;
 	      else
 		gcc_assert (tem.last ().opcode == STRING_CST);
 	      ops->pop ();
@@ -1725,7 +1727,7 @@ contains_storage_order_barrier_p (vec<vn_reference_op_s> ops)
 /* Return true if OPS represent an access with reverse storage order.  */
 
 static bool
-reverse_storage_order_for_component_p (vec<vn_reference_op_s> ops)
+reverse_storage_order_for_component_p (const vec<vn_reference_op_s> &ops)
 {
   unsigned i = 0;
   if (ops[i].opcode == REALPART_EXPR || ops[i].opcode == IMAGPART_EXPR)
@@ -2078,8 +2080,9 @@ vn_walk_cb_data::push_partial_def (pd_data pd,
 	  pd.size -= o;
 	  pd.offset += o;
 	}
-      if (pd.size > maxsizei)
-	pd.size = maxsizei + ((pd.size - maxsizei) % BITS_PER_UNIT);
+      if (pd.size + pd.offset > offseti + maxsizei)
+	pd.size = maxsizei + ((pd.size + pd.offset - offseti - maxsizei)
+			      % BITS_PER_UNIT);
     }
 
   pd.offset -= offseti;
@@ -2350,7 +2353,7 @@ vn_walk_cb_data::push_partial_def (pd_data pd,
      access size.  */
   if (INTEGRAL_TYPE_P (vr->type) && maxsizei != TYPE_PRECISION (vr->type))
     {
-      if (TREE_CODE (vr->type) == BITINT_TYPE
+      if (BITINT_TYPE_P (vr->type)
 	  && maxsizei > MAX_FIXED_MODE_SIZE)
 	type = build_bitint_type (maxsizei, TYPE_UNSIGNED (type));
       else
@@ -2569,8 +2572,12 @@ vn_nary_build_or_lookup_1 (gimple_match_op *res_op, bool insert,
       tree val = vn_lookup_simplify_result (res_op);
       /* ???  In weird cases we can end up with internal-fn calls,
 	 but this isn't expected so throw the result away.  See
-	 PR123040 for an example.  */
-      if (!val && insert && res_op->code.is_tree_code ())
+	 PR123040 for an example.  Likewise we can end up with
+	 &MEM[ptr_1 + CST] which would be a vn_reference (PR127000).  */
+      if (!val
+	  && insert
+	  && res_op->code.is_tree_code ()
+	  && (tree_code) res_op->code != ADDR_EXPR)
 	{
 	  gimple_seq stmts = NULL;
 	  result = maybe_push_res_to_seq (res_op, &stmts);
@@ -3284,8 +3291,14 @@ vn_reference_lookup_3 (ao_ref *ref, tree vuse, void *data_,
 		     covering the whole access size.  */
 		  if (INTEGRAL_TYPE_P (vr->type)
 		      && maxsizei != TYPE_PRECISION (vr->type))
-		    type = build_nonstandard_integer_type (maxsizei,
-							   TYPE_UNSIGNED (type));
+		    {
+		      bool uns = TYPE_UNSIGNED (type);
+		      if (BITINT_TYPE_P (vr->type)
+			  && maxsizei > MAX_FIXED_MODE_SIZE)
+			type = build_bitint_type (maxsizei, uns);
+		      else
+			type = build_nonstandard_integer_type (maxsizei, uns);
+		    }
 		  if (BYTES_BIG_ENDIAN)
 		    {
 		      /* For big-endian native_encode_expr stored the rhs
@@ -3766,6 +3779,17 @@ vn_reference_lookup_3 (ao_ref *ref, tree vuse, void *data_,
       /* Now re-write REF to be based on the rhs of the assignment.  */
       tree rhs1 = gimple_assign_rhs1 (def_stmt);
       copy_reference_ops_from_ref (rhs1, &rhs);
+
+      /* When none of the original operands survives the storage order of
+	 the translated reference is the one of the RHS of the copy.  The
+	 operands we folded into a constant offset above may well have
+	 specified a reverse storage order, which is a property of the
+	 component and not of its position, so it is not recoverable from
+	 that offset.  Punt unless both accesses are in natural order.  */
+      if (i < 0
+	  && (reverse_storage_order_for_component_p (vr->operands)
+	      || reverse_storage_order_for_component_p (rhs)))
+	return (void *)-1;
 
       /* Apply an extra offset to the inner MEM_REF of the RHS.  */
       bool force_no_tbaa = false;
@@ -4351,7 +4375,7 @@ vn_reference_lookup_call (gcall *call, vn_reference_t *vnresult,
   vr->vuse = vuse ? SSA_VAL (vuse) : NULL_TREE;
   vr->operands = valueize_shared_reference_ops_from_call (call);
   tree lhs = gimple_call_lhs (call);
-  /* For non-SSA return values the referece ops contain the LHS.  */
+  /* For non-SSA return values the reference ops contain the LHS.  */
   vr->type = ((lhs && TREE_CODE (lhs) == SSA_NAME)
 	      ? TREE_TYPE (lhs) : NULL_TREE);
   vr->punned = false;
@@ -4539,7 +4563,7 @@ vn_nary_op_eq (const_vn_nary_op_t const vno1, const_vn_nary_op_t const vno2)
     if (!expressions_equal_p (vno1->op[i], vno2->op[i]))
       return false;
 
-  /* BIT_INSERT_EXPR has an implict operand as the type precision
+  /* BIT_INSERT_EXPR has an implicit operand as the type precision
      of op1.  Need to check to make sure they are the same.  */
   if (vno1->opcode == BIT_INSERT_EXPR
       && TREE_CODE (vno1->op[1]) == INTEGER_CST
@@ -4846,7 +4870,7 @@ vn_nary_op_insert_into (vn_nary_op_t vno, vn_nary_op_table_type *table)
 	return *slot;
     }
 
-  /* ???  There's also optimistic vs. previous commited state merging
+  /* ???  There's also optimistic vs. previous committed state merging
      that is problematic for the case of unwinding.  */
 
   /* ???  We should return NULL if we do not use 'vno' and have the
@@ -5634,6 +5658,37 @@ valueized_wider_op (tree wide_type, tree op, bool allow_truncate)
   return NULL_TREE;
 }
 
+/* Return true if RESULT, the result of a value-number lookup, may be
+   used at the statement being visited.  A result of wrapping type can
+   be inserted for code hoisting without introducing undefined
+   overflow; anything else has to be available.  See PR86554.  */
+
+static bool
+vn_nary_result_avail_or_insertable_p (tree result)
+{
+  return (TYPE_OVERFLOW_WRAPS (TREE_TYPE (result))
+	  || (rpo_avail && vn_context_bb
+	      && rpo_avail->eliminate_avail (vn_context_bb, result)));
+}
+
+/* If OP is an SSA name defined by a conversion from an integral type,
+   return the valueized source of the conversion, otherwise return
+   NULL_TREE.  */
+
+static tree
+ssa_integral_conversion_op (tree op)
+{
+  if (TREE_CODE (op) != SSA_NAME)
+    return NULL_TREE;
+  gassign *def = dyn_cast <gassign *> (SSA_NAME_DEF_STMT (op));
+  if (!def || !CONVERT_EXPR_CODE_P (gimple_assign_rhs_code (def)))
+    return NULL_TREE;
+  const tree src = gimple_assign_rhs1 (def);
+  if (!INTEGRAL_TYPE_P (TREE_TYPE (src)))
+    return NULL_TREE;
+  return vn_valueize (src);
+}
+
 /* Visit a nary operator RHS, value number it, and return true if the
    value number of LHS has changed as a result.  */
 
@@ -5690,15 +5745,7 @@ visit_nary_op (tree lhs, gassign *stmt)
 		  ops[0] = vn_nary_op_lookup_pieces
 		      (2, gimple_assign_rhs_code (def), type, ops, NULL);
 		  /* We have wider operation available.  */
-		  if (ops[0]
-		      /* If the leader is a wrapping operation we can
-		         insert it for code hoisting w/o introducing
-			 undefined overflow.  If it is not it has to
-			 be available.  See PR86554.  */
-		      && (TYPE_OVERFLOW_WRAPS (TREE_TYPE (ops[0]))
-			  || (rpo_avail && vn_context_bb
-			      && rpo_avail->eliminate_avail (vn_context_bb,
-							     ops[0]))))
+		  if (ops[0] && vn_nary_result_avail_or_insertable_p (ops[0]))
 		    {
 		      unsigned lhs_prec = TYPE_PRECISION (type);
 		      unsigned rhs_prec = TYPE_PRECISION (TREE_TYPE (rhs1));
@@ -5739,6 +5786,72 @@ visit_nary_op (tree lhs, gassign *stmt)
 	    }
 	}
       break;
+    case PLUS_EXPR:
+    case MINUS_EXPR:
+      {
+	/* Match (T)A +- B against an existing (T)(A +- B'), the inverse
+	   of the conversion case above, so the redundancy is detected
+	   regardless of the order the two forms appear in the IL.
+	   See PR124545.  The narrow operation is only ever looked up,
+	   never created: assuming no overflow is only valid for
+	   operations the program actually executes, so the narrow
+	   leader has to be available.  Creating the narrow operation
+	   instead is wrong-code, see PR126415.  */
+	const tree narrow1 = ssa_integral_conversion_op (vn_valueize (rhs1));
+	if (!INTEGRAL_TYPE_P (type) || !narrow1)
+	  break;
+	const tree ntype = TREE_TYPE (narrow1);
+	/* A sign-change keeps the value bit-identical; a widening is
+	   only handled when the narrow operation cannot wrap.  */
+	const bool sign_change_p
+	  = TYPE_PRECISION (ntype) == TYPE_PRECISION (type);
+	const bool nowrap_widening_p
+	  = (TYPE_PRECISION (ntype) < TYPE_PRECISION (type)
+	     && TYPE_OVERFLOW_UNDEFINED (ntype));
+	if (!sign_change_p && !nowrap_widening_p)
+	  break;
+	/* Determine the narrow variant of the second operand: a
+	   constant that narrows and extends back unchanged, or a
+	   conversion from the same narrow type.  */
+	const tree rhs2 = gimple_assign_rhs2 (stmt);
+	tree narrow2 = NULL_TREE;
+	if (TREE_CODE (rhs2) == INTEGER_CST)
+	  {
+	    const widest_int cst = wi::to_widest (rhs2);
+	    const widest_int narrowed
+	      = wi::ext (cst, TYPE_PRECISION (ntype), TYPE_SIGN (ntype));
+	    const widest_int extended
+	      = wi::ext (narrowed, TYPE_PRECISION (type), TYPE_SIGN (type));
+	    if (cst == extended)
+	      narrow2 = fold_convert (ntype, rhs2);
+	  }
+	else if (TREE_CODE (rhs2) == SSA_NAME)
+	  {
+	    const tree op = ssa_integral_conversion_op (vn_valueize (rhs2));
+	    if (op && types_compatible_p (TREE_TYPE (op), ntype))
+	      narrow2 = op;
+	  }
+	if (!narrow2)
+	  break;
+	tree ops[3] = { narrow1, narrow2 };
+	const tree narrow_val
+	  = vn_nary_op_lookup_pieces (2, code, ntype, ops, NULL);
+	/* We have a narrower or sign-changed operation available.  */
+	if (narrow_val && vn_nary_result_avail_or_insertable_p (narrow_val))
+	  {
+	    gimple_match_op match_op (gimple_match_cond::UNCOND,
+				      NOP_EXPR, type, narrow_val);
+	    result = vn_nary_build_or_lookup (&match_op);
+	    if (result)
+	      {
+		const bool changed = set_ssa_val_to (lhs, result);
+		if (TREE_CODE (result) == SSA_NAME)
+		  vn_nary_op_insert_stmt (stmt, result);
+		return changed;
+	      }
+	  }
+      }
+      break;
     case BIT_AND_EXPR:
       if (INTEGRAL_TYPE_P (type)
 	  && TREE_CODE (rhs1) == SSA_NAME
@@ -5773,9 +5886,10 @@ visit_nary_op (tree lhs, gassign *stmt)
     case BIT_FIELD_REF:
       if (TREE_CODE (TREE_OPERAND (rhs1, 0)) == SSA_NAME)
 	{
-	  tree op0 = TREE_OPERAND (rhs1, 0);
-	  gassign *ass = dyn_cast <gassign *> (SSA_NAME_DEF_STMT (op0));
-	  if (ass
+	  tree op0 = vn_valueize (TREE_OPERAND (rhs1, 0));
+	  gassign *ass;
+	  if (TREE_CODE (op0) == SSA_NAME
+	      && (ass = dyn_cast <gassign *> (SSA_NAME_DEF_STMT (op0)))
 	      && !gimple_has_volatile_ops (ass)
 	      && vn_get_stmt_kind (ass) == VN_REFERENCE)
 	    {
@@ -5923,7 +6037,7 @@ visit_reference_op_call (tree lhs, gcall *stmt)
 	   && summary->load_accesses < accesses_limit)
 	  || gimple_call_flags (stmt) & ECF_CONST))
     {
-      /* First search if we can do someting useful and build a
+      /* First search if we can do something useful and build a
 	 vector of all loads we have to check.  */
       bool unknown_memory_access = false;
       auto_vec<ao_ref, accesses_limit> accesses;
@@ -6470,7 +6584,7 @@ visit_phi (gimple *phi, bool *inserted, bool backedges_varying_p)
        the hashes.  */
     result = PHI_RESULT (phi);
   /* If none of the edges was executable keep the value-number at VN_TOP,
-     if only a single edge is exectuable use its value.  */
+     if only a single edge is executable use its value.  */
   else if (n_executable <= 1)
     result = seen_undef ? seen_undef : sameval;
   /* If we saw only undefined values and VN_TOP use one of the
@@ -7388,7 +7502,7 @@ eliminate_dom_walker::eliminate_stmt (basic_block b, gimple_stmt_iterator *gsi)
 	      || !DECL_BIT_FIELD_TYPE (TREE_OPERAND (lhs, 1)))
 	  && !type_has_mode_precision_p (TREE_TYPE (lhs)))
 	{
-	  if (TREE_CODE (TREE_TYPE (lhs)) == BITINT_TYPE
+	  if (BITINT_TYPE_P (TREE_TYPE (lhs))
 	      && TYPE_PRECISION (TREE_TYPE (lhs)) > MAX_FIXED_MODE_SIZE)
 	    lookup_lhs = NULL_TREE;
 	  else if (TREE_CODE (lhs) == COMPONENT_REF
@@ -7553,7 +7667,7 @@ eliminate_dom_walker::eliminate_stmt (basic_block b, gimple_stmt_iterator *gsi)
       gsi_prev (&prev);
       if (fold_stmt (gsi, follow_all_ssa_edges))
 	{
-	  /* fold_stmt may have created new stmts inbetween
+	  /* fold_stmt may have created new stmts in between
 	     the previous stmt and the folded stmt.  Mark
 	     all defs created there as varying to not confuse
 	     the SCCVN machinery as we're using that even during
@@ -7910,7 +8024,7 @@ eliminate_dom_walker::eliminate_cleanup (bool region_p)
 
   /* Fixup stmts that became noreturn calls.  This may require splitting
      blocks and thus isn't possible during the dominator walk.  Do this
-     in reverse order so we don't inadvertedly remove a stmt we want to
+     in reverse order so we don't inadvertently remove a stmt we want to
      fixup by visiting a dominating now noreturn call first.  */
   while (!to_fixup.is_empty ())
     {
@@ -8317,6 +8431,13 @@ insert_predicates_for_cond (tree_code code, tree lhs, tree rhs,
 	    tree_code nc = gimple_assign_rhs_code (def_stmt);
 	    tree nlhs = vn_valueize (gimple_assign_rhs1 (def_stmt));
 	    tree nrhs = vn_valueize (gimple_assign_rhs2 (def_stmt));
+	    // Canonicalize the comparison before the check below,
+	    // it might be the case where nlhs is a constant now.
+	    if (tree_swap_operands_p (nlhs, nrhs))
+	      {
+		std::swap (nlhs, nrhs);
+		nc = swap_tree_comparison (nc);
+	      }
 	    edge nt = true_e;
 	    edge nf = false_e;
 	    if (code == EQ_EXPR)
@@ -8524,7 +8645,7 @@ process_bb (rpo_elim &avail, basic_block bb,
 	    tree val = gimple_simplify (cmpcode,
 					boolean_type_node, lhs, rhs,
 					NULL, vn_valueize);
-	    /* If the condition didn't simplfy see if we have recorded
+	    /* If the condition didn't simplify see if we have recorded
 	       an expression from sofar taken edges.  */
 	    if (! val || TREE_CODE (val) != INTEGER_CST)
 	      {

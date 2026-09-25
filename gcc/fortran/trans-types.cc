@@ -36,6 +36,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "trans-types.h"
 #include "trans-const.h"
 #include "trans-array.h"
+#include "trans-descriptor.h"
 #include "dwarf2out.h"	/* For struct array_descr_info.  */
 #include "attribs.h"
 #include "alias.h"
@@ -54,6 +55,7 @@ along with GCC; see the file COPYING3.  If not see
 /* array of structs so we don't have to worry about xmalloc or free */
 CInteropKind_t c_interop_kinds_table[ISOCBINDING_NUMBER];
 
+tree gfc_array_dim_rank_type;
 tree gfc_array_index_type;
 tree gfc_array_range_type;
 tree gfc_character1_type_node;
@@ -163,7 +165,7 @@ tree get_dtype_type_node (void)
       suppress_warning (field);
       field = gfc_add_field_to_struct_1 (dtype_node,
 					 get_identifier ("rank"),
-					 signed_char_type_node, &dtype_chain);
+					 gfc_array_dim_rank_type, &dtype_chain);
       suppress_warning (field);
       field = gfc_add_field_to_struct_1 (dtype_node,
 					 get_identifier ("type"),
@@ -1225,6 +1227,12 @@ gfc_init_types (void)
   gfc_charlen_int_kind = get_int_kind_from_node (size_type_node);
   gfc_charlen_type_node = gfc_get_int_type (gfc_charlen_int_kind);
 
+  gfc_array_dim_rank_type
+		= build_range_type (signed_char_type_node,
+				    build_zero_cst (signed_char_type_node),
+				    build_int_cst (signed_char_type_node,
+						   GFC_MAX_DIMENSIONS));
+
   /* Fortran kind number of size_type_node (size_t). This is used for
      the _size member in vtables.  */
   gfc_size_kind = get_int_kind_from_node (size_type_node);
@@ -1379,9 +1387,6 @@ gfc_typenode_for_spec (gfc_typespec * spec, int codim)
     case BT_DERIVED:
     case BT_CLASS:
       basetype = gfc_get_derived_type (spec->u.derived, codim);
-
-      if (spec->type == BT_CLASS)
-	GFC_CLASS_TYPE_P (basetype) = 1;
 
       /* If we're dealing with either C_PTR or C_FUNPTR, we modified the
          type and kind to fit a (void *) and the basetype returned was a
@@ -1704,10 +1709,6 @@ gfc_get_dtype_rank_type (int rank, tree etype)
   tree ptype;
   tree size;
   int n;
-  tree tmp;
-  tree dtype;
-  tree field;
-  vec<constructor_elt, va_gc> *v = NULL;
 
   ptype = etype;
   while (TREE_CODE (etype) == POINTER_TYPE
@@ -1779,34 +1780,7 @@ gfc_get_dtype_rank_type (int rank, tree etype)
       break;
     }
 
-  gcc_assert (size);
-
-  STRIP_NOPS (size);
-  size = fold_convert (size_type_node, size);
-  tmp = get_dtype_type_node ();
-  field = gfc_advance_chain (TYPE_FIELDS (tmp),
-			     GFC_DTYPE_ELEM_LEN);
-  CONSTRUCTOR_APPEND_ELT (v, field,
-			  fold_convert (TREE_TYPE (field), size));
-  field = gfc_advance_chain (TYPE_FIELDS (dtype_type_node),
-			     GFC_DTYPE_VERSION);
-  CONSTRUCTOR_APPEND_ELT (v, field,
-			  build_zero_cst (TREE_TYPE (field)));
-
-  field = gfc_advance_chain (TYPE_FIELDS (dtype_type_node),
-			     GFC_DTYPE_RANK);
-  if (rank >= 0)
-    CONSTRUCTOR_APPEND_ELT (v, field,
-			    build_int_cst (TREE_TYPE (field), rank));
-
-  field = gfc_advance_chain (TYPE_FIELDS (dtype_type_node),
-			     GFC_DTYPE_TYPE);
-  CONSTRUCTOR_APPEND_ELT (v, field,
-			  build_int_cst (TREE_TYPE (field), n));
-
-  dtype = build_constructor (tmp, v);
-
-  return dtype;
+  return gfc_build_dtype_constructor (size, n, rank);
 }
 
 
@@ -2516,7 +2490,12 @@ gfc_sym_type (gfc_symbol * sym, bool is_bind_c)
   else
     type = gfc_typenode_for_spec (&sym->ts, sym->attr.codimension);
 
-  if (sym->attr.dummy && !sym->attr.function && !sym->attr.value
+  if (sym->attr.dummy && !sym->attr.function
+      && (!sym->attr.value
+	  || sym->attr.dimension
+	  || (sym->ts.type == BT_CHARACTER
+	      && (!sym->ts.u.cl || !sym->ts.u.cl->length
+		  || sym->ts.u.cl->length->expr_type != EXPR_CONSTANT)))
       && !sym->pass_as_value)
     byref = 1;
   else
@@ -2970,6 +2949,8 @@ gfc_get_derived_type (gfc_symbol * derived, int codimen)
       TYPE_NAME (typenode) = get_identifier (derived->name);
       TYPE_PACKED (typenode) = flag_pack_derived;
       derived->backend_decl = typenode;
+      if (derived->attr.is_class)
+	GFC_CLASS_TYPE_P (typenode) = 1;
     }
 
   if (derived->components
@@ -3132,15 +3113,6 @@ gfc_get_derived_type (gfc_symbol * derived, int codimen)
 	  field_type = build_pointer_type_for_mode (TREE_TYPE (field_type),
 						    ptr_mode, true);
 
-      /* Ensure that the CLASS language specific flag is set.  */
-      if (c->ts.type == BT_CLASS)
-	{
-	  if (POINTER_TYPE_P (field_type))
-	    GFC_CLASS_TYPE_P (TREE_TYPE (field_type)) = 1;
-	  else
-	    GFC_CLASS_TYPE_P (field_type) = 1;
-	}
-
       field = gfc_add_field_to_struct (typenode,
 				       get_identifier (c->name),
 				       field_type, &chain);
@@ -3212,6 +3184,9 @@ copy_derived_types:
       if (dt->dt_next == gfc_derived_types)
 	break;
     }
+
+  if (derived->attr.is_class)
+    GFC_CLASS_TYPE_P (derived->backend_decl) = 1;
 
   return derived->backend_decl;
 }
@@ -3739,9 +3714,8 @@ gfc_get_array_descr_info (const_tree type, struct array_descr_info *info)
   int rank, dim;
   bool indirect = false;
   tree etype, ptype, t, base_decl;
-  tree data_off, span_off, dim_off, dtype_off, dim_size, elem_size;
+  tree data_off, span_off, dim_off, rank_off, dim_size, elem_size;
   tree lower_suboff, upper_suboff, stride_suboff;
-  tree dtype, field, rank_off;
 
   if (! GFC_DESCRIPTOR_TYPE_P (type))
     {
@@ -3794,7 +3768,7 @@ gfc_get_array_descr_info (const_tree type, struct array_descr_info *info)
   if (indirect)
     base_decl = build1 (INDIRECT_REF, ptype, base_decl);
 
-  gfc_get_descriptor_offsets_for_info (type, &data_off, &dtype_off, &span_off,
+  gfc_get_descriptor_offsets_for_info (type, &data_off, &rank_off, &span_off,
 				       &dim_off, &dim_size, &stride_suboff,
 				       &lower_suboff, &upper_suboff);
 
@@ -3826,14 +3800,9 @@ gfc_get_array_descr_info (const_tree type, struct array_descr_info *info)
     {
       rank = 1;
       info->ndimensions = 1;
-      t = fold_build_pointer_plus (base_decl, dtype_off);
-      dtype = TYPE_MAIN_VARIANT (get_dtype_type_node ());
-      field = gfc_advance_chain (TYPE_FIELDS (dtype), GFC_DTYPE_RANK);
-      rank_off = byte_position (field);
-      t = fold_build_pointer_plus (t, rank_off);
-
-      t = build1 (NOP_EXPR, build_pointer_type (TREE_TYPE (field)), t);
-      t = build1 (INDIRECT_REF, TREE_TYPE (field), t);
+      t = fold_build_pointer_plus (base_decl, rank_off);
+      t = build1 (NOP_EXPR, build_pointer_type (signed_char_type_node), t);
+      t = build1 (INDIRECT_REF, signed_char_type_node, t);
       info->rank = t;
       t = build0 (PLACEHOLDER_EXPR, TREE_TYPE (dim_off));
       t = size_binop (MULT_EXPR, t, dim_size);

@@ -133,7 +133,7 @@ call_arg (tree expr, unsigned argno)
    with an argument that is a character array with no terminating
    NUL.  SIZE is the EXACT size of the array, and BNDRNG the number
    of characters in which the NUL is expected.  Either EXPR or FNAME
-   may be null but noth both.  SIZE may be null when BNDRNG is null.  */
+   may be null but not both.  SIZE may be null when BNDRNG is null.  */
 
 template <class GimpleOrTree>
 static void
@@ -898,7 +898,7 @@ maybe_warn_for_bound (opt_code opt, location_t loc, GimpleOrTree exp, tree func,
 			    func, bndrng[0], bndrng[1], size)
 	      : warning_at (&richloc, opt,
 			    (maybe
-			     ? G_("specified bound [%E, %E] exceeds "
+			     ? G_("specified bound [%E, %E] may exceed "
 				  "destination size %E")
 			     : G_("specified bound [%E, %E] exceeds "
 				  "destination size %E")),
@@ -2940,7 +2940,6 @@ memmodel_name (unsigned HOST_WIDE_INT val)
 /* Indices of valid MEMORY_MODELS above for corresponding atomic operations.  */
 static const unsigned char load_models[] = { 0, 1, 2, 3, UCHAR_MAX };
 static const unsigned char store_models[] = { 0, 1, 4, UCHAR_MAX };
-static const unsigned char xchg_models[] = { 0, 1, 3, 4, 5, UCHAR_MAX };
 static const unsigned char flag_clr_models[] = { 0, 1, 4, UCHAR_MAX };
 static const unsigned char all_models[] = { 0, 1, 2, 3, 4, 5, UCHAR_MAX };
 
@@ -3097,7 +3096,7 @@ pass_waccess::check_atomic_builtin (gcall *stmt)
   switch (DECL_FUNCTION_CODE (callee))
     {
 #define BUILTIN_ACCESS_SIZE_FNSPEC(N)			\
-      BUILT_IN_SYNC_FETCH_AND_ADD_ ## N:		\
+	 BUILT_IN_SYNC_FETCH_AND_ADD_ ## N:		\
     case BUILT_IN_SYNC_FETCH_AND_SUB_ ## N:		\
     case BUILT_IN_SYNC_FETCH_AND_OR_ ## N:		\
     case BUILT_IN_SYNC_FETCH_AND_AND_ ## N:		\
@@ -3135,23 +3134,23 @@ pass_waccess::check_atomic_builtin (gcall *stmt)
     case BUILT_IN_ATOMIC_FETCH_NAND_ ## N:		\
     case BUILT_IN_ATOMIC_FETCH_OR_ ## N:		\
     case BUILT_IN_ATOMIC_FETCH_XOR_ ## N:		\
-	bytes = N;					\
-	if (sucs_arg == UINT_MAX)			\
-	  sucs_arg = 2;					\
-	if (!pvalid_models)				\
-	  pvalid_models = all_models;			\
-	break;						\
-    case BUILT_IN_ATOMIC_EXCHANGE_ ## N:		\
-	bytes = N;					\
-	sucs_arg = 3;					\
-	pvalid_models = xchg_models;			\
-	break;						\
-    case BUILT_IN_ATOMIC_COMPARE_EXCHANGE_ ## N:	\
-	bytes = N;					\
-	sucs_arg = 4;					\
-	fail_arg = 5;					\
+      bytes = N;					\
+      if (sucs_arg == UINT_MAX)				\
+	sucs_arg = 2;					\
+      if (!pvalid_models)				\
 	pvalid_models = all_models;			\
-	arg2 = 1
+      break;						\
+    case BUILT_IN_ATOMIC_EXCHANGE_ ## N:		\
+      bytes = N;					\
+      sucs_arg = 2;					\
+      pvalid_models = all_models;			\
+      break;						\
+    case BUILT_IN_ATOMIC_COMPARE_EXCHANGE_ ## N:	\
+      bytes = N;					\
+      sucs_arg = 4;					\
+      fail_arg = 5;					\
+      pvalid_models = all_models;			\
+      arg2 = 1
 
     case BUILTIN_ACCESS_SIZE_FNSPEC (1);
       break;
@@ -3167,6 +3166,55 @@ pass_waccess::check_atomic_builtin (gcall *stmt)
     case BUILT_IN_ATOMIC_CLEAR:
       sucs_arg = 1;
       pvalid_models = flag_clr_models;
+      break;
+
+#define BUILTIN_TSAN_ACCESS_SIZE_FNSPEC(N)		\
+	 BUILT_IN_TSAN_ATOMIC ## N ##_LOAD:		\
+      pvalid_models = load_models;			\
+      sucs_arg = 1;					\
+      /* FALLTHROUGH */					\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_STORE:		\
+      if (!pvalid_models)				\
+	pvalid_models = store_models;			\
+      /* FALLTHROUGH */					\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_FETCH_ADD:	\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_FETCH_SUB:	\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_FETCH_AND:	\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_FETCH_NAND:	\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_FETCH_OR:		\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_FETCH_XOR:	\
+      bytes = N / 8;					\
+      if (sucs_arg == UINT_MAX)				\
+	sucs_arg = 2;					\
+      if (!pvalid_models)				\
+	pvalid_models = all_models;			\
+      break;						\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_EXCHANGE:		\
+      bytes = N / 8;					\
+      sucs_arg = 2;					\
+      pvalid_models = all_models;			\
+      break;						\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_COMPARE_EXCHANGE_STRONG:	\
+    case BUILT_IN_TSAN_ATOMIC ## N ##_COMPARE_EXCHANGE_WEAK:	\
+      bytes = N / 8;					\
+      sucs_arg = 3;					\
+      fail_arg = 4;					\
+      pvalid_models = all_models;			\
+      arg2 = 1
+
+    case BUILTIN_TSAN_ACCESS_SIZE_FNSPEC (8);
+      break;
+
+    case BUILTIN_TSAN_ACCESS_SIZE_FNSPEC (16);
+      break;
+
+    case BUILTIN_TSAN_ACCESS_SIZE_FNSPEC (32);
+      break;
+
+    case BUILTIN_TSAN_ACCESS_SIZE_FNSPEC (64);
+      break;
+
+    case BUILTIN_TSAN_ACCESS_SIZE_FNSPEC (128);
       break;
 
     default:
@@ -3944,7 +3992,7 @@ pass_waccess::warn_invalid_pointer (tree ref, gimple *use_stmt,
       if (!var)
 	ref = NULL_TREE;
       /* Don't warn for cases like when a cdtor returns 'this' on ARM.  */
-      else if (warning_suppressed_p (var, OPT_Wuse_after_free))
+      else if (warning_suppressed_p (var, OPT_Wuse_after_free_))
 	return;
       else if (DECL_ARTIFICIAL (var))
 	ref = NULL_TREE;
@@ -3966,18 +4014,18 @@ pass_waccess::warn_invalid_pointer (tree ref, gimple *use_stmt,
       if (!m_early_checks_p
 	  || (equality && warn_use_after_free < 3)
 	  || (maybe && warn_use_after_free < 2)
-	  || warning_suppressed_p (use_stmt, OPT_Wuse_after_free))
+	  || warning_suppressed_p (use_stmt, OPT_Wuse_after_free_))
 	return;
 
       const tree inval_decl = gimple_call_fndecl (inval_stmt);
 
       auto_diagnostic_group d;
-      if ((ref && warning_at (use_loc, OPT_Wuse_after_free,
+      if ((ref && warning_at (use_loc, OPT_Wuse_after_free_,
 			      (maybe
 			       ? G_("pointer %qE may be used after %qD")
 			       : G_("pointer %qE used after %qD")),
 			      ref, inval_decl))
-	  || (!ref && warning_at (use_loc, OPT_Wuse_after_free,
+	  || (!ref && warning_at (use_loc, OPT_Wuse_after_free_,
 			      (maybe
 			       ? G_("pointer may be used after %qD")
 			       : G_("pointer used after %qD")),
@@ -3985,7 +4033,7 @@ pass_waccess::warn_invalid_pointer (tree ref, gimple *use_stmt,
 	{
 	  location_t loc = gimple_location (inval_stmt);
 	  inform (loc, "call to %qD here", inval_decl);
-	  suppress_warning (use_stmt, OPT_Wuse_after_free);
+	  suppress_warning (use_stmt, OPT_Wuse_after_free_);
 	}
       return;
     }

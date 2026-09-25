@@ -514,6 +514,10 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     template<typename _Rep, typename _Period>
       class duration
       {
+	// _GLIBCXX_RESOLVE_LIB_DEFECTS
+	// 4481. Disallow chrono::duration<const T, P>
+	static_assert(is_same<_Rep, __remove_cvref_t<_Rep>>::value,
+		      "rep should be cv-unqualified object type");
 	static_assert(!__is_duration<_Rep>::value,
 		      "rep cannot be a std::chrono::duration");
 	static_assert(__is_ratio<_Period>::value,
@@ -1035,8 +1039,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
      * returns the closest value that is less than the argument.
      *
      * @tparam _ToDur The `duration` type to use for the result.
-     * @param __t A time point.
-     * @return The value of `__d` converted to type `_ToDur`.
+     * @param __tp A time point.
+     * @return The value of `__tp` rounded down to the precision of `_ToDur`.
      * @since C++17
      */
     template<typename _ToDur, typename _Clock, typename _Dur>
@@ -1056,8 +1060,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
      * returns the closest value that is greater than the argument.
      *
      * @tparam _ToDur The `duration` type to use for the result.
-     * @param __t A time point.
-     * @return The value of `__d` converted to type `_ToDur`.
+     * @param __tp A time point.
+     * @return The value of `__tp` rounded up to the precision of `_ToDur`.
      * @since C++17
      */
     template<typename _ToDur, typename _Clock, typename _Dur>
@@ -1078,8 +1082,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
      *
      * @tparam _ToDur The `duration` type to use for the result,
      *                which must have a non-floating-point `rep` type.
-     * @param __t A time point.
-     * @return The value of `__d` converted to type `_ToDur`.
+     * @param __tp A time point.
+     * @return The value of `__tp` rounded to the precision `_ToDur`.
      * @since C++17
      */
     template<typename _ToDur, typename _Clock, typename _Dur>
@@ -1213,7 +1217,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
     // To support the (forward) evolution of the library's defined
     // clocks, wrap inside inline namespace so that the current
-    // defintions of system_clock, steady_clock, and
+    // definitions of system_clock, steady_clock, and
     // high_resolution_clock types are uniquely mangled. This way, new
     // code can use the latests clocks, while the library can contain
     // compatibility definitions for previous versions.  At some
@@ -1352,7 +1356,7 @@ _GLIBCXX_END_INLINE_ABI_NAMESPACE(_V2)
    * for example `1.5e2ms` might be equivalent to
    * `chrono::duration<long double, chrono::milli>(1.5e2)`.
    *
-   * @since C+14
+   * @since C++14
    * @ingroup chrono
    */
   inline namespace chrono_literals

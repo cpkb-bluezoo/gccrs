@@ -22,9 +22,13 @@
 #include "config.h"
 #include "system.h"
 #include "coretypes.h"
+#include "bitmap.h"
+#include "function.h"
 #include "tm.h"
 #include "rtl.h"
 #include "tree.h"
+#include "value-range.h"
+#include "vr-values.h"
 #include "realmpfr.h"
 #include "dfp.h"
 
@@ -395,6 +399,7 @@ cmp_significand_0 (const REAL_VALUE_TYPE *a)
 static inline void
 set_significand_bit (REAL_VALUE_TYPE *r, unsigned int n)
 {
+  gcc_checking_assert (n < SIGNIFICAND_BITS);
   r->sig[n / HOST_BITS_PER_LONG]
     |= (unsigned long)1 << (n % HOST_BITS_PER_LONG);
 }
@@ -404,6 +409,7 @@ set_significand_bit (REAL_VALUE_TYPE *r, unsigned int n)
 static inline void
 clear_significand_bit (REAL_VALUE_TYPE *r, unsigned int n)
 {
+  gcc_checking_assert (n < SIGNIFICAND_BITS);
   r->sig[n / HOST_BITS_PER_LONG]
     &= ~((unsigned long)1 << (n % HOST_BITS_PER_LONG));
 }
@@ -416,6 +422,7 @@ test_significand_bit (REAL_VALUE_TYPE *r, unsigned int n)
   /* ??? Compiler bug here if we return this expression directly.
      The conversion to bool strips the "&1" and we wind up testing
      e.g. 2 != 0 -> true.  Seen in gcc version 3.2 20020520.  */
+  gcc_checking_assert (n < SIGNIFICAND_BITS);
   int t = (r->sig[n / HOST_BITS_PER_LONG] >> (n % HOST_BITS_PER_LONG)) & 1;
   return t;
 }
@@ -427,6 +434,7 @@ clear_significand_below (REAL_VALUE_TYPE *r, unsigned int n)
 {
   int i, w = n / HOST_BITS_PER_LONG;
 
+  gcc_checking_assert (n <= SIGNIFICAND_BITS);
   for (i = 0; i < w; ++i)
     r->sig[i] = 0;
 
@@ -3186,7 +3194,7 @@ const struct real_format motorola_single_format =
       - Denormals can be represented, but are treated as +0.0 when
 	used as an operand and are never generated as a result.
       - -0.0 can be represented, but a zero result is always +0.0.
-      - the only supported rounding mode is trunction (towards zero).  */
+      - the only supported rounding mode is truncation (towards zero).  */
 const struct real_format spu_single_format =
   {
     encode_ieee_single,
@@ -5510,6 +5518,26 @@ bool format_helper::can_represent_integral_type_p (tree type) const
      only one mantissa bit.  */
   bool signed_p = TYPE_SIGN (type) == SIGNED;
   return TYPE_PRECISION (type) - signed_p <= significand_size (*this);
+}
+
+/* True if all values in integer range *VR can be represented by this
+   floating-point type exactly.  */
+
+bool
+format_helper::can_represent_range_value_p (const irange *vr) const
+{
+  gcc_assert (!decimal_p ());
+
+  if (vr->undefined_p () || vr->varying_p ())
+    return false;
+
+  tree type = vr->type ();
+  unsigned precision = significand_size (*this);
+
+  if (TYPE_SIGN (type) == SIGNED)
+    precision++;
+
+  return range_fits_type_p (vr, precision, TYPE_SIGN (type));
 }
 
 /* True if mode M has a NaN representation and

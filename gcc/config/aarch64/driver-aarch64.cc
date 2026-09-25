@@ -65,7 +65,7 @@ struct aarch64_core_data
 #define AARCH64_CORE(CORE_NAME, CORE_IDENT, SCHED, ARCH, FLAGS, COSTS, IMP, PART, VARIANT) \
   { CORE_NAME, #ARCH, IMP, PART, unsigned(VARIANT), feature_deps::cpu_##CORE_IDENT },
 
-static CONSTEXPR const aarch64_core_data aarch64_cpu_data[] =
+static constexpr const aarch64_core_data aarch64_cpu_data[] =
 {
 #include "aarch64-cores.def"
   { NULL, NULL, INVALID_IMP, INVALID_CORE, ALL_VARIANTS, 0 }
@@ -79,11 +79,10 @@ struct aarch64_arch_driver_info
   aarch64_feature_flags flags;
 };
 
-/* Skip the leading "V" in the architecture name.  */
 #define AARCH64_ARCH(NAME, CORE, ARCH_IDENT, ARCH_REV, FLAGS) \
-  { #ARCH_IDENT + 1, NAME, feature_deps::ARCH_IDENT ().enable },
+  { #ARCH_IDENT, NAME, feature_deps::ARCH_IDENT ().enable },
 
-static CONSTEXPR const aarch64_arch_driver_info aarch64_arches[] =
+static constexpr const aarch64_arch_driver_info aarch64_arches[] =
 {
 #include "aarch64-arches.def"
   {NULL, NULL, 0}
@@ -120,7 +119,7 @@ get_cpu_from_id (const char* name)
   return NULL;
 }
 
-/* Check wether the CORE array is the same as the big.LITTLE BL_CORE.
+/* Check whether the CORE array is the same as the big.LITTLE BL_CORE.
    For an example CORE={0xd08, 0xd03} and
    BL_CORE=AARCH64_BIG_LITTLE (0xd08, 0xd03) will return true.  */
 
@@ -436,7 +435,7 @@ host_detect_local_cpu (int argc, const char **argv)
 				 : DEFAULT_ARCH);
 	  auto arch_info = get_arch_from_id (arch_id);
 
-	  /* We got some arch indentifier that's not in aarch64-arches.def?  */
+	  /* We got some arch identifier that's not in aarch64-arches.def?  */
 	  if (!arch_info)
 	    goto not_found;
 

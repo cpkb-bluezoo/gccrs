@@ -16,6 +16,7 @@
 // along with GCC; see the file COPYING3.  If not see
 // <http://www.gnu.org/licenses/>.
 
+#include "rust-rib.h"
 #include "rust-system.h"
 #include "rust-hir-pattern-analysis.h"
 #include "rust-diagnostics.h"
@@ -26,14 +27,14 @@
 #include "rust-mapping-common.h"
 #include "rust-system.h"
 #include "rust-tyty.h"
-#include "rust-immutable-name-resolution-context.h"
+#include "rust-finalized-name-resolution-context.h"
 
 namespace Rust {
 namespace Analysis {
 
 PatternChecker::PatternChecker ()
   : tyctx (*Resolver::TypeCheckContext::get ()),
-    resolver (Resolver2_0::ImmutableNameResolutionContext::get ().resolver ()),
+    resolver (Resolver2_0::FinalizedNameResolutionContext::get ()),
     mappings (Analysis::Mappings::get ())
 {}
 
@@ -235,7 +236,7 @@ PatternChecker::visit (CallExpr &expr)
 
   NodeId ast_node_id = expr.get_fnexpr ().get_mappings ().get_nodeid ();
   NodeId ref_node_id;
-  if (auto id = resolver.lookup (ast_node_id))
+  if (auto id = resolver.lookup (ast_node_id, Resolver2_0::Namespace::Values))
     ref_node_id = *id;
   else
     return;
@@ -330,16 +331,15 @@ PatternChecker::visit (RangeFullExpr &)
 {}
 
 void
-PatternChecker::visit (RangeFromToInclExpr &expr)
+PatternChecker::visit (RangeToInclExpr &expr)
 {
-  expr.get_from_expr ().accept_vis (*this);
   expr.get_to_expr ().accept_vis (*this);
 }
 
 void
-PatternChecker::visit (RangeToInclExpr &expr)
+PatternChecker::visit (BoxExpr &expr)
 {
-  expr.get_to_expr ().accept_vis (*this);
+  expr.get_expr ().accept_vis (*this);
 }
 
 void
@@ -477,6 +477,17 @@ PatternChecker::visit (UseDeclaration &)
 void
 PatternChecker::visit (Function &function)
 {
+  for (auto &param : function.get_function_params ())
+    {
+      TyTy::BaseType *param_ty;
+      bool ok
+	= tyctx.lookup_type (param.get_mappings ().get_hirid (), &param_ty);
+      rust_assert (ok);
+
+      if (param.get_param_name ().is_refutable (*param_ty))
+	rust_error_at (param.get_locus (), ErrorCode::E0005,
+		       "refutable pattern in function parameter");
+    }
   function.get_definition ().accept_vis (*this);
 }
 
@@ -677,6 +688,20 @@ PatternChecker::visit (LetStmt &stmt)
 {
   if (stmt.has_init_expr ())
     stmt.get_init_expr ().accept_vis (*this);
+
+  // skip let-else (allows refutable patterns)
+  if (stmt.has_else_expr ())
+    return;
+
+  TyTy::BaseType *binding_ty;
+  bool ok = tyctx.lookup_type (stmt.get_pattern ().get_mappings ().get_hirid (),
+			       &binding_ty);
+  if (!ok)
+    return; // type-check failed earlier
+
+  if (stmt.get_pattern ().is_refutable (*binding_ty))
+    rust_error_at (stmt.get_pattern ().get_locus (), ErrorCode::E0005,
+		   "refutable pattern in local binding");
 }
 
 void
@@ -953,6 +978,8 @@ PlaceInfo::specialize (const Constructor &c) const
 	      // TODO: support unions
 	      rust_unreachable ();
 	    }
+	  case TyTy::ADTType::ADTKind::EXTERN:
+	    return {};
 	  }
       }
       break;

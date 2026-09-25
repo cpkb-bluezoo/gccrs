@@ -455,7 +455,7 @@ struct iv_cand
   bool important;	/* Whether this is an "important" candidate, i.e. such
 			   that it should be considered by all uses.  */
   bool involves_undefs; /* Whether the IV involves undefined values.  */
-  ENUM_BITFIELD(iv_position) pos : 8;	/* Where it is computed.  */
+  enum iv_position pos : 8;/* Where it is computed.  */
   gimple *incremented_at;/* For original biv, the statement where it is
 			   incremented.  */
   tree var_before;	/* The variable used for it before increment.  */
@@ -524,7 +524,7 @@ struct iv_inv_expr_ent
 {
   /* Tree expression of the entry.  */
   tree expr;
-  /* Unique indentifier.  */
+  /* Unique identifier.  */
   int id;
   /* Hash value.  */
   hashval_t hash;
@@ -869,7 +869,7 @@ dump_cand (FILE *file, struct iv_cand *cand)
 
   if (cand->var_before)
     {
-      fprintf (file, "  Var befor: ");
+      fprintf (file, "  Var before: ");
       print_generic_expr (file, cand->var_before, TDF_SLIM);
       fprintf (file, "\n");
     }
@@ -2578,7 +2578,7 @@ group_compare_offset (const void *a, const void *b)
    contains more than two uses with distinct addr_offsets.  Return
    false otherwise.  We want to split such groups because:
 
-     1) Small groups don't have much benefit and may interfer with
+     1) Small groups don't have much benefit and may interfere with
 	general candidate selection.
      2) Size for problem with only small groups is usually small and
 	general algorithm can handle it well.
@@ -2658,7 +2658,7 @@ split_address_groups (struct ivopts_data *data)
 	  struct iv_use *next = group->vuses[j];
 	  poly_int64 offset = next->addr_offset - use->addr_offset;
 
-	  /* Split group if aksed to, or the offset against the first
+	  /* Split group if asked to, or the offset against the first
 	     use can't fit in offset part of addressing mode.  IV uses
 	     having the same offset are still kept in one group.  */
 	  if (maybe_ne (offset, 0)
@@ -3997,7 +3997,7 @@ get_computation_aff_1 (struct ivopts_data *data, gimple *at, struct iv_use *use,
 	  inner_type = TREE_TYPE (inner_base);
 	  /* If candidate is added from a biv whose type is smaller than
 	     ctype, we know both candidate and the biv won't overflow.
-	     In this case, it's safe to skip the convertion in candidate.
+	     In this case, it's safe to skip the conversion in candidate.
 	     As an example, (unsigned short)((unsigned long)A) equals to
 	     (unsigned short)A, if A has a type no larger than short.  */
 	  if (TYPE_PRECISION (inner_type) <= TYPE_PRECISION (uutype))
@@ -5382,6 +5382,11 @@ may_eliminate_iv (struct ivopts_data *data,
   aff_tree bnd;
   class tree_niter_desc *desc = NULL;
 
+  /* If the IV candidate involves undefs do not attempt to use it to
+     express a condition.  */
+  if (cand->involves_undefs)
+    return false;
+
   if (TREE_CODE (cand->iv->step) != INTEGER_CST)
     return false;
 
@@ -5778,7 +5783,7 @@ add_iv_candidate_for_doloop (struct ivopts_data *data)
 
   tree niter = niter_desc->niter;
   tree ntype = TREE_TYPE (niter);
-  gcc_assert (TREE_CODE (ntype) == INTEGER_TYPE);
+  gcc_assert (INTEGRAL_NB_TYPE_P (ntype));
 
   tree may_be_zero = niter_desc->may_be_zero;
   if (may_be_zero && integer_zerop (may_be_zero))
@@ -5810,6 +5815,15 @@ add_iv_candidate_for_doloop (struct ivopts_data *data)
     base = fold_build2 (PLUS_EXPR, ntype, unshare_expr (niter),
 			build_int_cst (ntype, 1));
 
+  /* For non integer types or non-mode precision types,
+     convert directly to an integer type. */
+  if (TREE_CODE (ntype) != INTEGER_TYPE
+      || !type_has_mode_precision_p (ntype))
+    {
+      ntype = lang_hooks.types.type_for_mode (TYPE_MODE (ntype),
+					      TYPE_UNSIGNED (ntype));
+      base = fold_convert (ntype, base);
+    }
 
   add_candidate (data, base, build_int_cst (ntype, -1), true, NULL, NULL, true);
 }
@@ -6079,27 +6093,22 @@ ivopts_estimate_reg_pressure (struct ivopts_data *data, unsigned n_invs,
     available_regs = available_regs - target_clobbered_regs;
 
   /* If we have enough registers.  */
-  if (regs_needed + target_res_regs < available_regs)
-    cost = n_new;
-  /* If close to running out of registers, try to preserve them.  */
-  else if (regs_needed <= available_regs)
-    cost = target_reg_cost [speed] * regs_needed;
+  if (regs_needed <= available_regs)
+    cost = 0;
   /* If we run out of available registers but the number of candidates
-     does not, we penalize extra registers using target_spill_cost.  */
+     does not, we penalize extra registers using target_spill_cost.
+     As we tend to spill invariants here, only take loading the
+     invariant into account, because the invariant won't change for the
+     duration of the loop and storing it every iteration is unnecessary. */
   else if (n_cands <= available_regs)
-    cost = target_reg_cost [speed] * available_regs
-	   + target_spill_cost [speed] * (regs_needed - available_regs);
-  /* If the number of candidates runs out available registers, we penalize
-     extra candidate registers using target_spill_cost * 2.  Because it is
-     more expensive to spill induction variable than invariant.  */
+    cost = target_spill_cost [speed] * (regs_needed - available_regs) / 2;
+  /* If both IV cands and invariants spill, calculate additional cost for
+     having to store spilled candidates. */
   else
-    cost = target_reg_cost [speed] * available_regs
-	   + target_spill_cost [speed] * (n_cands - available_regs) * 2
-	   + target_spill_cost [speed] * (regs_needed - n_cands);
+    cost = (target_spill_cost [speed] * (regs_needed - available_regs) / 2
+	    + target_spill_cost[speed] * (n_cands - available_regs) / 2);
 
-  /* Finally, add the number of candidates, so that we prefer eliminating
-     induction variables if possible.  */
-  return cost + n_cands;
+  return cost;
 }
 
 /* For each size of the induction variable set determine the penalty.  */
@@ -6612,7 +6621,7 @@ iv_ca_dump (struct ivopts_data *data, FILE *file, class iv_ca *ivs)
 /* Try changing candidate in IVS to CAND for each use.  Return cost of the
    new set, and store differences in DELTA.  Number of induction variables
    in the new set is stored to N_IVS. MIN_NCAND is a flag. When it is true
-   the function will try to find a solution with mimimal iv candidates.  */
+   the function will try to find a solution with minimal iv candidates.  */
 
 static comp_cost
 iv_ca_extend (struct ivopts_data *data, class iv_ca *ivs,
@@ -7243,10 +7252,15 @@ create_new_iv (struct ivopts_data *data, struct iv_cand *cand)
       name_info (data, cand->var_before)->preserve_biv = true;
       name_info (data, cand->var_after)->preserve_biv = true;
 
-      /* Rewrite the increment so that it uses var_before directly.  */
+      /* Rewrite the increment so that it uses var_before directly.  Missed
+	 optimization can result in a use IV with zero step, avoid
+	 crashing in that case.  */
       use = find_interesting_uses_op (data, cand->var_after);
-      group = data->vgroups[use->group_id];
-      group->selected = cand;
+      if (use)
+	{
+	  group = data->vgroups[use->group_id];
+	  group->selected = cand;
+	}
       return;
     }
 
@@ -7625,11 +7639,10 @@ rewrite_use_address (struct ivopts_data *data,
   else
     {
       /* When we end up confused enough and have no suitable base but
-	 stuffed everything to index2 use a LEA for the address and
+	 stuffed everything to indexes use a LEA for the address and
 	 create a plain MEM_REF to avoid basing a memory reference
 	 on address zero which create_mem_ref_raw does as fallback.  */
       if (TREE_CODE (ref) == TARGET_MEM_REF
-	  && TMR_INDEX2 (ref) != NULL_TREE
 	  && integer_zerop (TREE_OPERAND (ref, 0)))
 	{
 	  ref = fold_build1 (ADDR_EXPR, TREE_TYPE (TREE_OPERAND (ref, 0)), ref);

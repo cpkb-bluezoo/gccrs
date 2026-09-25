@@ -26,8 +26,8 @@ int main (void)
 
   mkarray (x);
 
-  #pragma omp target enter data map(alloc: x[ :DIM1])
-  #pragma omp target enter data map(iterator(i=0:DIM1), to: x[i][ :DIM2])
+  #pragma omp target enter data map(alloc: x[:DIM1])
+  #pragma omp target enter data map(iterator(i=0:DIM1), to: x[i][:DIM2])
   #pragma omp target map(from: expected)
     {
       expected = 0;
@@ -47,12 +47,28 @@ int main (void)
   if (sum != 0)
     return 1;
 
-  #pragma omp target update from(iterator(i=0:DIM1): x[i][ :DIM2])
+  #pragma omp target update from(iterator(i=0:DIM1): x[i][:DIM2])
 
   /* Host copy should now be updated.  */
   sum = 0;
   for (int i = 0; i < DIM1; i++)
     for (int j = 0; j < DIM2; j++)
       sum += x[i][j];
+
+  /* Modify device copy again.  */
+  #pragma omp target map(present, alloc: x)
+    for (int i = 0; i < DIM1; i++)
+      for (int j = 0; j < DIM2; j++)
+	x[i][j] = (i + 1) * (j + 2) + 42;
+
+  /* Copy back to the host and check.  */
+  #pragma omp target exit data map(iterator(i=0:DIM1), from: x[i][ :DIM2])
+  #pragma omp target exit data map(release: x[ :DIM1])
+
+  for (int i = 0; i < DIM1; i++)
+    for (int j = 0; j < DIM2; j++)
+      if (x[i][j] != (i + 1) * (j + 2) + 42)
+	__builtin_abort ();
+
   return sum - expected;
 }

@@ -402,7 +402,7 @@ find_assumption_locals_r (gimple_stmt_iterator *gsi_p, bool *,
   return NULL_TREE;
 }
 
-/* Create a new PARM_DECL that is indentical in all respect to DECL except that
+/* Create a new PARM_DECL that is identical in all respect to DECL except that
    DECL can be either a VAR_DECL, a PARM_DECL or RESULT_DECL.  The original
    DECL must come from ID->src_fn and the copy will be part of ID->dst_fn.  */
 
@@ -673,6 +673,8 @@ lower_assumption (gimple_stmt_iterator *gsi, struct lower_data *data)
     }
   DECL_ARGUMENTS (lad.id.dst_fn) = parms;
   TREE_TYPE (lad.id.dst_fn) = build_function_type (boolean_type_node, parmt);
+  /* The body function no longer has var. args, unset stdarg.  */
+  DECL_STRUCT_FUNCTION (lad.id.dst_fn)->stdarg = 0;
 
   cgraph_node::add_new_function (lad.id.dst_fn, false);
 

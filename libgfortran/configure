@@ -17917,7 +17917,30 @@ fi
 # correctly enabled
 
 case $host_os in
-        darwin* | hpux* | linux* | osf* | solaris*)
+        solaris*)
+        # Solaris 11.4 introduced XPG7 support and did away with the need for
+        # _REENTRANT.
+
+        cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+#            undef _XOPEN_SOURCE
+#            include <sys/feature_tests.h>
+#            if _XOPEN_VERSION < 700
+             AX_PTHREAD_SOLARIS__REENTRANT
+#            endif
+
+_ACEOF
+if (eval "$ac_cpp conftest.$ac_ext") 2>&5 |
+  $EGREP "AX_PTHREAD_SOLARIS__REENTRANT" >/dev/null 2>&1; then :
+  ax_pthread_check_macro="_REENTRANT"
+else
+  ax_pthread_check_macro="--"
+fi
+rm -f conftest*
+
+        ;;
+        darwin* | hpux* | linux* | osf*)
         ax_pthread_check_macro="_REENTRANT"
         ;;
 
@@ -18414,6 +18437,50 @@ ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
+# caf_shmem needs process-shared pthread primitives that are visible through
+# the default pthread headers.  AX_PTHREAD already established the baseline
+# pthread flags; this additional check only verifies that the specific
+# process-shared API surface is usable for caf/shmem/thread_support.c.
+if test x$enable_caf_shmem = xtrue; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for usable process-shared pthread support for caf_shmem" >&5
+$as_echo_n "checking for usable process-shared pthread support for caf_shmem... " >&6; }
+  save_CFLAGS="$CFLAGS"
+  CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <pthread.h>
+int
+main ()
+{
+pthread_mutexattr_t mattr;
+        pthread_condattr_t cattr;
+        (void) &pthread_mutexattr_setpshared;
+        (void) &pthread_condattr_setpshared;
+        return pthread_mutexattr_init (&mattr)
+          || pthread_condattr_init (&cattr)
+          || pthread_mutexattr_setpshared (&mattr, PTHREAD_PROCESS_SHARED)
+          || pthread_condattr_setpshared (&cattr, PTHREAD_PROCESS_SHARED);
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+     enable_caf_shmem=false
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+  CFLAGS="$save_CFLAGS"
+fi
+case ${host} in
+  *-*-darwin[89]* | *-*-darwin10*)
+    # These versions define PTHREAD_PROCESS_SHARED but the functionality
+    # is not available at runtime, so the configure check misleads.
+    enable_caf_shmem=false;;
+esac
  if test x$enable_caf_shmem = xtrue; then
   ENABLE_CAF_SHMEM_TRUE=
   ENABLE_CAF_SHMEM_FALSE='#'
@@ -22799,6 +22866,54 @@ _ACEOF
 
 
 
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for powl" >&5
+$as_echo_n "checking for powl... " >&6; }
+if ${gcc_cv_math_func_powl+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  if test x$gcc_no_link = xyes; then
+  as_fn_error $? "Link tests are not allowed after GCC_NO_EXECUTABLES." "$LINENO" 5
+fi
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+#ifdef HAVE_COMPLEX_H
+#include <complex.h>
+#endif
+#ifdef HAVE_MATH_H
+#include <math.h>
+#endif
+
+int (*ptr)() = (int (*)())powl;
+
+int
+main ()
+{
+  return 0;
+}
+
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  gcc_cv_math_func_powl=yes
+else
+  gcc_cv_math_func_powl=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $gcc_cv_math_func_powl" >&5
+$as_echo "$gcc_cv_math_func_powl" >&6; }
+  if test $gcc_cv_math_func_powl = yes; then
+
+cat >>confdefs.h <<_ACEOF
+#define HAVE_POWL 1
+_ACEOF
+
+  fi
+
+
+
+
   { $as_echo "$as_me:${as_lineno-$LINENO}: checking for cpowf" >&5
 $as_echo_n "checking for cpowf... " >&6; }
 if ${gcc_cv_math_func_cpowf+:} false; then :
@@ -25192,6 +25307,54 @@ $as_echo "$gcc_cv_math_func_erf" >&6; }
 
 cat >>confdefs.h <<_ACEOF
 #define HAVE_ERF 1
+_ACEOF
+
+  fi
+
+
+
+
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for erfl" >&5
+$as_echo_n "checking for erfl... " >&6; }
+if ${gcc_cv_math_func_erfl+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  if test x$gcc_no_link = xyes; then
+  as_fn_error $? "Link tests are not allowed after GCC_NO_EXECUTABLES." "$LINENO" 5
+fi
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+#ifdef HAVE_COMPLEX_H
+#include <complex.h>
+#endif
+#ifdef HAVE_MATH_H
+#include <math.h>
+#endif
+
+int (*ptr)() = (int (*)())erfl;
+
+int
+main ()
+{
+  return 0;
+}
+
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  gcc_cv_math_func_erfl=yes
+else
+  gcc_cv_math_func_erfl=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $gcc_cv_math_func_erfl" >&5
+$as_echo "$gcc_cv_math_func_erfl" >&6; }
+  if test $gcc_cv_math_func_erfl = yes; then
+
+cat >>confdefs.h <<_ACEOF
+#define HAVE_ERFL 1
 _ACEOF
 
   fi
@@ -31983,7 +32146,7 @@ fi
 
   { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether the target supports hidden visibility" >&5
 $as_echo_n "checking whether the target supports hidden visibility... " >&6; }
-if ${libgfor_cv_have_attribute_visibility+:} false; then :
+if ${gcc_cv_have_attribute_visibility+:} false; then :
   $as_echo_n "(cached) " >&6
 else
 
@@ -32001,16 +32164,16 @@ main ()
 }
 _ACEOF
 if ac_fn_c_try_compile "$LINENO"; then :
-  libgfor_cv_have_attribute_visibility=yes
+  gcc_cv_have_attribute_visibility=yes
 else
-  libgfor_cv_have_attribute_visibility=no
+  gcc_cv_have_attribute_visibility=no
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
   CFLAGS="$save_CFLAGS"
 fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $libgfor_cv_have_attribute_visibility" >&5
-$as_echo "$libgfor_cv_have_attribute_visibility" >&6; }
-  if test $libgfor_cv_have_attribute_visibility = yes; then
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $gcc_cv_have_attribute_visibility" >&5
+$as_echo "$gcc_cv_have_attribute_visibility" >&6; }
+  if test $gcc_cv_have_attribute_visibility = yes; then
 
 $as_echo "#define HAVE_ATTRIBUTE_VISIBILITY 1" >>confdefs.h
 

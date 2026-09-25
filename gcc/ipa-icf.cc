@@ -659,10 +659,20 @@ sem_function::equals_wpa (sem_item *item,
     return return_false_with_msg ("different number of references");
 
   /* Checking function attributes.
-     This is quadratic in number of attributes  */
-  if (comp_type_attributes (TREE_TYPE (decl),
-			    TREE_TYPE (item->decl)) != 1)
+     This is quadratic in number of attributes.
+     comp_type_attributes only considers attributes that affect type
+     identity, but an attribute that leaves the type alone can still let
+     the body assume something, nonnull being one, so compare the lists
+     the same way the decl attributes are compared below.  */
+  if (!attribute_list_equal (TYPE_ATTRIBUTES (TREE_TYPE (decl)),
+			     TYPE_ATTRIBUTES (TREE_TYPE (item->decl))))
     return return_false_with_msg ("different type attributes");
+  /* A METHOD_TYPE promises a nonnull this pointer without carrying an
+     attribute that says so, so it is not interchangeable with a
+     FUNCTION_TYPE that makes no such promise.  */
+  if ((TREE_CODE (TREE_TYPE (decl)) == METHOD_TYPE)
+      != (TREE_CODE (TREE_TYPE (item->decl)) == METHOD_TYPE))
+    return return_false_with_msg ("METHOD_TYPE and FUNCTION_TYPE mismatch");
   if (!attribute_list_equal (DECL_ATTRIBUTES (decl),
 			     DECL_ATTRIBUTES (item->decl)))
     return return_false_with_msg ("different decl attributes");
@@ -1473,7 +1483,7 @@ sem_function::hash_stmt (gimple *stmt, inchash::hash &hstate)
 					  (&map, gimple_op (stmt, i));
 	    m_checker->hash_operand (gimple_op (stmt, i), hstate, 0,
 				     access_type);
-	    /* For memory accesses when hasing for LTO stremaing record
+	    /* For memory accesses when hashing for LTO streaming record
 	       base and ref alias ptr types so we can compare them at WPA
 	       time without having to read actual function body.  */
 	    if (access_type == func_checker::OP_MEMORY
@@ -2795,7 +2805,7 @@ sem_item_optimizer::subdivide_classes_by_equality (bool in_wpa)
 		}
 
 	      // We replace newly created new_vector for the class we've just
-	      // splitted.
+	      // split.
 	      c->members.release ();
 	      c->members.create (new_vector.length ());
 
@@ -2963,7 +2973,7 @@ sem_item_optimizer::traverse_congruence_split (congruence_class * const &cls,
   const congruence_class *splitter_cls = pair->cls;
 
   /* If counted bits are greater than zero and less than the number of members
-     a group will be splitted.  */
+     a group will be split.  */
   unsigned popcount = bitmap_count_bits (b);
 
   if (popcount > 0 && popcount < cls->members.length ())
@@ -3031,7 +3041,7 @@ sem_item_optimizer::traverse_congruence_split (congruence_class * const &cls,
 
       if (dump_file && (dump_flags & TDF_DETAILS))
 	{
-	  fprintf (dump_file, "  congruence class splitted:\n");
+	  fprintf (dump_file, "  congruence class split:\n");
 	  cls->dump (dump_file, 4);
 
 	  fprintf (dump_file, "  newly created groups:\n");
@@ -3234,7 +3244,7 @@ sem_item_optimizer::process_cong_reduction (void)
 	     "new classes.\n", new_classes);
 }
 
-/* Debug function prints all informations about congruence classes.  */
+/* Debug function prints all information about congruence classes.  */
 
 void
 sem_item_optimizer::dump_cong_classes (void)

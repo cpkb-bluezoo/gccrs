@@ -71,7 +71,8 @@ struct target_recog *this_target_recog = &default_target_recog;
 
 int volatile_ok;
 
-struct recog_data_d recog_data;
+static struct recog_data_d main_recog_data;
+struct recog_data_d *recog_data_ptr = &main_recog_data;
 
 /* Contains a vector of operand_alternative structures, such that
    operand OP of alternative A is at index A * n_operands + OP.
@@ -95,6 +96,8 @@ bool raw_constraint_p;
    Controls the significance of (SUBREG (MEM)).  */
 
 int reload_completed;
+
+bool post_ra_split_completed;
 
 /* Nonzero after thread_prologue_and_epilogue_insns has run.  */
 int epilogue_completed;
@@ -2946,6 +2949,7 @@ preprocess_constraints (int n_operands, int n_alternatives,
 	{
 	  op_alt[i].cl = NO_REGS;
 	  op_alt[i].register_filters = 0;
+	  op_alt[i].dependent_filters = 0;
 	  op_alt[i].constraint = p;
 	  op_alt[i].matches = -1;
 	  op_alt[i].matched = -1;
@@ -3013,6 +3017,9 @@ preprocess_constraints (int n_operands, int n_alternatives,
 			  auto filter_id = get_register_filter_id (cn);
 			  if (filter_id >= 0)
 			    op_alt[i].register_filters |= 1U << filter_id;
+			  auto dep_filter_id = get_dependent_filter_id (cn);
+			  if (dep_filter_id >= 0)
+			    op_alt[i].dependent_filters |= 1U << dep_filter_id;
 			}
 		      break;
 
@@ -3135,6 +3142,29 @@ struct funny_match
 {
   int this_op, other;
 };
+
+/* For a register constraint CN with a dependent filter, return true if
+   the respective filter allows REGNO (OP) + OFFSET given the ref-operand
+   in recog_data.operand or false if it doesn't.
+   If the filter cannot be evaluated, for example when no hard reg
+   has been chosen yet, return true.  */
+
+static bool
+test_dependent_filter (constraint_num cn, rtx op, int offset,
+		       machine_mode mode)
+{
+  int id = get_dependent_filter_id (cn);
+  if (id < 0 || !REG_P (op))
+    return true;
+  int ref_opno = get_dependent_filter_ref (id);
+  if (ref_opno < 0 || ref_opno >= recog_data.n_operands)
+    return true;
+  rtx ref_op = recog_data.operand[ref_opno];
+  if (!REG_P (ref_op))
+    return true;
+  return eval_dependent_filter (id, REGNO (op) + offset, mode,
+				REGNO (ref_op), GET_MODE (ref_op));
+}
 
 bool
 constrain_operands (int strict, alternative_mask alternatives)
@@ -3337,7 +3367,10 @@ constrain_operands (int strict, alternative_mask alternatives)
 			      && reg_fits_class_p (op, cl, offset, mode)
 			      && (!filter
 				  || TEST_HARD_REG_BIT (*filter,
-							REGNO (op) + offset))))
+							REGNO (op) + offset))
+			      && (strict <= 0
+				  || test_dependent_filter (cn, op, offset,
+							    mode))))
 			win = true;
 		    }
 
@@ -3525,6 +3558,8 @@ split_insn (rtx_insn *insn)
      splitters instead of computing the proper hard register.  */
   if (reload_completed && first != last)
     {
+      auto old_post_ra_split_completed = post_ra_split_completed;
+      post_ra_split_completed = true;
       first = NEXT_INSN (first);
       for (;;)
 	{
@@ -3534,6 +3569,7 @@ split_insn (rtx_insn *insn)
 	    break;
 	  first = NEXT_INSN (first);
 	}
+      post_ra_split_completed = old_post_ra_split_completed;
     }
 
   return last;
@@ -3609,6 +3645,9 @@ split_all_insns (void)
 	}
     }
 
+  if (reload_completed)
+    post_ra_split_completed = true;
+
   default_rtl_profile ();
   if (changed)
     {
@@ -3658,6 +3697,9 @@ split_all_insns_noflow (void)
 	    split_insn (insn);
 	}
     }
+
+  if (reload_completed)
+    post_ra_split_completed = true;
 }
 
 struct peep2_insn_data
@@ -4023,6 +4065,7 @@ peep2_attempt (basic_block bb, rtx_insn *insn, int match_len, rtx_insn *attempt)
 
       CALL_INSN_FUNCTION_USAGE (new_insn)
 	= CALL_INSN_FUNCTION_USAGE (old_insn);
+      CALL_INSN_ABI_ID (new_insn) = CALL_INSN_ABI_ID (old_insn);
       SIBLING_CALL_P (new_insn) = SIBLING_CALL_P (old_insn);
 
       for (note = REG_NOTES (old_insn);

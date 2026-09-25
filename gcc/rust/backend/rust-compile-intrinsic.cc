@@ -29,7 +29,13 @@ using IValue = Values::Intrinsics;
 
 static const std::map<std::string, handlers::HandlerBuilder> generic_intrinsics
   = {{IValue::OFFSET, handlers::offset},
+     {IValue::ARITH_OFFSET, handlers::arith_offset_handler},
+     {IValue::WRITE_BYTES, handlers::write_bytes_handler},
+     {IValue::ASSERT_ZERO_VALID, handlers::assert_zero_valid_handler},
      {IValue::SIZE_OF, handlers::sizeof_handler},
+     {IValue::SIZE_OF_VAL, handlers::size_of_val_handler},
+     {IValue::MIN_ALIGN_OF, handlers::min_align_of_handler},
+     {IValue::MIN_ALIGN_OF_VAL, handlers::min_align_of_val_handler},
      {IValue::TRANSMUTE, handlers::transmute},
      {IValue::ROTATE_LEFT, handlers::rotate_left},
      {IValue::ROTATE_RIGHT, handlers::rotate_right},
@@ -43,12 +49,16 @@ static const std::map<std::string, handlers::HandlerBuilder> generic_intrinsics
      {IValue::COPY_NONOVERLAPPING, handlers::copy (false)},
      {IValue::PREFETCH_READ_DATA, handlers::prefetch_read_data},
      {IValue::PREFETCH_WRITE_DATA, handlers::prefetch_write_data},
+     {IValue::ATOMIC_STORE, handlers::atomic_store (__ATOMIC_SEQ_CST)},
      {IValue::ATOMIC_STORE_SEQCST, handlers::atomic_store (__ATOMIC_SEQ_CST)},
+     {IValue::ATOMIC_STORE_REL, handlers::atomic_store (__ATOMIC_RELEASE)},
      {IValue::ATOMIC_STORE_RELEASE, handlers::atomic_store (__ATOMIC_RELEASE)},
      {IValue::ATOMIC_STORE_RELAXED, handlers::atomic_store (__ATOMIC_RELAXED)},
      {IValue::ATOMIC_STORE_UNORDERED,
       handlers::atomic_store (__ATOMIC_RELAXED)},
+     {IValue::ATOMIC_LOAD, handlers::atomic_load (__ATOMIC_SEQ_CST)},
      {IValue::ATOMIC_LOAD_SEQCST, handlers::atomic_load (__ATOMIC_SEQ_CST)},
+     {IValue::ATOMIC_LOAD_ACQ, handlers::atomic_load (__ATOMIC_ACQUIRE)},
      {IValue::ATOMIC_LOAD_ACQUIRE, handlers::atomic_load (__ATOMIC_ACQUIRE)},
      {IValue::ATOMIC_LOAD_RELAXED, handlers::atomic_load (__ATOMIC_RELAXED)},
      {IValue::ATOMIC_LOAD_UNORDERED, handlers::atomic_load (__ATOMIC_RELAXED)},
@@ -68,7 +78,11 @@ static const std::map<std::string, handlers::HandlerBuilder> generic_intrinsics
      {IValue::CATCH_UNWIND, handlers::try_handler (true)},
      {IValue::DISCRIMINANT_VALUE, handlers::discriminant_value},
      {IValue::VARIANT_COUNT, handlers::variant_count},
-     {IValue::BSWAP, handlers::bswap_handler}};
+     {IValue::BSWAP, handlers::bswap_handler},
+     {IValue::CTLZ, handlers::ctlz_handler},
+     {IValue::CTLZ_NONZERO, handlers::ctlz_nonzero_handler},
+     {IValue::CTTZ, handlers::cttz_handler},
+     {IValue::CTTZ_NONZERO, handlers::cttz_nonzero_handler}};
 
 Intrinsics::Intrinsics (Context *ctx) : ctx (ctx) {}
 
@@ -81,7 +95,7 @@ Intrinsics::Intrinsics (Context *ctx) : ctx (ctx) {}
  * compiler
  */
 tree
-Intrinsics::compile (TyTy::FnType *fntype)
+Intrinsics::compile (TyTy::FnType *fntype, location_t expr_locus)
 {
   rust_assert (fntype->get_abi () == ABI::INTRINSIC);
 
@@ -94,7 +108,7 @@ Intrinsics::compile (TyTy::FnType *fntype)
   // is it an generic builtin?
   auto it = generic_intrinsics.find (fntype->get_identifier ());
   if (it != generic_intrinsics.end ())
-    return it->second (ctx, fntype);
+    return it->second (ctx, fntype, expr_locus);
 
   location_t locus = ctx->get_mappings ().lookup_location (fntype->get_ref ());
   rust_error_at (locus, ErrorCode::E0093,

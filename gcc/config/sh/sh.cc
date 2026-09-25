@@ -271,6 +271,7 @@ static bool sh_legitimate_address_p (machine_mode, rtx, bool,
 static rtx sh_legitimize_address (rtx, rtx, machine_mode);
 static rtx sh_delegitimize_address (rtx);
 static bool sh_cannot_substitute_mem_equiv_p (rtx);
+static bool sh_cannot_substitute_const_equiv_p (rtx);
 static bool sh_legitimize_address_displacement (rtx *, rtx *,
 						poly_int64, machine_mode);
 static int scavenge_reg (HARD_REG_SET *s);
@@ -592,9 +593,6 @@ TARGET_GNU_ATTRIBUTES (sh_attribute_table,
 #undef  TARGET_ENCODE_SECTION_INFO
 #define TARGET_ENCODE_SECTION_INFO	sh_encode_section_info
 
-#undef TARGET_LRA_P
-#define TARGET_LRA_P sh_lra_p
-
 #undef TARGET_SECONDARY_RELOAD
 #define TARGET_SECONDARY_RELOAD sh_secondary_reload
 
@@ -609,6 +607,9 @@ TARGET_GNU_ATTRIBUTES (sh_attribute_table,
 
 #undef TARGET_CANNOT_SUBSTITUTE_MEM_EQUIV_P
 #define TARGET_CANNOT_SUBSTITUTE_MEM_EQUIV_P sh_cannot_substitute_mem_equiv_p
+
+#undef TARGET_CANNOT_SUBSTITUTE_CONST_EQUIV_P
+#define TARGET_CANNOT_SUBSTITUTE_CONST_EQUIV_P sh_cannot_substitute_const_equiv_p
 
 #undef TARGET_LEGITIMIZE_ADDRESS_DISPLACEMENT
 #define TARGET_LEGITIMIZE_ADDRESS_DISPLACEMENT \
@@ -847,7 +848,7 @@ sh_option_override (void)
       sh_cpu = PROCESSOR_SH4A;
     }
 
-  /* User/priviledged mode is supported only on SH3* and SH4*.
+  /* User/privileged mode is supported only on SH3* and SH4*.
      Disable it for everything else.  */
   if (!TARGET_SH3 && TARGET_USERMODE)
     TARGET_USERMODE = false;
@@ -1656,8 +1657,7 @@ prepare_move_operands (rtx operands[], machine_mode mode)
 	 in some situation.  It isn't the case for SH in the problematic
 	 case.  We can pre-allocate R0 for that index term to avoid
 	 the issue.  See PR target/66591.  */
-      else if (sh_lra_p ()
-	       && ! TARGET_SH2A
+      else if (! TARGET_SH2A
 	       && ((REG_P (operands[0]) && MEM_P (operands[1]))
 		   || (REG_P (operands[1]) && MEM_P (operands[0]))))
 	{
@@ -3291,7 +3291,7 @@ sh_rtx_costs (rtx x, machine_mode mode ATTRIBUTE_UNUSED, int outer_code,
 	  && XEXP (x, 1) == const1_rtx
 	  && CONST_INT_P (XEXP (x, 2))
 	  && CONST_INT_P (XEXP (XEXP (x, 0), 1))
-	  /* Check that the xor constaint overlaps with the extracted bit.  */
+	  /* Check that the xor constraint overlaps with the extracted bit.  */
 	  && (INTVAL (XEXP (XEXP (x, 0), 1)) & (1LL << INTVAL (XEXP (x, 2)))))
 	{
 	  *total = 1; //COSTS_N_INSNS (1);
@@ -3575,7 +3575,7 @@ sh_max_mov_insn_displacement (machine_mode mode, bool consider_sh2a)
   /* SH2A supports FPU move insns with 12 bit displacements.
      Other variants to do not support any kind of displacements for
      FPU move insns.  */
-  if (! consider_sh2a && TARGET_FPU_ANY && GET_MODE_CLASS (mode) == MODE_FLOAT)
+  if (! consider_sh2a && TARGET_FPU_ANY && FLOAT_MODE_P (mode))
     return 0;
   else
     {
@@ -4819,16 +4819,8 @@ broken_move (rtx_insn *insn)
 		&& GET_CODE (SET_SRC (pat)) == CONST_DOUBLE
 		&& (fp_zero_operand (SET_SRC (pat))
 		    || fp_one_operand (SET_SRC (pat)))
-		/* In general we don't know the current setting of fpscr, so
-		   disable fldi.
-		   There is an exception if this was a register-register move
-		   before reload - and hence it was ascertained that we have
-		   single precision setting - and in a post-reload optimization
-		   we changed this to do a constant load.  In that case
-		   we don't have an r0 clobber, hence we must use fldi.  */
-		&& (TARGET_FMOVD
-		    || (GET_CODE (XEXP (XVECEXP (PATTERN (insn), 0, 2), 0))
-			== SCRATCH))
+		/* fldi can materialize the fp constants 0 and 1 directly in
+		   an fp register, so such a move is not broken.  */
 		&& REG_P (SET_DEST (pat))
 		&& FP_REGISTER_P (REGNO (SET_DEST (pat))))
 	  && ! (TARGET_SH2A
@@ -5728,7 +5720,7 @@ fixup_addr_diff_vecs (rtx_insn *first)
 	    break;
 	}
       /* FIXME: This is a bug in the optimizer, but it seems harmless
-	 to just avoid panicing.  */
+	 to just avoid panicking.  */
       if (!prev)
 	continue;
 
@@ -7298,7 +7290,7 @@ sh_expand_epilogue (bool sibcall_p)
 		else
 		  break;
 
-	      /* Use movml when all banked register are poped.  */
+	      /* Use movml when all banked register are popped.  */
 	      if (count == LAST_BANKED_REG - FIRST_BANKED_REG + 1)
 		use_movml = true;
 	    }
@@ -7555,6 +7547,7 @@ sh_build_builtin_va_list (void)
 
   TYPE_STUB_DECL (record) = type_decl;
   TYPE_NAME (record) = type_decl;
+  TREE_PUBLIC (type_decl) = 1;
   TYPE_FIELDS (record) = f_next_o;
   DECL_CHAIN (f_next_o) = f_next_o_limit;
   DECL_CHAIN (f_next_o_limit) = f_next_fp;
@@ -8844,39 +8837,6 @@ get_t_reg_rtx (void)
 
 static GTY(()) tree fpscr_values;
 
-static void
-emit_fpu_switch (rtx scratch, int index)
-{
-  if (fpscr_values == NULL)
-    {
-      tree t = build_index_type (integer_one_node);
-      t = build_array_type (integer_type_node, t);
-      t = build_decl (BUILTINS_LOCATION,
-		      VAR_DECL, get_identifier ("__fpscr_values"), t);
-      DECL_ARTIFICIAL (t) = 1;
-      DECL_IGNORED_P (t) = 1;
-      DECL_EXTERNAL (t) = 1;
-      TREE_STATIC (t) = 1;
-      TREE_PUBLIC (t) = 1;
-      TREE_USED (t) = 1;
-
-      fpscr_values = t;
-    }
-
-  rtx src = DECL_RTL (fpscr_values);
-  if (!can_create_pseudo_p ())
-    {
-      emit_move_insn (scratch, XEXP (src, 0));
-      if (index != 0)
-	emit_insn (gen_addsi3 (scratch, scratch, GEN_INT (index * 4)));
-      src = adjust_automodify_address (src, SImode, scratch, index * 4);
-    }
-  else
-    src = adjust_address (src, SImode, index * 4);
-
-  emit_insn (gen_lds_fpscr (src));
-}
-
 static rtx get_free_reg (HARD_REG_SET);
 
 /* This function returns a register to use to load the address to load
@@ -8911,9 +8871,46 @@ fpscr_set_from_mem (int mode, HARD_REG_SET regs_live)
 {
   enum attr_fp_mode fp_mode = (enum attr_fp_mode) mode;
   enum attr_fp_mode norm_mode = ACTUAL_NORMAL_MODE (FP_MODE);
+  int index = fp_mode == norm_mode;
 
-  rtx addr_reg = !can_create_pseudo_p () ? get_free_reg (regs_live) : NULL_RTX;
-  emit_fpu_switch (addr_reg, fp_mode == norm_mode);
+  if (fpscr_values == NULL)
+    {
+      tree t = build_index_type (integer_one_node);
+      t = build_array_type (integer_type_node, t);
+      t = build_decl (BUILTINS_LOCATION,
+		      VAR_DECL, get_identifier ("__fpscr_values"), t);
+      DECL_ARTIFICIAL (t) = 1;
+      DECL_IGNORED_P (t) = 1;
+      DECL_EXTERNAL (t) = 1;
+      TREE_STATIC (t) = 1;
+      TREE_PUBLIC (t) = 1;
+      TREE_USED (t) = 1;
+
+      fpscr_values = t;
+    }
+
+  rtx src = DECL_RTL (fpscr_values);
+
+  if (can_create_pseudo_p ())
+    {
+      // Before RA the plain address can be used and RA will adjust it for
+      // the post-inc constraint.
+      src = adjust_address (src, SImode, index * 4);
+      emit_insn (gen_lds_fpscr (force_reg (SImode, src)));
+    }
+  else
+    {
+      // After RA it needs the address with a post-inc mem or else it will
+      // result in an unrecognizable insn.
+      rtx scratch = get_free_reg (regs_live);
+      emit_move_insn (scratch, XEXP (src, 0));
+      if (index != 0)
+	emit_insn (gen_addsi3 (scratch, scratch, GEN_INT (index * 4)));
+      src = adjust_automodify_address (src, SImode,
+				       gen_rtx_POST_INC (Pmode, scratch),
+				       index * 4);
+      add_reg_note (emit_insn (gen_lds_fpscr (src)), REG_INC, scratch);
+    }
 }
 
 /* Is the given character a logical line separator for the assembler?  */
@@ -9272,78 +9269,6 @@ sh_legitimize_address (rtx x, rtx oldx, machine_mode mode)
 	}
     }
   return x;
-}
-
-/* Attempt to replace *p, which is an address that needs reloading, with
-   a valid memory address for an operand of mode MODE.
-   Like for sh_legitimize_address, for the SH we try to get a normal form
-   of the address.  That will allow inheritance of the address reloads.  */
-bool
-sh_legitimize_reload_address (rtx *p, machine_mode mode, int opnum,
-			      int itype)
-{
-  enum reload_type type = (enum reload_type) itype;
-  const int mode_sz = GET_MODE_SIZE (mode);
-
-  if (sh_lra_p ())
-    return false;
-
-  if (GET_CODE (*p) == PLUS && CONST_INT_P (XEXP (*p, 1))
-      && MAYBE_BASE_REGISTER_RTX_P (XEXP (*p, 0), true))
-    {
-      const HOST_WIDE_INT offset = INTVAL (XEXP (*p, 1));
-      struct disp_adjust adj = sh_find_mov_disp_adjust (mode, offset);
-
-      if (TARGET_SH2A && mode == DFmode && (offset & 0x7))
-	{
-	  push_reload (*p, NULL_RTX, p, NULL,
-		       BASE_REG_CLASS, Pmode, VOIDmode, 0, 0, opnum, type);
-	  return true;
-	}
-
-      if (TARGET_SH2E && mode == SFmode)
-	{
-	  *p = copy_rtx (*p);
-	  push_reload (*p, NULL_RTX, p, NULL,
-		       BASE_REG_CLASS, Pmode, VOIDmode, 0, 0, opnum, type);
-	  return true;
-	}
-
-      /* FIXME: Do not allow to legitimize QImode and HImode displacement
-	 moves because then reload has a problem figuring the constraint
-	 that the move insn target/source reg must be R0.
-	 Or maybe some handling is wrong in sh_secondary_reload for this
-	 to work properly? */
-      if ((mode_sz == 4 || mode_sz == 8)
-	  && ! (TARGET_SH4 && mode == DFmode)
-	  && adj.offset_adjust != NULL_RTX && adj.mov_disp != NULL_RTX)
-	{
-	  rtx sum = gen_rtx_PLUS (Pmode, XEXP (*p, 0), adj.offset_adjust);
-	  *p = gen_rtx_PLUS (Pmode, sum, adj.mov_disp);
-	  push_reload (sum, NULL_RTX, &XEXP (*p, 0), NULL,
-		       BASE_REG_CLASS, Pmode, VOIDmode, 0, 0, opnum, type);
-	  return true;
-	}
-    }
-
-  /* We must re-recognize what we created before.  */
-  if (GET_CODE (*p) == PLUS
-      && (mode_sz == 4 || mode_sz == 8)
-      && GET_CODE (XEXP (*p, 0)) == PLUS
-      && CONST_INT_P (XEXP (XEXP (*p, 0), 1))
-      && MAYBE_BASE_REGISTER_RTX_P (XEXP (XEXP (*p, 0), 0), true)
-      && CONST_INT_P (XEXP (*p, 1))
-      && ! (TARGET_SH2E && mode == SFmode))
-    {
-      /* Because this address is so complex, we know it must have
-	 been created by LEGITIMIZE_RELOAD_ADDRESS before; thus,
-	 it is already unshared, and needs no further unsharing.  */
-      push_reload (XEXP (*p, 0), NULL_RTX, &XEXP (*p, 0), NULL,
-		   BASE_REG_CLASS, Pmode, VOIDmode, 0, 0, opnum, type);
-      return true;
-    }
-
-  return false;
 }
 
 /* In the name of slightly smaller debug output, and to cater to
@@ -10172,6 +10097,12 @@ sh_expand_sym_label2reg (rtx reg, rtx sym, rtx lab, bool sibcall_p)
 
 struct builtin_description
 {
+  /* Tells whether the built-in can be used.
+     A built-in that is not enabled is not declared.  This allows using
+     '__has_builtin' on it to check its presence.  However, if not present, it
+     will ultimately result in a function call to an undeclared function.
+     The alternative would be to always declare it and throw a compiler error
+     during builtin expansion, as it's done on i386.  */
   bool (* const is_enabled) (void);
   const enum insn_code icode;
   const char *const name;
@@ -10179,12 +10110,10 @@ struct builtin_description
   tree fndecl;
 };
 
-/* This function can be used if there are any built-ins that are not for
-   SHmedia.  It's commented out to avoid the defined-but-unused warning.  */
 static bool
-sh1_builtin_p (void)
+sh_fpu_p (void)
 {
-  return TARGET_SH1;
+  return TARGET_FPU_ANY;
 }
 
 /* describe number and signedness of arguments; arg[0] == result
@@ -10259,9 +10188,9 @@ static const char signature_args[][4] =
 /* nsb: takes long long arg, returns unsigned char.  */
 static struct builtin_description bdesc[] =
 {
-  { sh1_builtin_p,
+  { sh_fpu_p,
     CODE_FOR_sts_fpscr, "__builtin_sh_get_fpscr", SH_BLTIN_UV, 0 },
-  { sh1_builtin_p,
+  { sh_fpu_p,
     CODE_FOR_set_fpscr, "__builtin_sh_set_fpscr", SH_BLTIN_VU, 0 },
 };
 
@@ -10573,8 +10502,10 @@ sh_hard_regno_mode_ok (unsigned int regno, machine_mode mode)
 
   if (mode == V2SFmode)
     {
-      if (((FP_REGISTER_P (regno) && (regno - FIRST_FP_REG) % 2 == 0)
-	   || GENERAL_REGISTER_P (regno)))
+      /* V2SF may not live in general registers when optimizing, see
+	 sh_can_change_mode_class.  Keep it out of general regs so that it's
+	 always treated as fp reg pair.  */
+      if (FP_REGISTER_P (regno) && (regno - FIRST_FP_REG) % 2 == 0)
 	return true;
       else
 	return false;
@@ -11429,6 +11360,23 @@ sh_cannot_substitute_mem_equiv_p (rtx)
   return true;
 }
 
+static bool
+sh_cannot_substitute_const_equiv_p (rtx subst)
+{
+  /* If SUBST is SFmode const_double 0 or 1, the move insn may be
+     transformed into fldi0/1.  This is potentially unsafe for fp mode
+     switching because fldi0/1 are single mode only instructions.
+     LRA could then insert an fldi0/1 while the fp mode = double is selected.
+     Currently there is no other way to check this or prevent this from
+     happening.  See also PR 117182.  */
+
+  if (GET_MODE (subst) == SFmode
+      && (real_equal (CONST_DOUBLE_REAL_VALUE (subst), &dconst1)
+	  || real_equal (CONST_DOUBLE_REAL_VALUE (subst), &dconst0)))
+    return true;
+  return false;
+}
+
 /* Implement TARGET_LEGITIMIZE_ADDRESS_DISPLACEMENT.  */
 static bool
 sh_legitimize_address_displacement (rtx *offset1, rtx *offset2,
@@ -11450,30 +11398,37 @@ sh_legitimize_address_displacement (rtx *offset1, rtx *offset2,
   return false;
 }
 
-/* Return true if movsf insn should be splited with an additional
-   register.  */
+/* Return true if movsf insn should be split with an fpul register.  */
 bool
-sh_movsf_ie_ra_split_p (rtx op0, rtx op1, rtx op2)
+sh_movsf_ie_y_split_p (rtx op0, rtx op1)
 {
-  /* op0 == op1 */
-  if (rtx_equal_p (op0, op1))
+  /* f, r */
+  if (REG_P (op0)
+      && (SUBREG_P (op1) && GET_MODE (SUBREG_REG (op1)) == SImode))
     return true;
-  /* fy, FQ, reg */
-  if (GET_CODE (op1) == CONST_DOUBLE
-      && ! satisfies_constraint_G (op1)
-      && ! satisfies_constraint_H (op1)
-      && REG_P (op0)
-      && REG_P (op2))
+  /* r, f */
+  if (REG_P (op1)
+      && (SUBREG_P (op0) && GET_MODE (SUBREG_REG (op0)) == SImode))
     return true;
-  /* f, r, y */
-  if (REG_P (op0) && FP_REGISTER_P (REGNO (op0))
-      && REG_P (op1) && GENERAL_REGISTER_P (REGNO (op1))
-      && REG_P (op2) && (REGNO (op2) == FPUL_REG))
+
+  return false;
+}
+
+/* Return true if it moves reg from/to subreg of multiword mode.  */
+bool
+sh_movsf_ie_subreg_multiword_p (rtx op0, rtx op1)
+{
+  if (REG_P (op0)
+      && (SUBREG_P (op1)
+	  && (GET_MODE (SUBREG_REG (op1)) == SCmode
+	      || GET_MODE (SUBREG_REG (op1)) == DImode
+	      || GET_MODE (SUBREG_REG (op1)) == TImode)))
     return true;
-  /* r, f, y */
-  if (REG_P (op1) && FP_REGISTER_P (REGNO (op1))
-      && REG_P (op0) && GENERAL_REGISTER_P (REGNO (op0))
-      && REG_P (op2) && (REGNO (op2) == FPUL_REG))
+  if (REG_P (op1)
+      && (SUBREG_P (op0)
+	  && (GET_MODE (SUBREG_REG (op0)) == SCmode
+	      || GET_MODE (SUBREG_REG (op0)) == DImode
+	      || GET_MODE (SUBREG_REG (op0)) == TImode)))
     return true;
 
   return false;
@@ -11551,7 +11506,7 @@ sh_can_use_simple_return_p (void)
   if (! reload_completed || frame_pointer_needed)
     return false;
 
-  /* Moving prologue around does't reduce the size.  */
+  /* Moving prologue around doesn't reduce the size.  */
   if (optimize_function_for_size_p (cfun))
     return false;
 
@@ -11718,7 +11673,7 @@ sh_find_equiv_gbr_addr (rtx_insn* insn, rtx mem)
     {
       /* If GBR is marked as call clobbered we bail out if we see a call.
 	 FIXME: Actually should check if this mem refers to the gbr value
-	 before or after the call.  If there is a store_gbr preceeding this
+	 before or after the call.  If there is a store_gbr preceding this
 	 mem, it's safe to use GBR for this mem.
 
 	 If GBR is not marked as call clobbered, but there is some other
@@ -11883,7 +11838,7 @@ sh_check_add_incdec_notes (rtx_insn* i)
   return i;
 }
 
-/* Given a move insn destiation and a source, make sure that the move source
+/* Given a move insn destination and a source, make sure that the move source
    operand is not a post-inc mem load with the same address reg as the
    destination.  Returns the modified source operand with the post-inc removed
    if necessary.  */
@@ -12250,7 +12205,7 @@ private:
 };
 
 /* Given an rtx x, determine whether the expression can be used to create
-   an insn that calulates x and stores the result in the T bit.
+   an insn that calculates x and stores the result in the T bit.
    This is used by the 'treg_set_expr' predicate to construct insns sequences
    where T bit results are fed into other insns, such as addc, subc, negc
    insns.
@@ -12259,7 +12214,7 @@ private:
    distinguish between 'positive' and 'negative' forms.  For now this has to
    be done in the preparation code.  We could also introduce
    'pos_treg_set_expr' and 'neg_treg_set_expr' predicates for that and write
-   two different patterns for the 'postive' and 'negative' forms.  However,
+   two different patterns for the 'positive' and 'negative' forms.  However,
    the total amount of lines of code seems to be about the same and the
    '{pos|neg}_treg_set_expr' predicates would be more expensive, because the
    recog function would need to look inside the expression by temporarily
@@ -12302,7 +12257,7 @@ sh_recog_treg_set_expr (rtx op, machine_mode mode)
 
   /* We are going to invoke recog in a re-entrant way and thus
      have to capture its current state and restore it afterwards.  */
-  recog_data_d prev_recog_data = recog_data;
+  recog_state_saver recog_save;
 
   /* Note we can't use insn_raw here since that increases the uid
      and could cause debug compare differences; this insn never leaves
@@ -12342,7 +12297,6 @@ sh_recog_treg_set_expr (rtx op, machine_mode mode)
     }
 
   PUT_MODE (op, prev_op_mode);
-  recog_data = prev_recog_data;
   return result >= 0;
 }
 
@@ -12463,47 +12417,46 @@ sh_split_treg_set_expr (rtx x, rtx_insn* curr_insn)
      a nott.  */
   bool append_nott = false;
 
-  /* We are going to invoke recog/split_insns in a re-entrant way and thus
-     have to capture its current state and restore it afterwards.  */
-  recog_data_d prev_recog_data = recog_data;
+  std::pair<rtx_insn*, rtx_insn*> insnlist;
+  {
+    /* We are going to invoke recog/split_insns in a re-entrant way and thus
+       have to capture its current state and restore it afterwards.  */
+    recog_state_saver recog_save;
 
-  if (negt_reg_operand (x, GET_MODE (x)))
-    {
-      /* This is a normal movt followed by a nott.  It will be converted
-	 into a movrt after initial expansion.  */
-      XEXP (PATTERN (i), 1) = get_t_reg_rtx ();
-      append_nott = true;
-    }
-  else
-    {
-      /* If the comparison op doesn't have a mode set, set it to SImode.  */
-      if (COMPARISON_P (x) && GET_MODE (x) == VOIDmode)
-	PUT_MODE (x, SImode);
+    if (negt_reg_operand (x, GET_MODE (x)))
+      {
+	/* This is a normal movt followed by a nott.  It will be converted
+	   into a movrt after initial expansion.  */
+	XEXP (PATTERN (i), 1) = get_t_reg_rtx ();
+	append_nott = true;
+      }
+    else
+      {
+	/* If the comparison op doesn't have a mode set, set it to SImode.  */
+	if (COMPARISON_P (x) && GET_MODE (x) == VOIDmode)
+	  PUT_MODE (x, SImode);
 
-      int insn_code = recog (PATTERN (i), i, 0);
+	int insn_code = recog (PATTERN (i), i, 0);
 
-      if (insn_code < 0 && COMPARISON_P (x))
-	{
-	  machine_mode cmp_mode = GET_MODE (XEXP (x, 0));
-	  if (cmp_mode == VOIDmode)
-	    cmp_mode = GET_MODE (XEXP (x, 1));
+	if (insn_code < 0 && COMPARISON_P (x))
+	  {
+	    machine_mode cmp_mode = GET_MODE (XEXP (x, 0));
+	    if (cmp_mode == VOIDmode)
+	      cmp_mode = GET_MODE (XEXP (x, 1));
 
-	  PUT_CODE (x, reverse_condition (GET_CODE (x)));
-	  insn_code = recog (PATTERN (i), i, 0);
-	  append_nott = true;
-	}
+	    PUT_CODE (x, reverse_condition (GET_CODE (x)));
+	    insn_code = recog (PATTERN (i), i, 0);
+	    append_nott = true;
+	  }
 
-      gcc_assert (insn_code >= 0);
-    }
+	gcc_assert (insn_code >= 0);
+      }
 
-  /* Try to recursively split the insn.  Some insns might refuse to split
-     any further while we are in the treg_set_expr splitting phase.  They
-     will be emitted as part of the outer insn and then split again.  */
-  std::pair<rtx_insn*, rtx_insn*> insnlist =
-	sh_try_split_insn_simple (i, curr_insn);
-
-  /* Restore recog state.  */
-  recog_data = prev_recog_data;
+    /* Try to recursively split the insn.  Some insns might refuse to split
+       any further while we are in the treg_set_expr splitting phase.  They
+       will be emitted as part of the outer insn and then split again.  */
+    insnlist = sh_try_split_insn_simple (i, curr_insn);
+  }
 
   rtx_insn* nott_insn = sh_is_nott_insn (insnlist.second)
 			? insnlist.second
@@ -12620,13 +12573,6 @@ sh_mode_priority (int entity ATTRIBUTE_UNUSED, int n)
 /*------------------------------------------------------------------------------
   Misc
 */
-
-/* Return true if we use LRA instead of reload pass.  */
-bool
-sh_lra_p (void)
-{
-  return sh_lra_flag;
-}
 
 /* Implement TARGET_USE_BY_PIECES_INFRASTRUCTURE_P.  */
 

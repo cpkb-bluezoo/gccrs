@@ -777,7 +777,7 @@ namespace __detail
       typename _RehashPolicy::_State _M_prev_state;
 
       _RehashStateGuard(_RehashPolicy& __policy)
-      : _M_guarded_obj(std::__addressof(__policy))
+      : _M_guarded_obj(std::addressof(__policy))
       , _M_prev_state(__policy._M_state())
       { }
       _RehashStateGuard(const _RehashStateGuard&) = delete;
@@ -1074,7 +1074,8 @@ namespace __detail
       { return _M_hash._M_obj; }
 
     protected:
-      [[__no_unique_address__]] _Hashtable_ebo_helper<_Hash> _M_hash{};
+      [[__no_unique_address__]]
+      _Hashtable_ebo_helper<_Hash> _M_hash = _Hashtable_ebo_helper<_Hash>();
 
       using __hash_code = size_t;
 
@@ -1252,7 +1253,7 @@ namespace __detail
 
       void
       _M_init(const _Hash& __h)
-      { std::_Construct(std::__addressof(__hash_obj_storage::_M_u._M_h), __h); }
+      { std::_Construct(std::addressof(__hash_obj_storage::_M_u._M_h), __h); }
 
       void
       _M_destroy() { __hash_obj_storage::_M_u._M_h.~_Hash(); }
@@ -1411,7 +1412,8 @@ namespace __detail
       using __hash_code = typename __hash_code_base::__hash_code;
 
     protected:
-      [[__no_unique_address__]] _Hashtable_ebo_helper<_Equal> _M_equal{};
+      [[__no_unique_address__]]
+      _Hashtable_ebo_helper<_Equal> _M_equal = _Hashtable_ebo_helper<_Equal>();
 
       _Hashtable_base() = default;
 
@@ -1491,7 +1493,8 @@ namespace __detail
     struct _Hashtable_alloc
     {
     private:
-      [[__no_unique_address__]] _Hashtable_ebo_helper<_NodeAlloc> _M_alloc{};
+      [[__no_unique_address__]]
+      _Hashtable_ebo_helper<_NodeAlloc> _M_alloc = _Hashtable_ebo_helper<_NodeAlloc>();
 
       template<typename>
 	struct __get_value_type;

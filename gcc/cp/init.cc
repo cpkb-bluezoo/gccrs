@@ -1,4 +1,4 @@
-/* Handle initialization things in -*- C++ -*-
+/* Handle initialization things in C++.
    Copyright (C) 1987-2026 Free Software Foundation, Inc.
    Contributed by Michael Tiemann (tiemann@cygnus.com)
 
@@ -445,6 +445,14 @@ build_value_init_noctor (tree type, tsubst_flags_t complain)
 		  && integer_zerop (DECL_SIZE (field)))
 		continue;
 
+	      /* Zero-initialize anonymous union and struct members.  The
+		 default constructor doesn't exist for those and if NSDMIs
+		 are used, the containing type's default constructor is
+		 non-trivial.  */
+	      if (ANON_AGGR_TYPE_P (ftype))
+		value = build_zero_init (ftype, NULL_TREE,
+					 /*static_storage_p=*/false);
+
 	      /* We could skip vfields and fields of types with
 		 user-defined constructors, but I think that won't improve
 		 performance at all; it should be simpler in general just
@@ -455,13 +463,16 @@ build_value_init_noctor (tree type, tsubst_flags_t complain)
 		 corresponding to base classes as well.  Thus, iterating
 		 over TYPE_FIELDs will result in correct initialization of
 		 all of the subobjects.  */
-	      value = build_value_init (ftype, complain);
-	      value = maybe_constant_init (value);
+	      else
+		{
+		  value = build_value_init (ftype, complain);
+		  value = maybe_constant_init (value);
+		}
 
 	      if (value == error_mark_node)
 		return error_mark_node;
 
-	      CONSTRUCTOR_APPEND_ELT(v, field, value);
+	      CONSTRUCTOR_APPEND_ELT (v, field, value);
 
 	      /* We shouldn't have gotten here for anything that would need
 		 non-trivial initialization, and gimplify_init_ctor_preeval
@@ -995,9 +1006,6 @@ perform_member_init (tree member, tree init, hash_set<tree> &uninitialized)
     init = get_nsdmi (member, /*ctor*/true, tf_warning_or_error);
 
   if (init == error_mark_node)
-    return;
-
-  if (check_out_of_consteval_use (init))
     return;
 
   /* Effective C++ rule 12 requires that all data members be
@@ -2601,7 +2609,7 @@ constant_value_1 (tree decl, bool strict_p, bool return_aggregate_cst_ok_p,
 	init = TREE_VALUE (init);
       /* Instantiate a non-dependent initializer for user variables.  We
 	 mustn't do this for the temporary for an array compound literal;
-	 trying to instatiate the initializer will keep creating new
+	 trying to instantiate the initializer will keep creating new
 	 temporaries until we crash.  Probably it's not useful to do it for
 	 other artificial variables, either.  */
       if (!DECL_ARTIFICIAL (decl))
@@ -3959,6 +3967,12 @@ build_new_1 (vec<tree, va_gc> **placement, tree type, tree nelts,
     rval = TARGET_EXPR_INITIAL (alloc_expr);
   else
     {
+      /* Skip the null-check when rval == data_addr: the resulting conditional
+	 would be "alloc_node != nullptr ? alloc_node : alloc_node", triggering
+	 -Wduplicated-branches (PR125422).  */
+      if (rval == data_addr)
+	check_new = 0;
+
       if (check_new)
 	{
 	  tree ifexp = cp_build_binary_op (input_location,
@@ -4087,7 +4101,7 @@ build_new (location_t loc, vec<tree, va_gc> **placement, tree type,
       /* The expression in a noptr-new-declarator is erroneous if it's of
 	 non-class type and its value before converting to std::size_t is
 	 less than zero. ... If the expression is a constant expression,
-	 the program is ill-fomed.  */
+	 the program is ill-formed.  */
       if (TREE_CODE (cst_nelts) == INTEGER_CST
 	  && !valid_array_size_p (nelts_loc, cst_nelts, NULL_TREE,
 				  complain & tf_error))
@@ -4862,6 +4876,23 @@ build_vec_init (tree base, tree maxindex, tree init,
      some are non-constant.  */
   bool do_static_init = (DECL_P (obase) && TREE_STATIC (obase));
 
+  if (init
+      && TREE_CODE (init) == CONSTRUCTOR
+      && TREE_CODE (TREE_TYPE (init)) == ARRAY_TYPE
+      && INTEGRAL_TYPE_P (type)
+      && same_type_p (type, TREE_TYPE (TREE_TYPE (init))))
+    {
+      /* If RAW_DATA_CST is in the CONSTRUCTOR, we want to optimize
+	 INTEGER_CST, RAW_DATA_CST, INTEGER_CST into just
+	 RAW_DATA_CST larger by 2 chars if possible.  But at least
+	 for now punt if braced_lists_to_strings instead turns it
+	 into a STRING_CST in the try_const case, as the STRING_CST
+	 case doesn't handle try_const.  */
+      tree new_init = braced_lists_to_strings (TREE_TYPE (init), init);
+      if (!try_const || TREE_CODE (new_init) == CONSTRUCTOR)
+	init = new_init;
+    }
+
   bool empty_list = false;
   if (init && BRACE_ENCLOSED_INITIALIZER_P (init)
       && CONSTRUCTOR_NELTS (init) == 0)
@@ -4875,6 +4906,11 @@ build_vec_init (tree base, tree maxindex, tree init,
       /* Do non-default initialization of non-trivial arrays resulting from
 	 brace-enclosed initializers.  */
       unsigned HOST_WIDE_INT idx;
+      /* Used in RAW_DATA_CST handling below if we need to expand it
+	 (not digested char-sized integer type).  It is -1 when not peeling
+	 off such RAW_DATA_CST, otherwise indicates which index from
+	 the RAW_DATA_CST has been handled most recently.  */
+      unsigned int raw_idx = -1;
       tree field, elt;
       /* If the constructor already has the array type, it's been through
 	 digest_init, so we shouldn't try to do anything more.  */
@@ -4892,13 +4928,76 @@ build_vec_init (tree base, tree maxindex, tree init,
 
       FOR_EACH_CONSTRUCTOR_ELT (CONSTRUCTOR_ELTS (init), idx, field, elt)
 	{
-	  tree baseref = build1 (INDIRECT_REF, type, base);
 	  tree one_init;
 
-	  if (field && TREE_CODE (field) == RANGE_EXPR)
-	    num_initialized_elts += range_expr_nelts (field);
-	  else
-	    num_initialized_elts++;
+	  if (TREE_CODE (elt) == RAW_DATA_CST)
+	    {
+	      if (digested
+		  && (TREE_CODE (type) == INTEGER_TYPE
+		      || is_byte_access_type (type))
+		  && TYPE_PRECISION (type) == CHAR_BIT)
+		{
+		  /* If possible, handle RAW_DATA_CST as ARRAY_TYPE
+		     copy from ctor to MEM_REF.  */
+		  tree atype
+		    = build_array_of_n_type (type, RAW_DATA_LENGTH (elt));
+		  tree alias_set
+		    = build_int_cst (build_pointer_type (type), 0);
+		  tree lhs = build2 (MEM_REF, atype, base, alias_set);
+		  tree ctor
+		    = build_constructor_single (atype, bitsize_zero_node,
+						copy_node (elt));
+		  one_init = build2 (MODIFY_EXPR, void_type_node, lhs, ctor);
+
+		  if (try_const)
+		    {
+		      if (!field)
+			field = size_int (num_initialized_elts);
+		      CONSTRUCTOR_APPEND_ELT (const_vec, field, elt);
+		      if (do_static_init)
+			one_init = NULL_TREE;
+		    }
+
+		  if (one_init)
+		    finish_expr_stmt (one_init);
+
+		  /* Adjust the counter and pointer.  */
+		  tree length = build_int_cst (ptrdiff_type_node,
+					       RAW_DATA_LENGTH (elt));
+		  one_init = cp_build_binary_op (loc, MINUS_EXPR, iterator,
+						 length, complain);
+		  gcc_assert (one_init != error_mark_node);
+		  one_init = build2 (MODIFY_EXPR, void_type_node, iterator,
+				     one_init);
+		  finish_expr_stmt (one_init);
+
+		  one_init = cp_build_binary_op (loc, PLUS_EXPR, base, length,
+						 complain);
+		  gcc_assert (one_init != error_mark_node);
+		  one_init = build2 (MODIFY_EXPR, void_type_node, base,
+				     one_init);
+		  finish_expr_stmt (one_init);
+
+		  num_initialized_elts += RAW_DATA_LENGTH (elt);
+		  continue;
+		}
+	      else
+		{
+		  /* Otherwise peel it off into separate constants.  */
+		  tree orig_elt = elt;
+		  elt = build_int_cst (TREE_TYPE (elt),
+				       RAW_DATA_UCHAR_ELT (elt, ++raw_idx));
+		  if (raw_idx && field)
+		    field = size_binop (PLUS_EXPR, field,
+					bitsize_int (raw_idx));
+		  if (raw_idx + 1 == (unsigned) RAW_DATA_LENGTH (orig_elt))
+		    raw_idx = -1;
+		  else
+		    --idx;
+		}
+	    }
+
+	  tree baseref = build1 (INDIRECT_REF, type, base);
 
 	  /* We need to see sub-array TARGET_EXPR before cp_fold_r so we can
 	     handle cleanup flags properly.  */
@@ -4919,7 +5018,7 @@ build_vec_init (tree base, tree maxindex, tree init,
 	  if (try_const)
 	    {
 	      if (!field)
-		field = size_int (idx);
+		field = size_int (num_initialized_elts);
 	      tree e = maybe_constant_init (one_init);
 	      if (reduced_constant_expression_p (e))
 		{
@@ -4942,6 +5041,21 @@ build_vec_init (tree base, tree maxindex, tree init,
 		}
 	    }
 
+	  tree end = NULL_TREE, body = NULL_TREE;
+	  if (field && TREE_CODE (field) == RANGE_EXPR)
+	    {
+	      tree sub
+		= cp_build_binary_op (loc, MINUS_EXPR, iterator,
+				      build_int_cst (TREE_TYPE (iterator),
+						     range_expr_nelts (field)),
+				     complain);
+	      gcc_assert (sub != error_mark_node);
+	      end = get_internal_target_expr (sub);
+	      add_stmt (end);
+
+	      body = push_stmt_list ();
+	    }
+
 	  if (one_init)
 	    {
 	      /* Only create one std::allocator temporary.  */
@@ -4962,6 +5076,20 @@ build_vec_init (tree base, tree maxindex, tree init,
 	    errors = true;
 	  else
 	    finish_expr_stmt (one_init);
+
+	  if (field && TREE_CODE (field) == RANGE_EXPR)
+	    {
+	      tree exit = build1 (EXIT_EXPR, void_type_node,
+				  build2 (EQ_EXPR, boolean_type_node,
+					  iterator, TARGET_EXPR_SLOT (end)));
+	      add_stmt (exit);
+	      body = pop_stmt_list (body);
+	      tree loop = build1 (LOOP_EXPR, void_type_node, body);
+	      add_stmt (loop);
+	      num_initialized_elts += range_expr_nelts (field);
+	    }
+	  else
+	    num_initialized_elts++;
 	}
 
       /* Any elements without explicit initializers get T{}.  */
@@ -5234,7 +5362,7 @@ build_vec_init (tree base, tree maxindex, tree init,
 	      && !vec_safe_is_empty (*cleanup_flags))
 	    {
 	      auto l = (*cleanup_flags)->last ();
-	      gcc_assert (TREE_PURPOSE (l) == iterator);
+	      gcc_assert (TREE_PURPOSE (l) == rval);
 	      (*cleanup_flags)->pop ();
 	    }
 	  tree const_init = build_constructor (atype, const_vec);

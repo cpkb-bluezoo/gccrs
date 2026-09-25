@@ -133,12 +133,6 @@ static int high_function_linenum;
 /* Filename of last NOTE.  */
 static const char *last_filename;
 
-/* Override filename, line and column number.  */
-static const char *override_filename;
-static int override_linenum;
-static int override_columnnum;
-static int override_discriminator;
-
 /* Whether to force emission of a line note before the next insn.  */
 static bool force_source_line = false;
 
@@ -3001,13 +2995,6 @@ notice_source_line (rtx_insn *insn, bool *is_stmt)
       discriminator = compute_discriminator (loc);
       force_source_line = true;
     }
-  else if (override_filename)
-    {
-      filename = override_filename;
-      linenum = override_linenum;
-      columnnum = override_columnnum;
-      discriminator = override_discriminator;
-    }
   else if (INSN_HAS_LOCATION (insn))
     {
       expanded_location xloc = insn_location (insn);
@@ -4498,6 +4485,7 @@ rest_of_clean_state (void)
 
   flag_rerun_cse_after_global_opts = 0;
   reload_completed = 0;
+  post_ra_split_completed = false;
   epilogue_completed = 0;
 #ifdef STACK_REGS
   regstack_completed = 0;

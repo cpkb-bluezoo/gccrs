@@ -1,11 +1,15 @@
 /* PR tree-optimization/124037 */
 /* { dg-require-effective-target mmap } */
-/* { dg-require-effective-target vect_early_break } */
+
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#if defined(__APPLE__) && !defined(MAP_ANONYMOUS)
+#define MAP_ANONYMOUS MAP_ANON
+#endif
 
 #define MAX 65536
 

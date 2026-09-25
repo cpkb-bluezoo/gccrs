@@ -106,7 +106,6 @@ public:
   virtual void visit (AST::LiteralExpr &expr) override;
   virtual void visit (AST::AttrInputLiteral &attr_input) override;
   virtual void visit (AST::AttrInputExpr &attr_input) override;
-  virtual void visit (AST::AttrInputMacro &attr_input) override;
   virtual void visit (AST::MetaItemLitExpr &meta_item) override;
   virtual void visit (AST::MetaItemPathExpr &meta_item) override;
   virtual void visit (AST::BorrowExpr &expr) override;
@@ -237,8 +236,6 @@ public:
   virtual void visit (AST::TuplePatternItemsHasRest &tuple_items) override;
   virtual void visit (AST::TuplePattern &pattern) override;
   virtual void visit (AST::GroupedPattern &pattern) override;
-  virtual void visit (AST::SlicePatternItemsNoRest &items) override;
-  virtual void visit (AST::SlicePatternItemsHasRest &items) override;
   virtual void visit (AST::SlicePattern &pattern) override;
   virtual void visit (AST::AltPattern &pattern) override;
 
@@ -322,12 +319,6 @@ protected:
 
   std::unique_ptr<TuplePatternItems>
   lower_tuple_pattern_ranged (AST::TuplePatternItemsHasRest &pattern);
-
-  std::unique_ptr<SlicePatternItems>
-  lower_slice_pattern_no_rest (AST::SlicePatternItemsNoRest &pattern);
-
-  std::unique_ptr<SlicePatternItems>
-  lower_slice_pattern_has_rest (AST::SlicePatternItemsHasRest &pattern);
 
   std::unique_ptr<HIR::RangePatternBound>
   lower_range_pattern_bound (AST::RangePatternBound &bound);

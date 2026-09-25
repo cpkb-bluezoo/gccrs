@@ -162,9 +162,7 @@ PICFLAG = @PICFLAG@
 # The linker flag for the above.
 LD_PICFLAG = @LD_PICFLAG@
 
-# Flags to determine code coverage. When coverage is disabled, this will
-# contain the optimization flags, as you normally want code coverage
-# without optimization.
+# Flags to determine code coverage.
 COVERAGE_FLAGS = @coverage_flags@
 coverageexts = .{gcda,gcno}
 
@@ -691,6 +689,8 @@ plugin_resourcesdir = $(libsubdir)/plugin
 plugin_includedir = $(plugin_resourcesdir)/include
 # Directory in which plugin specific executables are installed
 plugin_bindir = $(libexecsubdir)/plugin
+# Directory where files for installed testing are installed
+testsuitedir = $(libsubdir)/testsuite
 # Used to produce a relative $(gcc_tooldir) in gcc.o
 ifeq ($(enable_as_accelerator),yes)
 unlibsubdir = ../../../../..
@@ -1353,6 +1353,7 @@ ANALYZER_OBJS = \
 	analyzer/constraint-manager.o \
 	analyzer/diagnostic-manager.o \
 	analyzer/engine.o \
+	analyzer/exploded-path.o \
 	analyzer/feasible-graph.o \
 	analyzer/function-set.o \
 	analyzer/infinite-loop.o \
@@ -1363,6 +1364,7 @@ ANALYZER_OBJS = \
 	analyzer/known-function-manager.o \
 	analyzer/ops.o \
 	analyzer/pending-diagnostic.o \
+	analyzer/poisoned-value-diagnostic.o \
 	analyzer/program-point.o \
 	analyzer/program-state.o \
 	analyzer/ranges.o \
@@ -1372,6 +1374,8 @@ ANALYZER_OBJS = \
 	analyzer/region-model-asm.o \
 	analyzer/region-model-manager.o \
 	analyzer/region-model-reachability.o \
+	analyzer/setjmp-longjmp.o \
+	analyzer/shift-diagnostics.o \
 	analyzer/sm.o \
 	analyzer/sm-file.o \
 	analyzer/sm-fd.o \
@@ -1381,6 +1385,7 @@ ANALYZER_OBJS = \
 	analyzer/sm-signal.o \
 	analyzer/sm-taint.o \
 	analyzer/state-purge.o \
+	analyzer/state-transition.o \
 	analyzer/store.o \
 	analyzer/supergraph.o \
 	analyzer/supergraph-fixup-locations.o \
@@ -1389,7 +1394,8 @@ ANALYZER_OBJS = \
 	analyzer/svalue.o \
 	analyzer/symbol.o \
 	analyzer/trimmed-graph.o \
-	analyzer/varargs.o
+	analyzer/varargs.o \
+	analyzer/write-to-const-diagnostics.o \
 
 # Language-independent object files.
 # We put the *-match.o and insn-*.o files first so that a parallel make
@@ -1538,7 +1544,6 @@ OBJS = \
 	gimple-ssa-isolate-paths.o \
 	gimple-ssa-nonnull-compare.o \
 	gimple-ssa-sccopy.o \
-	gimple-ssa-split-paths.o \
 	gimple-ssa-store-merging.o \
 	gimple-ssa-strength-reduction.o \
 	gimple-ssa-sprintf.o \
@@ -1845,7 +1850,6 @@ OBJS = \
 	tristate.o \
 	typed-splay-tree.o \
 	valtrack.o \
-	value-pointer-equiv.o \
 	value-query.o \
 	value-range.o \
 	value-range-pretty-print.o \
@@ -1864,6 +1868,7 @@ OBJS = \
 	wide-int.o \
 	wide-int-print.o \
 	attr-callback.o \
+	callback-info.o \
 	$(out_object_file) \
 	$(ANALYZER_OBJS) \
 	$(EXTRA_OBJS) \
@@ -1904,8 +1909,8 @@ OBJS-libcommon = \
 	diagnostics/diagnostics-selftests.o \
 	gcc-diagnostic-spec.o \
 	graphviz.o pex.o \
-	pretty-print.o intl.o \
-	json.o json-parsing.o json-diagnostic.o \
+	pretty-print.o pretty-print-token-buffer.o intl.o \
+	json.o json-parsing.o json-diagnostic.o json-pointer-parsing.o \
 	pub-sub.o \
 	xml.o \
 	sbitmap.o \
@@ -1951,6 +1956,12 @@ $(ALL_HOST_BACKEND_OBJS): ALL_COMPILERFLAGS += -fauto-profile=all.fda
 $(ALL_HOST_BACKEND_OBJS): all.fda
 endif
 
+# Path to the perf utility
+PERF = @PERF@
+
+# The profiler to be used by autoprofiledbootstrap
+AFDO_PROFILER = @AFDO_PROFILER@
+
 # This lists all host object files, whether they are included in this
 # compilation or not.
 ALL_HOST_OBJS = $(ALL_HOST_FRONTEND_OBJS) $(ALL_HOST_BACKEND_OBJS)
@@ -1988,7 +1999,7 @@ MOSTLYCLEANFILES = insn-flags.h insn-config.h insn-codes.h \
  $(SPECS) collect2$(exeext) gcc-ar$(exeext) gcc-nm$(exeext) \
  gcc-ranlib$(exeext) \
  genversion$(build_exeext) gcov$(exeext) gcov-dump$(exeext) \
- gcov-tool$(exeect) \
+ gcov-tool$(exeext) \
  gengtype$(exeext) *.[0-9][0-9].* *.[si] *-checksum.cc libbackend.a \
  libcommon-target.a libcommon.a libgcc.mk perf.data
 
@@ -2280,7 +2291,8 @@ start.encap: native xgcc$(exeext) cpp$(exeext) specs \
 rest.encap: lang.rest.encap
 # This is what is made with the host's compiler
 # whether making a cross compiler or not.
-native: config.status auto-host.h build-@POSUB@ $(LANGUAGES) \
+native: config.status auto-host.h testsuite/et-static.exp build-@POSUB@ \
+	$(LANGUAGES) \
 	$(EXTRA_PROGRAMS) $(COLLECT2) lto-wrapper$(exeext) \
 	gcc-ar$(exeext) gcc-nm$(exeext) gcc-ranlib$(exeext)
 
@@ -3046,7 +3058,7 @@ $(GENERIC_MATCH_PD_SEQ_SRC): s-generic-match generic-match-head.cc; @true
 generic-match-auto.h: s-generic-match; @true
 
 s-gimple-match: build/genmatch$(build_exeext) \
-	    $(srcdir)/match.pd cfn-operators.pd
+	    $(srcdir)/match.pd $(srcdir)/match-sat-alu.pd cfn-operators.pd
 	$(RUN_GEN) build/genmatch$(build_exeext) --gimple \
 	    --header=tmp-gimple-match-auto.h --include=gimple-match-auto.h \
 	    $(srcdir)/match.pd $(patsubst %, tmp-%, $(GIMPLE_MATCH_PD_SEQ_SRC))
@@ -3363,21 +3375,25 @@ build/gencfn-macros.o : gencfn-macros.cc $(BCONFIG_H) $(SYSTEM_H)	\
 # since they need to run on this machine
 # even if GCC is being compiled to run on some other machine.
 
+# We append to the genFOO variables so that target make fragments can
+# add programs to them (those includes have already been included).
+# Example: riscv/t-riscv
+
 # All these programs use the RTL reader ($(BUILD_RTL)).
-genprogrtl = attr attr-common attrtab automata codes conditions config emit \
+genprogrtl += attr attr-common attrtab automata codes conditions config emit \
 	     extract flags mddump opinit output peep preds recog target-def
 $(genprogrtl:%=build/gen%$(build_exeext)): $(BUILD_RTL)
 
 # All these programs use the MD reader ($(BUILD_MD)).
-genprogmd = $(genprogrtl) mddeps constants enums
+genprogmd += $(genprogrtl) mddeps constants enums
 $(genprogmd:%=build/gen%$(build_exeext)): $(BUILD_MD)
 
 # All these programs need to report errors.
-genprogerr = $(genprogmd) genrtl modes gtype hooks cfn-macros condmd
+genprogerr += $(genprogmd) genrtl modes gtype hooks cfn-macros condmd
 $(genprogerr:%=build/gen%$(build_exeext)): $(BUILD_ERRORS)
 
 # Remaining build programs.
-genprog = $(genprogerr) check checksum match
+genprog += $(genprogerr) check checksum match
 
 # These programs need libs over and above what they get from the above list.
 build/genautomata$(build_exeext) : BUILD_LIBS += -lm
@@ -3809,7 +3825,7 @@ TEXI_GCCINT_FILES = gccint.texi gcc-common.texi gcc-vers.texi		\
 	 sourcebuild.texi gty.texi libgcc.texi cfg.texi tree-ssa.texi	\
 	 loop.texi generic.texi gimple.texi plugins.texi optinfo.texi   \
 	 match-and-simplify.texi analyzer.texi ux.texi poly-int.texi	\
-	 params.texi specs.texi
+	 params.texi specs.texi ifn.texi
 
 TEXI_GCCINSTALL_FILES = install.texi fdl.texi		\
 	 gcc-common.texi gcc-vers.texi
@@ -3892,7 +3908,7 @@ doc/%.pdf: %.texi
 doc/gccinstall.pdf: $(TEXI_GCCINSTALL_FILES)
 	$(TEXI2PDF) -I . -I $(abs_docdir) -I $(abs_docdir)/include -o $@ $<
 
-# List the directories or single hmtl files which are installed by
+# List the directories or single html files which are installed by
 # install-html. The lang.html file triggers language fragments to build
 # html documentation.
 HTMLS_INSTALL=$(build_htmldir)/cpp $(build_htmldir)/gcc \
@@ -4051,6 +4067,7 @@ clean: mostlyclean lang.clean
 	-rm -f libgcc_s*
 	-rm -f libunwind*
 	-rm -f config.h tconfig.h bconfig.h tm_p.h tm.h
+	-rm -f etlist
 	-rm -f options.cc options.h optionlist
 	-rm -f cs-*
 	-rm -f doc/*.dvi
@@ -4070,6 +4087,7 @@ distclean: clean lang.distclean
 	-rm -f TAGS */TAGS
 	-rm -f *.asm
 	-rm -f site.exp site.bak testsuite/site.exp testsuite/site.bak
+	-rm -f testsuite/et-static.exp
 	-rm -f testsuite/*.log testsuite/*.sum
 	-cd testsuite && rm -f x *.x *.x? *.exe *.rpo *.o *.s *.S *.cc
 	-cd testsuite && rm -f *.out *.gcov *$(coverageexts)
@@ -4097,7 +4115,7 @@ maintainer-clean:
 # broken is small.
 install: install-common $(INSTALL_HEADERS) \
     install-cpp install-man install-info install-@POSUB@ \
-    install-driver install-lto-wrapper install-gcc-ar
+    install-driver install-lto-wrapper install-gcc-ar install-testsuite
 
 ifeq ($(enable_plugin),yes)
 install: install-plugin
@@ -4167,7 +4185,7 @@ PLUGIN_HEADERS = $(TREE_H) $(CONFIG_H) $(SYSTEM_H) coretypes.h $(TM_H) \
   lcm.h cfgloopmanip.h file-prefix-map.h builtins.def $(INSN_ATTR_H) \
   pass-instances.def params.list $(srcdir)/../include/gomp-constants.h \
   $(EXPR_H) $(srcdir)/analyzer/*.h $(srcdir)/diagnostics/*.h \
-  $(srcdir)/text-art/*.h
+  $(srcdir)/text-art/*.h $(srcdir)/topics/*.h
 
 # generate the 'build fragment' b-header-vars
 s-header-vars: Makefile
@@ -4207,6 +4225,7 @@ install-plugin: installdirs lang.install-plugin s-header-vars install-gengtype
 	  "$(srcdir)"/analyzer/* \
 	  | "$(srcdir)"/diagnostics/* \
 	  | "$(srcdir)"/text-art/* \
+	  | "$(srcdir)"/topics/* \
 	  | "$(srcdir)"/config/* | "$(srcdir)"/common/config/* \
 	  | "$(srcdir)"/c-family/* | "$(srcdir)"/*.def ) \
 	    base=`echo "$$path" | sed -e "s|$$srcdirstrip/||"`;; \
@@ -4567,6 +4586,12 @@ install-gcc-ar: installdirs gcc-ar$(exeext) gcc-nm$(exeext) gcc-ranlib$(exeext)
 	  done; \
 	fi
 
+# Install files needed for installed testing.
+install-testsuite: testsuite/et-static.exp auto-host.h installdirs
+	$(mkinstalldirs) $(DESTDIR)$(testsuitedir)
+	$(INSTALL_DATA) testsuite/et-static.exp $(DESTDIR)$(testsuitedir)/et-static.exp
+	$(INSTALL_DATA) auto-host.h $(DESTDIR)$(testsuitedir)/auto-host.h
+
 # Cancel installation by deleting the installed files.
 uninstall: lang.uninstall
 	-rm -rf $(DESTDIR)$(libsubdir)
@@ -4593,7 +4618,7 @@ uninstall: lang.uninstall
 
 target_subdir = @target_subdir@
 
-site.exp: ./config.status Makefile
+site.exp: ./config.status Makefile testsuite/et-static.exp
 	@echo "Making a new config file..."
 	-@rm -f ./site.tmp
 	@$(STAMP) site.exp
@@ -4676,6 +4701,12 @@ site.exp: ./config.status Makefile
 		-e '1,/^## All variables above are.*##/ d' >> site.exp
 	-@rm -f ./site.tmp
 
+testsuite/et-static.exp: $(srcdir)/et-gather.awk $(srcdir)/gen-et-static.awk \
+	$(srcdir)/testsuite/lib/et-static.def Makefile auto-host.h
+	$(AWK) -f $(srcdir)/et-gather.awk  $(srcdir)/testsuite/lib/et-static.def > etlist
+	-test -d $(TESTSUITEDIR) || mkdir $(TESTSUITEDIR)
+	$(AWK) -f $(srcdir)/gen-et-static.awk -v etlist=etlist auto-host.h > $@
+
 CHECK_TARGETS = @check_languages@
 
 check: $(CHECK_TARGETS)
@@ -4729,8 +4760,25 @@ check_p_tool=$(firstword $(subst _, ,$*))
 check_p_count=$(check_$(check_p_tool)_parallelize)
 check_p_subno=$(word 2,$(subst _, ,$*))
 check_p_subdir=$(subst _,,$*)
+# Number of runtest instances to start.  An explicit GCC_TEST_PARALLEL_SLOTS
+# wins.  Otherwise start one per job token, but never fewer than
+# check_p_min_slots: the instances claim work in batches of ten tests, so a
+# batch that runs long is the tail of the whole target, and having more
+# instances than tokens lets the ones that are left pick up the slack.  Above
+# that floor the token count is the useful number, since 128 instances on a
+# machine given -j256 leave half of it idle.  GNU make 4.0 and later put the
+# level in MFLAGS.  A bare -j, and older make, do not, and there the floor
+# stands on its own.
+check_p_min_slots=128
+check_p_jobs=$(patsubst -j%,%,$(filter -j%,$(MFLAGS)))
+# max(check_p_jobs, check_p_min_slots).  A number is <= the floor exactly when
+# it appears among the first check_p_min_slots counting numbers.
+check_p_slots=$(strip $(if $(GCC_TEST_PARALLEL_SLOTS),$(GCC_TEST_PARALLEL_SLOTS),\
+	$(if $(check_p_jobs),$(if $(filter $(check_p_jobs),\
+		$(wordlist 1,$(check_p_min_slots),$(one_to_9999))),\
+		$(check_p_min_slots),$(check_p_jobs)),$(check_p_min_slots))))
 check_p_subdirs=$(wordlist 1,$(check_p_count),$(wordlist 1, \
-		$(if $(GCC_TEST_PARALLEL_SLOTS),$(GCC_TEST_PARALLEL_SLOTS),128), \
+		$(check_p_slots), \
 		$(one_to_9999)))
 
 # For parallelized check-% targets, this decides whether parallelization
@@ -4763,19 +4811,28 @@ $(lang_checks_parallelized): check-% : site.exp
 	    EXPECT=$(EXPECT) \
 	    check-parallel-$* \
 	    $(patsubst %,check-parallel-$*_%, $(check_p_subdirs)); \
-	  sums= ; logs= ; \
+	  sums= ; logs= ; lost= ; \
 	  for dir in $(TESTSUITEDIR)/$* \
 		     $(patsubst %,$(TESTSUITEDIR)/$*%,$(check_p_subdirs));\
 	  do \
 	    if [ -d $$dir ]; then \
-	      mv -f $$dir/$*.sum $$dir/$*.sum.sep; mv -f $$dir/$*.log $$dir/$*.log.sep; \
-	      sums="$$sums $$dir/$*.sum.sep"; logs="$$logs $$dir/$*.log.sep"; \
+	      if [ -f $$dir/$*.sum ]; then \
+		mv -f $$dir/$*.sum $$dir/$*.sum.sep; mv -f $$dir/$*.log $$dir/$*.log.sep; \
+		sums="$$sums $$dir/$*.sum.sep"; logs="$$logs $$dir/$*.log.sep"; \
+	      else \
+		lost="$$lost $$dir"; \
+	      fi; \
 	    fi; \
 	  done; \
+	  if [ -n "$$lost" ]; then \
+	    echo "warning: $*: these runtest instances produced no results:$$lost" >&2; \
+	  fi; \
 	  $(SHELL) $(srcdir)/../contrib/dg-extract-results.sh $$sums \
-	    > $(TESTSUITEDIR)/$*/$*.sum; \
+	    > $(TESTSUITEDIR)/$*/$*.sum.tmp || exit 1; \
 	  $(SHELL) $(srcdir)/../contrib/dg-extract-results.sh -L $$logs \
-	    > $(TESTSUITEDIR)/$*/$*.log; \
+	    > $(TESTSUITEDIR)/$*/$*.log.tmp || exit 1; \
+	  mv -f $(TESTSUITEDIR)/$*/$*.sum.tmp $(TESTSUITEDIR)/$*/$*.sum; \
+	  mv -f $(TESTSUITEDIR)/$*/$*.log.tmp $(TESTSUITEDIR)/$*/$*.log; \
 	  rm -rf $(TESTSUITEDIR)/$*-parallel || true; \
 	else \
 	  $(MAKE) TESTSUITEDIR="$(TESTSUITEDIR)" RUNTESTFLAGS="$(RUNTESTFLAGS)" \
@@ -4838,6 +4895,7 @@ TAGS: lang.tags
 	done;						\
 	$(ETAGS) -o TAGS.sub c-family/*.h c-family/*.cc \
 	      *.h *.cc \
+	      diagnostics/*.h diagnostics/*.cc text-art/*.h text-art/*.cc \
 	      ../include/*.h ../libiberty/*.c \
 	      ../libcpp/*.cc ../libcpp/include/*.h \
 	      --language=none --regex="/\(char\|unsigned int\|int\|bool\|void\|HOST_WIDE_INT\|enum [A-Za-z_0-9]+\) [*]?\([A-Za-z_0-9]+\)/\2/" common.opt	\

@@ -97,6 +97,11 @@
   (and (match_code "reg")
        (match_test "MASK_REGNO_P (REGNO (op))")))
 
+;; Return true if op is the block scale register.
+(define_special_predicate "bsr0_operand"
+  (and (match_code "reg")
+       (match_test "REGNO (op) == BSR0_REG")))
+
 ;; Match a DI, SI or HImode register operand.
 (define_special_predicate "int248_register_operand"
   (and (match_operand 0 "register_operand")
@@ -901,7 +906,7 @@
   return i == 3 || i == 5 || i == 9;
 })
 
-;; Match 4 or 8 to 11.  Used for embeded rounding.
+;; Match 4 or 8 to 11.  Used for embedded rounding.
 (define_predicate "const_4_or_8_to_11_operand"
   (match_code "const_int")
 {
@@ -1287,14 +1292,6 @@
   (ior (match_operand 0 "register_operand")
        (match_operand 0 "vector_memory_operand")
        (match_code "const_vector")))
-
-; Return true when OP is register_operand, vector_memory_operand,
-; const_vector zero or const_vector all ones.
-(define_predicate "vector_or_0_or_1s_operand"
-  (ior (match_operand 0 "register_operand")
-       (match_operand 0 "vector_memory_operand")
-       (match_operand 0 "const0_operand")
-       (match_operand 0 "int_float_vector_all_ones_operand")))
 
 (define_predicate "bcst_mem_operand"
   (and (match_code "vec_duplicate")
@@ -1928,7 +1925,7 @@
   return true;
 })
 
-;; Return true if OP is a constant pool in perm{w,d,b} which constains index
+;; Return true if OP is a constant pool in perm{w,d,b} which contains index
 ;; match pmov{dw,wb,qd}.
 (define_predicate "permvar_truncate_operand"
  (match_code "mem")
@@ -1958,7 +1955,7 @@
   return true;
 })
 
-;; Return true if OP is a constant pool in shufb which constains index
+;; Return true if OP is a constant pool in shufb which contains index
 ;; match pmovdw.
 (define_predicate "pshufb_truncv4siv4hi_operand"
  (match_code "mem")
@@ -1988,7 +1985,7 @@
   return true;
 })
 
-;; Return true if OP is a constant pool in shufb which constains index
+;; Return true if OP is a constant pool in shufb which contains index
 ;; match pmovdw.
 (define_predicate "pshufb_truncv8hiv8qi_operand"
  (match_code "mem")
@@ -2048,6 +2045,30 @@
     return false;
 
   return true;
+})
+
+;; Return true if OP is a parallel for an insertps vec_select,
+;; where one of the two operands of the vec_concat is const0_operand.
+(define_predicate "insertps_parallel"
+  (and (match_code "parallel")
+       (match_code "const_int" "a"))
+{
+  int i;
+
+  if (XVECLEN (op, 0) != 4)
+    return false;
+
+  /* One element in [0..3], and the other 3 in [4..7].  */
+  bool found = false;
+  for (i = 0; i < 4; ++i)
+    if (INTVAL (XVECEXP (op, 0, i)) < 4)
+      {
+	if (found)
+	  return false;
+	found = true;
+      }
+
+  return found;
 })
 
 ;; Return true if OP is a const vector with duplicate value.

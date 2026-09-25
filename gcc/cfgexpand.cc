@@ -155,10 +155,11 @@ gimple_assign_rhs_to_tree (gimple *stmt)
 /* Choose either CUR or NEXT as the leader DECL for a partition.
    Prefer ignored decls, to simplify debug dumps and reduce ambiguity
    out of the same user variable being in multiple partitions (this is
-   less likely for compiler-introduced temps).  */
+   less likely for compiler-introduced temps).  Also used by out-of-SSA
+   to work out which variable a partition will be given.  */
 
-static tree
-leader_merge (tree cur, tree next)
+tree
+expand_leader_merge (tree cur, tree next)
 {
   if (cur == NULL || cur == next)
     return next;
@@ -251,7 +252,8 @@ set_rtl (tree t, rtx x)
       else
 	gcc_unreachable ();
 
-      tree next = skip ? cur : leader_merge (cur, SSAVAR (t) ? SSAVAR (t) : t);
+      tree next
+	= skip ? cur : expand_leader_merge (cur, SSAVAR (t) ? SSAVAR (t) : t);
 
       if (cur != next)
 	{
@@ -722,7 +724,7 @@ vars_ssa_cache::dump (FILE *file)
 /* Returns the filled in cache for NAME.
    This will fill in the cache if it does not exist already.
    Returns an empty for ssa names that can't contain pointers
-   (only intergal types and pointer types will contain pointers).  */
+   (only integral types and pointer types will contain pointers).  */
 
 const_bitmap
 vars_ssa_cache::operator() (tree name)
@@ -900,7 +902,7 @@ add_scope_conflicts_1 (vars_ssa_cache &cache, basic_block bb, bitmap work, bool 
 	    {
 	      /* When we are inheriting live variables from our predecessors
 		 through a CFG merge we might not see an actual mention of
-		 the variables to record the approprate conflict as defs/uses
+		 the variables to record the appropriate conflict as defs/uses
 		 might be through indirect stores/loads.  For this reason
 		 we have to make sure each live variable conflicts with
 		 each other.  When there's just a single predecessor the
@@ -1697,7 +1699,7 @@ set_parm_rtl (tree parm, rtx x)
 					      TYPE_MODE (TREE_TYPE (parm)),
 					      TYPE_ALIGN (TREE_TYPE (parm)));
 
-      /* If the variable alignment is very large we'll dynamicaly
+      /* If the variable alignment is very large we'll dynamically
 	 allocate it, which means that in-frame portion is just a
 	 pointer.  ??? We've got a pseudo for sure here, do we
 	 actually dynamically allocate its spilling area if needed?
@@ -1847,7 +1849,7 @@ expand_one_ssa_partition (tree var)
 					  TYPE_MODE (TREE_TYPE (var)),
 					  TYPE_ALIGN (TREE_TYPE (var)));
 
-  /* If the variable alignment is very large we'll dynamicaly allocate
+  /* If the variable alignment is very large we'll dynamically allocate
      it, which means that in-frame portion is just a pointer.  */
   if (align > MAX_SUPPORTED_STACK_ALIGNMENT)
     align = GET_MODE_ALIGNMENT (Pmode);
@@ -1993,9 +1995,11 @@ defer_stack_allocation (tree var, bool toplevel)
   if (flag_stack_protect || asan_sanitize_stack_p ())
     return true;
 
-  unsigned int align = TREE_CODE (var) == SSA_NAME
-    ? TYPE_ALIGN (TREE_TYPE (var))
-    : DECL_ALIGN (var);
+  /* Use the same effective alignment that expand_one_stack_var_1 would use.
+     If that alignment exceeds MAX_SUPPORTED_STACK_ALIGNMENT, defer
+     the variable so that expand_stack_vars handles its large alignment,
+     rather than calling expand_one_stack_var_1 and failing its assertion.  */
+  unsigned int align = align_local_variable (var, false) * BITS_PER_UNIT;
 
   /* We handle "large" alignment via dynamic allocation.  We want to handle
      this extra complication in only one place, so defer them.  */
@@ -2075,7 +2079,7 @@ expand_one_var (tree var, bool toplevel, bool really_expand,
       else
 	align = MINIMUM_ALIGNMENT (var, DECL_MODE (var), DECL_ALIGN (var));
 
-      /* If the variable alignment is very large we'll dynamicaly allocate
+      /* If the variable alignment is very large we'll dynamically allocate
 	 it, which means that in-frame portion is just a pointer.  */
       if (align > MAX_SUPPORTED_STACK_ALIGNMENT)
 	align = GET_MODE_ALIGNMENT (Pmode);
@@ -2460,6 +2464,36 @@ stack_protect_return_slot_p ()
   return false;
 }
 
+/* Verify that partitions which claim to be the same object really are at the
+   same address.  MEM_EXPR-based disambiguation identifies a location by a
+   MEM_EXPR base and an offset from it, so two stack slots carrying one
+   MEM_EXPR read as a single object, which lets an access to one be redirected
+   to the other.  out-of-SSA keeps them apart, see the comment above
+   split_overlapping_partition_decls.
+
+   Call this once the RTL of every partition is final.  The partition of a
+   PARM_DECL or RESULT_DECL default definition is given the MEM_EXPR of any
+   other variable in it while its names are walked, and only gets the decl
+   back when its RTL is restored in pass_expand::execute.  */
+
+static void
+verify_partition_mem_exprs (void)
+{
+  hash_map<tree, rtx> slots;
+  for (unsigned i = 0; i < num_var_partitions (SA.map); i++)
+    {
+      rtx x = SA.partition_to_pseudo[i];
+      if (!x || !MEM_P (x) || !MEM_EXPR (x))
+	continue;
+      bool existed;
+      rtx &known = slots.get_or_insert (MEM_EXPR (x), &existed);
+      if (!existed)
+	known = x;
+      else
+	gcc_assert (rtx_equal_p (XEXP (known, 0), XEXP (x, 0)));
+    }
+}
+
 /* Expand all variables used in the function.  */
 
 static rtx_insn *
@@ -2676,6 +2710,9 @@ expand_used_vars (bitmap forced_stack_vars)
 	  HOST_WIDE_INT offset, sz, redzonesz;
 	  redzonesz = ASAN_RED_ZONE_SIZE;
 	  sz = data.asan_vec[0] - prev_offset;
+	  data.asan_alignb = MAX (data.asan_alignb,
+				  crtl->stack_alignment_needed
+				  / BITS_PER_UNIT);
 	  if (data.asan_alignb > ASAN_RED_ZONE_SIZE
 	      && data.asan_alignb <= 4096
 	      && sz + ASAN_RED_ZONE_SIZE >= (int) data.asan_alignb)
@@ -4924,7 +4961,7 @@ expand_debug_expr (tree exp)
       /* Fall through.  */
 
     case INTEGER_CST:
-      if (TREE_CODE (TREE_TYPE (exp)) == BITINT_TYPE
+      if (BITINT_TYPE_P (TREE_TYPE (exp))
 	  && TYPE_MODE (TREE_TYPE (exp)) == BLKmode)
 	return NULL;
       /* FALLTHRU */
@@ -6748,7 +6785,7 @@ discover_nonconstant_array_refs_r (tree * tp, int *walk_subtrees,
   /* References of size POLY_INT_CST to a fixed-size object must go
      through memory.  It's more efficient to force that here than
      to create temporary slots on the fly.
-     RTL expansion expectes TARGET_MEM_REF to always address actual memory.
+     RTL expansion expects TARGET_MEM_REF to always address actual memory.
      Also, force to stack non-BLKmode vars accessed through VIEW_CONVERT_EXPR
      to BLKmode type.  */
   else if (TREE_CODE (t) == TARGET_MEM_REF
@@ -7084,8 +7121,8 @@ pass_expand::execute (function *fun)
   crtl->init_stack_alignment ();
   fun->cfg->max_jumptable_ents = 0;
 
-  /* Resovle the function section.  Some targets, like ARM EABI rely on knowledge
-     of the function section at exapnsion time to predict distance of calls.  */
+  /* Resolve the function section.  Some targets, like ARM EABI rely on knowledge
+     of the function section at expansion time to predict distance of calls.  */
   resolve_unique_section (current_function_decl, 0, flag_function_sections);
 
   /* Expand the variables recorded during gimple lowering.  */
@@ -7214,6 +7251,9 @@ pass_expand::execute (function *fun)
 	}
     }
 
+  if (flag_checking)
+    verify_partition_mem_exprs ();
+
   /* If this function is `main', emit a call to `__main'
      to run global initializers, etc.  */
   if (DECL_NAME (current_function_decl)
@@ -7246,13 +7286,15 @@ pass_expand::execute (function *fun)
       >= param_max_debug_marker_count)
     cfun->debug_nonbind_markers = false;
 
-  enable_ranger (fun);
+  if (optimize)
+    enable_ranger (fun);
   lab_rtx_for_bb = new hash_map<basic_block, rtx_code_label *>;
   head_end_for_bb.create (last_basic_block_for_fn (fun));
   FOR_BB_BETWEEN (bb, init_block->next_bb, EXIT_BLOCK_PTR_FOR_FN (fun),
 		  next_bb)
     bb = expand_gimple_basic_block (bb, var_ret_seq);
-  disable_ranger (fun);
+  if (optimize)
+    disable_ranger (fun);
   FOR_BB_BETWEEN (bb, init_block->next_bb, EXIT_BLOCK_PTR_FOR_FN (fun),
 		  next_bb)
     {

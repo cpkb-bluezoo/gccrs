@@ -51,7 +51,15 @@ static bool cfg_altered;
 static bool
 check_loadstore (gimple *stmt, tree op, tree, void *data)
 {
-  if ((TREE_CODE (op) == MEM_REF || TREE_CODE (op) == TARGET_MEM_REF)
+  if ((TREE_CODE (op) == MEM_REF
+       || (TREE_CODE (op) == TARGET_MEM_REF
+	   && !TMR_INDEX2 (op)
+	   && (!TMR_INDEX (op)
+	       || (TMR_STEP (op)
+		   && expr_not_equal_to (TMR_STEP (op),
+					 wi::one (TYPE_PRECISION (TREE_TYPE
+							(TMR_STEP (op)))),
+					 stmt)))))
       && operand_equal_p (TREE_OPERAND (op, 0), (tree)data, 0))
     {
       TREE_THIS_VOLATILE (op) = 1;
@@ -595,7 +603,7 @@ is_addr_local (gimple *return_stmt, tree exp, locmap_t *plocmap,
    and argument ARG and PHI edge E in basic block BB.  Add an entry for
    each use to LOCMAP, setting its NARGS member to the NARGS argument
    (the number of PHI operands) plus the number of arguments in binary
-   expressions refereced by ARG.  Call isolate_path for each returned
+   expressions referenced by ARG.  Call isolate_path for each returned
    address and set *ISOLATED to true if called.
    Return either DUPLICATE or the most recent result of isolate_path.  */
 
@@ -641,7 +649,8 @@ handle_return_addr_local_phi_arg (basic_block bb, basic_block duplicate,
       if (!return_stmt)
 	continue;
 
-      if (gimple_return_retval (return_stmt) != lhs)
+      if (gimple_return_retval (return_stmt) != lhs
+	  || !dominated_by_p (CDI_DOMINATORS, gimple_bb (use_stmt), bb))
 	continue;
 
       /* Add an entry for the return statement and the locations
@@ -715,16 +724,11 @@ find_implicit_erroneous_behavior (void)
  	 is then dereferenced within BB.  This is somewhat overly
 	 conservative, but probably catches most of the interesting
 	 cases.   */
+      basic_block duplicate = NULL;
       for (si = gsi_start_phis (bb); !gsi_end_p (si); gsi_next (&si))
 	{
 	  gphi *phi = si.phi ();
 	  tree lhs = gimple_phi_result (phi);
-
-	  /* Initial number of PHI arguments.  The result may change
-	     from one iteration of the loop below to the next in
-	     response to changes to the CFG but only the initial
-	     value is stored below for use by diagnostics.  */
-	  unsigned nargs = gimple_phi_num_args (phi);
 
 	  /* PHI produces a pointer result.  See if any of the PHI's
 	     arguments are NULL.
@@ -732,7 +736,6 @@ find_implicit_erroneous_behavior (void)
 	     When we remove an edge, we want to reprocess the current
 	     index since the argument at that index will have been
 	     removed, hence the ugly way we update I for each iteration.  */
-	  basic_block duplicate = NULL;
 	  for (unsigned i = 0, next_i = 0;
 	       i < gimple_phi_num_args (phi); i = next_i)
 	    {
@@ -742,15 +745,6 @@ find_implicit_erroneous_behavior (void)
 	      /* Advance the argument index unless a path involving
 		 the current argument has been isolated.  */
 	      next_i = i + 1;
-	      bool isolated = false;
-	      duplicate = handle_return_addr_local_phi_arg (bb, duplicate, lhs,
-							    arg, e, locmap,
-							    nargs, &isolated);
-	      if (isolated)
-		{
-		  cfg_altered = true;
-		  next_i = i;
-		}
 
 	      if (!integer_zerop (arg))
 		continue;
@@ -794,6 +788,48 @@ find_implicit_erroneous_behavior (void)
 		}
 	    }
 	}
+
+      /* Then look for a PHI which have addresses of locals that
+	 are then returned.  */
+      duplicate = NULL;
+      for (si = gsi_start_phis (bb); !gsi_end_p (si); gsi_next (&si))
+	{
+	  gphi *phi = si.phi ();
+	  tree lhs = gimple_phi_result (phi);
+
+	  /* Initial number of PHI arguments.  The result may change
+	     from one iteration of the loop below to the next in
+	     response to changes to the CFG but only the initial
+	     value is stored below for use by diagnostics.  */
+	  unsigned nargs = gimple_phi_num_args (phi);
+
+	  /* PHI produces a pointer result.  See if any of the PHI's
+	     arguments are NULL.
+
+	     When we remove an edge, we want to reprocess the current
+	     index since the argument at that index will have been
+	     removed, hence the ugly way we update I for each iteration.  */
+	  for (unsigned i = 0, next_i = 0;
+	       i < gimple_phi_num_args (phi); i = next_i)
+	    {
+	      tree arg = gimple_phi_arg_def (phi, i);
+	      edge e = gimple_phi_arg_edge (phi, i);
+
+	      /* Advance the argument index unless a path involving
+		 the current argument has been isolated.  */
+	      next_i = i + 1;
+	      bool isolated = false;
+	      duplicate = handle_return_addr_local_phi_arg (bb, duplicate, lhs,
+							    arg, e, locmap,
+							    nargs, &isolated);
+	      if (isolated)
+		{
+		  cfg_altered = true;
+		  next_i = i;
+		}
+	    }
+	}
+
     }
 
   diag_returned_locals (false, locmap);
@@ -831,7 +867,7 @@ warn_return_addr_local (basic_block bb, greturn *return_stmt)
 
   /* Bail if the statement isn't certain to return the address
      of a local (e.g., if it involves a conditional expression
-     that wasn't trasnformed into a PHI or if it involves
+     that wasn't transformed into a PHI or if it involves
      a MAX_EXPR or MIN_EXPR only one of whose operands is a local
      (even though such an expression isn't valid in C or has
      defined semantics in C++).  */

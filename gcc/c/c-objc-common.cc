@@ -438,7 +438,7 @@ c_types_compatible_p (tree x, tree y)
 bool
 c_var_mod_p (tree x, tree fn ATTRIBUTE_UNUSED)
 {
-  return C_TYPE_VARIABLY_MODIFIED (x);
+  return c_type_variably_modified_p (x);
 }
 
 /* Special routine to get the alias set of T for C.  */
@@ -486,4 +486,19 @@ c_type_dwarf_attribute (const_tree type, int attr)
     }
 
   return -1;
+}
+
+/* The C version of the enum_underlying_base_type langhook.  */
+
+tree
+c_enum_underlying_base_type (const_tree type)
+{
+  tree underlying_type = ENUM_UNDERLYING_TYPE (type);
+
+  if (! ENUM_FIXED_UNDERLYING_TYPE_P (type))
+    underlying_type
+      = c_common_type_for_mode (TYPE_MODE (underlying_type),
+				TYPE_UNSIGNED (underlying_type));
+
+  return underlying_type;
 }

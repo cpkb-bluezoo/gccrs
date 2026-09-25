@@ -124,19 +124,32 @@
 	   (match_test "!TARGET_CONST16
 			&& ! xtensa_postreload_completed_p ()"))))
 
+;; Floating-point constant constraints.
+
+(define_constraint "Gz"
+ "A single Floating-point constant non-negative zero for use with MOVI
+  instructions."
+ (and (match_code "const_double")
+      (match_test "rval->cl == rvc_zero && rval->sign == 0")))
+
+(define_constraint "Gc"
+ "A single Floating-point constant for use with CONST.S instructions."
+ (and (match_code "const_double")
+      (match_test "TARGET_HARD_FLOAT_CONST_S && xtensa_fp_const (rval) >= 0")))
+
 ;; Memory constraints.
 
 (define_special_memory_constraint "R"
  "Memory that can be accessed with a 4-bit unsigned offset from a register."
  (and (match_code "mem")
-      (match_test "smalloffset_mem_p (op)")))
+      (match_test "smalloffset_address_p (XEXP (op, 0))")))
 
 (define_special_memory_constraint "T"
  "Memory in a literal pool (addressable with an L32R instruction)."
  (and (match_code "mem")
-      (match_test "!TARGET_CONST16 && constantpool_mem_p (op)")))
+      (match_test "!TARGET_CONST16 && constantpool_address_p (XEXP (op, 0))")))
 
 (define_special_memory_constraint "U"
  "Memory that is not in a literal pool."
  (and (match_code "mem")
-      (match_test "! constantpool_mem_p (op)")))
+      (match_test "! constantpool_address_p (XEXP (op, 0))")))

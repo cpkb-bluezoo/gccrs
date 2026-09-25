@@ -63,10 +63,20 @@ FeatureGate::visit (AST::Crate &crate)
       rust_error_at (locus, ErrorCode::E0635, "unknown feature %qs",
 		     feature.c_str ());
     }
-  check_no_core_attribute (crate.inner_attrs);
+  for (const auto &attribute : crate.inner_attrs)
+    {
+      check_no_core_attribute (attribute);
+
+      if (attribute.get_path ().as_string ()
+	  == Values::Attributes::COMPILER_BUILTINS)
+	gate (Feature::Name::COMPILER_BUILTINS, attribute.get_locus (),
+	      "the #[compiler_builtins] attribute is used to identify the "
+	      "compiler_builtins crate which contains compiler-rt intrinsics "
+	      "and will never be stable");
+    }
 }
 
-void
+FeatureGate::GateResult
 FeatureGate::gate (Feature::Name name, location_t loc,
 		   const std::string &error_msg)
 {
@@ -92,7 +102,11 @@ FeatureGate::gate (Feature::Name name, location_t loc,
 	  rust_error_at (loc, ErrorCode::E0658, fmt_str, error_msg.c_str (),
 			 feature.as_string ().c_str ());
 	}
+
+      return GateResult::Gated;
     }
+
+  return GateResult::Allowed;
 }
 
 void
@@ -110,15 +124,11 @@ FeatureGate::visit (AST::ExternBlock &block)
 }
 
 void
-FeatureGate::check_no_core_attribute (
-  const std::vector<AST::Attribute> &attributes)
+FeatureGate::check_no_core_attribute (const AST::Attribute &attribute)
 {
-  for (const AST::Attribute &attr : attributes)
-    {
-      if (attr.get_path ().as_string () == Values::Attributes::NO_CORE)
-	gate (Feature::Name::NO_CORE, attr.get_locus (),
-	      "no_core is experimental");
-    }
+  if (attribute.get_path ().as_string () == Values::Attributes::NO_CORE)
+    gate (Feature::Name::NO_CORE, attribute.get_locus (),
+	  "no_core is experimental");
 }
 
 void
@@ -227,6 +237,16 @@ FeatureGate::visit (AST::Function &function)
 {
   if (!function.is_external ())
     check_rustc_attri (function.get_outer_attrs ());
+
+  for (const AST::Attribute &attr : function.get_outer_attrs ())
+    {
+      if (attr.get_path ().as_string () == "rustc_const_stable")
+	{
+	  gate (Feature::Name::STAGED_API, attr.get_locus (),
+		"stability attributes may not be used outside of the standard "
+		"library");
+	}
+    }
 
   check_lang_item_attribute (function.get_outer_attrs ());
 
@@ -344,6 +364,22 @@ FeatureGate::visit (AST::EnumItem &enum_variant)
 {
   check_lang_item_attribute (enum_variant.get_outer_attrs ());
   AST::DefaultASTVisitor::visit (enum_variant);
+}
+
+void
+FeatureGate::visit (AST::Attribute &attr)
+{
+  if (attr.get_path ().as_string () == "cfi_encoding")
+    if (gate (Feature::Name::CFI_ENCODING, attr.get_locus (),
+	      "#[cfi_encoding] is an experimental feature")
+	== GateResult::Allowed)
+      rust_warning_at (
+	attr.get_locus (), 0,
+	"the %<#[cfi_encoding]%> attribute is currently ignored and "
+	"does nothing - we are waiting on a patchset to land "
+	"into GCC as the KCFI functionality is not present yet");
+
+  AST::DefaultASTVisitor::visit (attr);
 }
 
 } // namespace Rust

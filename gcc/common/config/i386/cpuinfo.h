@@ -349,6 +349,54 @@ get_amd_cpu (struct __processor_model *cpu_model,
   return cpu;
 }
 
+/* Get the specific type of HYGON CPU and return HYGON CPU name.  Return
+   NULL for unknown HYGON CPU.  */
+
+static inline const char *
+get_hygon_cpu (struct __processor_model *cpu_model,
+	       struct __processor_model2 *cpu_model2,
+	       unsigned int *cpu_features2 __attribute__((unused)))
+{
+  const char *cpu = NULL;
+  unsigned int family = cpu_model2->__cpu_family;
+  unsigned int model = cpu_model2->__cpu_model;
+
+  switch (family)
+    {
+    case 0x18:
+      cpu_model->__cpu_type = HYGONFAM18H;
+      if (model == 0x4)
+	{
+	  cpu = "c86-4g-m4";
+	  CHECK___builtin_cpu_is ("c86-4g-m4");
+	  cpu_model->__cpu_subtype = HYGONFAM18H_C86_4G_M4;
+	}
+      else if (model == 0x6)
+	{
+	  cpu = "c86-4g-m6";
+	  CHECK___builtin_cpu_is ("c86-4g-m6");
+	  cpu_model->__cpu_subtype = HYGONFAM18H_C86_4G_M6;
+	}
+      else if (model == 0x7)
+	{
+	  cpu = "c86-4g-m7";
+	  CHECK___builtin_cpu_is ("c86-4g-m7");
+	  cpu_model->__cpu_subtype = HYGONFAM18H_C86_4G_M7;
+	}
+      else if (model == 0x8)
+	{
+	  cpu = "c86-4g-m8";
+	  CHECK___builtin_cpu_is ("c86-4g-m8");
+	  cpu_model->__cpu_subtype = HYGONFAM18H_C86_4G_M8;
+	}
+      break;
+    default:
+      break;
+    }
+
+  return cpu;
+}
+
 /* Get the specific type of Intel CPU and return Intel CPU name.  Return
    NULL for unknown Intel CPU.  */
 
@@ -754,8 +802,9 @@ get_available_features (struct __processor_model *cpu_model,
 #define XSTATE_ZMM			0x40
 #define XSTATE_HI_ZMM			0x80
 #define XSTATE_TILECFG			0x20000
-#define XSTATE_TILEDATA		0x40000
+#define XSTATE_TILEDATA			0x40000
 #define XSTATE_APX_F			0x80000
+#define XSTATE_BSR			0x100000
 
 #define XCR_AVX_ENABLED_MASK \
   (XSTATE_SSE | XSTATE_YMM)
@@ -763,17 +812,21 @@ get_available_features (struct __processor_model *cpu_model,
   (XSTATE_SSE | XSTATE_YMM | XSTATE_OPMASK | XSTATE_ZMM | XSTATE_HI_ZMM)
 #define XCR_AMX_ENABLED_MASK \
   (XSTATE_TILECFG | XSTATE_TILEDATA)
+#define XCR_ACE_ENABLED_MASK \
+  (XSTATE_TILECFG | XSTATE_TILEDATA | XSTATE_BSR)
 #define XCR_APX_F_ENABLED_MASK XSTATE_APX_F
 
-  /* Check if AVX, AVX512 and APX are usable.  */
+  /* Check if AVX, AVX512, AMX, APX and ACE are usable.  */
   int avx_usable = 0;
   int avx512_usable = 0;
   int amx_usable = 0;
   int apx_usable = 0;
+  int ace_usable = 0;
   /* Check if KL is usable.  */
   int has_kl = 0;
   /* Record AVX10 version.  */
   int avx10_set = 0;
+  int ace_set = 0, avx10v2aux_set = 0;
   int version = 0;
   if ((ecx & bit_OSXSAVE))
     {
@@ -794,6 +847,8 @@ get_available_features (struct __processor_model *cpu_model,
 		    == XCR_AMX_ENABLED_MASK);
       apx_usable = ((xcrlow & XCR_APX_F_ENABLED_MASK)
 		    == XCR_APX_F_ENABLED_MASK);
+      ace_usable = ((xcrlow & XCR_ACE_ENABLED_MASK)
+		    == XCR_ACE_ENABLED_MASK);
     }
 
 #define set_feature(f) \
@@ -997,6 +1052,14 @@ get_available_features (struct __processor_model *cpu_model,
 	      if (edx & bit_AVX10)
 		avx10_set = 1;
 	    }
+	  if (avx10_set)
+	    {
+	      /* The XSTATE for vector registers has been checked
+		 when setting avx10_set.  */
+	      if (ace_usable)
+		if (ecx & bit_ACE)
+		  ace_set = 1;
+	    }
 	  if (amx_usable)
 	    {
 	      if (eax & bit_AMX_FP16)
@@ -1055,8 +1118,6 @@ get_available_features (struct __processor_model *cpu_model,
 	{
 	  if (eax & bit_AMX_AVX512)
 	    set_feature (FEATURE_AMX_AVX512);
-	  if (eax & bit_AMX_TF32)
-	    set_feature (FEATURE_AMX_TF32);
 	  if (eax & bit_AMX_FP8)
 	    set_feature (FEATURE_AMX_FP8);
 	  if (eax & bit_AMX_MOVRS)
@@ -1064,20 +1125,12 @@ get_available_features (struct __processor_model *cpu_model,
 	}
     }
 
-  /* Get Advanced Features at level 0x21 (eax = 0x21).  */
-  if (max_cpuid_level >= 0x21)
-    {
-      __cpuid (0x21, eax, ebx, ecx, edx);
-      if (eax & bit_AVX512BMM)
-	{
-	  set_feature (FEATURE_AVX512BMM);
-	}
-    }
-
   /* Get Advanced Features at level 0x24 (eax = 0x24, ecx = 0).  */
   if (avx10_set && max_cpuid_level >= 0x24)
     {
-      __cpuid_count (0x24, 0, eax, ebx, ecx, edx);
+      unsigned int max_subleaf_level;
+
+      __cpuid_count (0x24, 0, max_subleaf_level, ebx, ecx, edx);
       version = ebx & 0xff;
       switch (version)
 	{
@@ -1090,6 +1143,37 @@ get_available_features (struct __processor_model *cpu_model,
 	default:
 	  set_feature (FEATURE_AVX10_1);
 	  break;
+	}
+      if (max_subleaf_level >= 1)
+	{
+	  __cpuid_count (0x24, 1, eax, ebx, ecx, edx);
+	  if (ecx & bit_AVX10V2AUX)
+	    {
+	      set_feature (FEATURE_AVX10V2AUX);
+	      avx10v2aux_set = 1;
+	    }
+	}
+    }
+
+  /* Get Advanced Features at level 0x1d (eax = 0x1d).
+     ACE check must be put after AVX10 check to get AVX10 features.
+     TODO: Change the condition after AVX10V1AUX is added.  */
+  if (version >= 2 && avx10v2aux_set && ace_set && max_cpuid_level >= 0x1d)
+    {
+      __cpuid_count (0x1d, 0, eax, ebx, ecx, edx);
+      if (eax == 2)
+	{
+	  __cpuid_count (0x1d, 2, eax, ebx, ecx, edx);
+	  version = eax & 0xff;
+	  switch (version)
+	    {
+	    case 1:
+	      set_feature (FEATURE_ACEV1);
+	      break;
+	    default:
+	      set_feature (FEATURE_ACEV1);
+	      break;
+	    }
 	}
     }
 
@@ -1148,9 +1232,9 @@ get_available_features (struct __processor_model *cpu_model,
     {
       __cpuid (0x80000021, eax, ebx, ecx, edx);
       if (eax & bit_AMD_PREFETCHI)
-	{
-	  set_feature (FEATURE_PREFETCHI);
-	}
+	set_feature (FEATURE_PREFETCHI);
+      if (eax & bit_AVX512BMM)
+	set_feature (FEATURE_AVX512BMM);
     }
 
 #undef set_feature
@@ -1259,6 +1343,21 @@ cpu_indicator_init (struct __processor_model *cpu_model,
     cpu_model->__cpu_vendor = VENDOR_CYRIX;
   else if (vendor == signature_NSC_ebx)
     cpu_model->__cpu_vendor = VENDOR_NSC;
+  else if (vendor == signature_HYGON_ebx)
+    {
+      /* Adjust model and family for HYGON CPUS.  */
+      if (family == 0x0f)
+	{
+	  family += extended_family;
+	  model += extended_model;
+	}
+      cpu_model2->__cpu_family = family;
+      cpu_model2->__cpu_model = model;
+
+      /* Get CPU type.  */
+      get_hygon_cpu (cpu_model, cpu_model2, cpu_features2);
+      cpu_model->__cpu_vendor = VENDOR_HYGON;
+    }
   else
     cpu_model->__cpu_vendor = VENDOR_OTHER;
 

@@ -126,7 +126,7 @@ struct GTY ((desc ("%h.type"), tag ("TOPLEVEL_BASE"),
   int order;
 
   /* Type of the node.  */
-  ENUM_BITFIELD (toplevel_type) type : 8;
+  enum toplevel_type type : 8;
 };
 
 /* Base of all entries in the symbol table.
@@ -219,7 +219,7 @@ public:
   void clone_references (symtab_node *node);
 
   /* Remove all stmt references in non-speculative references.
-     Those are not maintained during inlining & clonning.
+     Those are not maintained during inlining & cloning.
      The exception are speculative references that are updated along
      with callgraph edges associated with them.  */
   void clone_referring (symtab_node *node);
@@ -237,7 +237,7 @@ public:
   void remove_stmt_references (gimple *stmt);
 
   /* Remove all stmt references in non-speculative references.
-     Those are not maintained during inlining & clonning.
+     Those are not maintained during inlining & cloning.
      The exception are speculative references that are updated along
      with callgraph edges associated with them.  */
   void clear_stmts_in_references (void);
@@ -530,7 +530,7 @@ public:
   }
 
   /* The symbols resolution.  */
-  ENUM_BITFIELD (ld_plugin_symbol_resolution) resolution : 8;
+  enum ld_plugin_symbol_resolution resolution : 8;
 
   /*** Flags representing the symbol type.  ***/
 
@@ -1294,13 +1294,16 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
      it is not used in any other non-standard way.  */
   bool only_called_directly_p (void);
 
+  /* Returns TRUE iff THIS is a descendant of N in the clone tree.  */
+  bool is_clone_of (cgraph_node *n) const;
+
   /* Turn profile to global0.  Walk into inlined functions.  */
   void make_profile_local ();
 
   /* Turn profile to global0.  Walk into inlined functions.  */
   void make_profile_global0 (profile_quality quality);
 
-  /* Scale profile by NUM/DEN.  Walk into inlined funtion.  */
+  /* Scale profile by NUM/DEN.  Walk into inlined function.  */
   void apply_scale (profile_count num, profile_count den);
 
   /* Scale profile to given IPA_COUNT.
@@ -1510,7 +1513,7 @@ struct GTY((tag ("SYMTAB_FUNCTION"))) cgraph_node : public symtab_node
   unsigned process : 1;
   /* How commonly executed the node is.  Initialized during branch
      probabilities pass.  */
-  ENUM_BITFIELD (node_frequency) frequency : 2;
+  enum node_frequency frequency : 2;
   /* True when function can only be called at startup (from static ctor).  */
   unsigned only_called_at_startup : 1;
   /* True when function can only be called at startup (from static dtor).  */
@@ -1922,8 +1925,10 @@ public:
   /* Create a callback edge, representing an indirect call to n2
      passed to a function by argument.  Sets has_callback flag of the original
      edge. Both edges are attached to the same call statement.  Returns created
-     callback edge.  */
-  cgraph_edge *make_callback (cgraph_node *n2, unsigned int callback_hash);
+     callback edge.  FN_IDX is the index of the callback function in dispatching
+     function's argument list.  ATTR is the attribute used to derive the
+     edge.  */
+  cgraph_edge *make_callback (cgraph_node *n2, unsigned fn_idx, tree attr);
 
   /* Returns the callback-carrying edge of a callback edge or NULL, if such edge
      cannot be found.  An edge is considered callback-carrying, if it has it's
@@ -1959,7 +1964,7 @@ public:
      pairs all linked to single statement.
 
      Note that ref may point to different symbol than the corresponding call
-     becuase the speculated edge may have been optimized (redirected to
+     because the speculated edge may have been optimized (redirected to
      a clone) or inlined.
 
      Given an edge which is part of speculative call, return the first
@@ -2008,7 +2013,7 @@ public:
      target2.  */
   cgraph_edge *speculative_call_for_target (cgraph_node *);
 
-  /* Return REF corresponding to direct call in the specualtive call
+  /* Return REF corresponding to direct call in the speculative call
      sequence.  */
   ipa_ref *speculative_call_target_ref ()
   {
@@ -2179,10 +2184,6 @@ public:
      that the callee of this edge takes a function and it's parameters by
      argument and calls it at a later time.  */
   unsigned int has_callback : 1;
-  /* Used to pair callback edges and the attributes that originated them
-     together.  Currently the index of the callback argument, retrieved
-     from the attribute.  */
-  unsigned int callback_id : 16;
   /* Set to true when caller is a constructor or destructor of polymorphic
      type.  */
   unsigned in_polymorphic_cdtor : 1;
@@ -2352,7 +2353,7 @@ struct GTY((tag ("SYMTAB_VARIABLE"))) varpool_node : public symtab_node
      function local statics.   */
   unsigned dynamically_initialized : 1;
 
-  ENUM_BITFIELD(tls_model) tls_model : 3;
+  enum tls_model tls_model : 3;
 
   /* Set if the variable is known to be used by single function only.
      This is computed by ipa_single_use pass and used by late optimizations

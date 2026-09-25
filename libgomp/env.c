@@ -121,6 +121,7 @@ int gomp_teams_thread_limit_var;
 bool gomp_display_affinity_var;
 char *gomp_affinity_format_var = "level %L thread %i affinity %A";
 size_t gomp_affinity_format_len;
+enum gomp_runtime_usm_t gomp_runtime_usm_var = GOMP_RUNTIME_USM_DISABLED;
 char *goacc_device_type;
 int goacc_device_num;
 int goacc_default_dims[GOMP_DIM_MAX];
@@ -923,7 +924,7 @@ parse_places_var (const char *name, bool ignore)
   return false;
 }
 
-/* Parse the OMP_STACKSIZE environment varible.  Return true if one was
+/* Parse the OMP_STACKSIZE environment variable.  Return true if one was
    present and it was successfully parsed.  */
 
 static bool
@@ -983,7 +984,7 @@ parse_stacksize (const char *env, const char *val, void *const params[])
   return false;
 }
 
-/* Parse the GOMP_SPINCOUNT environment varible.  Return true if one was
+/* Parse the GOMP_SPINCOUNT environment variable.  Return true if one was
    present and it was successfully parsed.  */
 
 static bool
@@ -1054,6 +1055,53 @@ parse_spincount (const char *name, unsigned long long *pvalue)
  invalid:
   gomp_error ("Invalid value for environment variable %s", name);
   return false;
+}
+
+static bool
+parse_rt_usm (const char *name, enum gomp_runtime_usm_t *val)
+{
+  char *env, *end;
+  env = getenv (name);
+  if (env == NULL)
+    return false;
+  end = env;
+  while (isspace ((unsigned char) *env))
+    ++env;
+  if (*env == '\0')
+    {
+      gomp_error ("Invalid value for environment variable %s", name);
+      return false;
+    }
+  enum gomp_runtime_usm_t store_state = GOMP_RUNTIME_USM_DISABLED;
+  if (strncasecmp (env, "disabled", 8) == 0)
+    {
+      store_state = GOMP_RUNTIME_USM_DISABLED;
+      end += 8;
+    }
+  else if (strncasecmp (env, "auto", 4) == 0)
+    {
+      store_state = GOMP_RUNTIME_USM_AUTO;
+      end += 4;
+    }
+  else if (strncasecmp (env, "enabled", 7) == 0)
+    {
+      store_state = GOMP_RUNTIME_USM_ENABLED;
+      end += 7;
+    }
+  else
+    {
+      gomp_error ("Invalid value for environment variable %s", name);
+      return false;
+    }
+  while (isspace ((unsigned char) *end))
+    ++end;
+  if (*end != '\0')
+    {
+      gomp_error ("Invalid value for environment variable %s", name);
+      return false;
+    }
+  *val = store_state;
+  return true;
 }
 
 /* Parse a boolean value for environment variable NAME and store the
@@ -1131,7 +1179,7 @@ parse_wait_policy (const char *env, const char *val, void *const params[])
   return false;
 }
 
-/* Parse the GOMP_CPU_AFFINITY environment varible.  Return true if one was
+/* Parse the GOMP_CPU_AFFINITY environment variable.  Return true if one was
    present and it was successfully parsed.  */
 
 static bool
@@ -1227,7 +1275,7 @@ parse_affinity (bool ignore)
   return true;
 
  invalid:
-  gomp_error ("Invalid value for enviroment variable GOMP_CPU_AFFINITY");
+  gomp_error ("Invalid value for environment variable GOMP_CPU_AFFINITY");
   return false;
 }
 
@@ -1974,8 +2022,21 @@ omp_display_env (int verbose)
       fprintf (stderr, "  [host] GOMP_SPINCOUNT = '%lu'\n",
 	       (unsigned long) gomp_spin_count_var);
 #endif
+      fputs ("  [all] GOMP_RUNTIME_USM = '", stderr);
+      switch (gomp_runtime_usm_var)
+	{
+	case GOMP_RUNTIME_USM_DISABLED:
+	  fputs ("DISABLED", stderr);
+	  break;
+	case GOMP_RUNTIME_USM_AUTO:
+	  fputs ("AUTO", stderr);
+	  break;
+	case GOMP_RUNTIME_USM_ENABLED:
+	  fputs ("ENABLED", stderr);
+	  break;
+	}
+      fputs ("'\n", stderr);
     }
-
   fputs ("OPENMP DISPLAY ENVIRONMENT END\n", stderr);
 }
 ialias (omp_display_env)
@@ -2434,7 +2495,7 @@ initialize_env (void)
     {
       /* Using a rough estimation of 100000 spins per msec,
 	 use 5 min blocking for OMP_WAIT_POLICY=active,
-	 3 msec blocking when OMP_WAIT_POLICY is not specificed
+	 3 msec blocking when OMP_WAIT_POLICY is not specified
 	 and 0 when OMP_WAIT_POLICY=passive.
 	 Depending on the CPU speed, this can be e.g. 5 times longer
 	 or 5 times shorter.  */
@@ -2455,6 +2516,13 @@ initialize_env (void)
   if (gomp_throttled_spin_count_var > gomp_spin_count_var)
     gomp_throttled_spin_count_var = gomp_spin_count_var;
 
+  /* If unset or we fail, we currently default to 'disabled', both here and on
+     initialization of 'gomp_runtime_usm_var'.  Eventually, it may bear
+     consideration if we wish to rather default to 'auto' - but until then,
+     we do not wish to surprise.  */
+  if (!parse_rt_usm ("GOMP_RUNTIME_USM", &gomp_runtime_usm_var))
+    gomp_runtime_usm_var = GOMP_RUNTIME_USM_DISABLED;
+
   /* Not strictly environment related, but ordering constructors is tricky.  */
   pthread_attr_init (&gomp_thread_attr);
 
@@ -2473,7 +2541,7 @@ initialize_env (void)
 
   if ((none != NULL && gomp_get_icv_flag (none->flags, GOMP_ICV_STACKSIZE))
       || (all != NULL && gomp_get_icv_flag (all->flags, GOMP_ICV_STACKSIZE))
-      || GOMP_DEFAULT_STACKSIZE)
+      || GOMP_DEFAULT_STACKSIZE != 0)
     {
       int err;
 
@@ -2510,4 +2578,19 @@ initialize_env (void)
 
   goacc_profiling_initialize ();
 }
+
+
+/* Stub implementation; to be moved to ompt.cc once implemented.  */
+
+ialias (omp_control_tool)
+
+omp_control_tool_result_t
+omp_control_tool (omp_control_tool_t command, int modifier, void *arg)
+{
+  (void) command;
+  (void) modifier;
+  (void) arg;
+  return omp_control_tool_notool;
+}
+
 #endif /* LIBGOMP_OFFLOADED_ONLY */

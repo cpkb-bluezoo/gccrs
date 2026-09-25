@@ -617,6 +617,13 @@ extern void omp_clause_range_check_failed (const_tree, const char *, int,
    || TREE_CODE (TYPE) == INTEGER_TYPE \
    || TREE_CODE (TYPE) == BITINT_TYPE)
 
+/* Nonzero if TYPE represents an integral type (non-boolean).  */
+
+#define INTEGRAL_NB_TYPE_P(TYPE)  \
+  (TREE_CODE (TYPE) == ENUMERAL_TYPE  \
+   || TREE_CODE (TYPE) == INTEGER_TYPE \
+   || TREE_CODE (TYPE) == BITINT_TYPE)
+
 /* Nonzero if TYPE represents an integral type, including complex
    and vector integer types.  */
 
@@ -626,9 +633,14 @@ extern void omp_clause_range_check_failed (const_tree, const char *, int,
         || VECTOR_TYPE_P (TYPE))		\
        && INTEGRAL_TYPE_P (TREE_TYPE (TYPE))))
 
-/* Nonzero if TYPE is bit-precise integer type.  */
+/* Nonzero if TYPE is bit-precise integer type or enumeral type
+   with bit-precise integer type as underlying type.  */
 
-#define BITINT_TYPE_P(TYPE) (TREE_CODE (TYPE) == BITINT_TYPE)
+#define BITINT_TYPE_P(TYPE) \
+  (TREE_CODE (TYPE) == BITINT_TYPE			\
+   || (TREE_CODE (TYPE) == ENUMERAL_TYPE		\
+       && TREE_TYPE (TYPE)				\
+       && TREE_CODE (TREE_TYPE (TYPE)) == BITINT_TYPE))
 
 /* Nonzero if TYPE represents a non-saturating fixed-point type.  */
 
@@ -993,7 +1005,7 @@ extern void omp_clause_range_check_failed (const_tree, const char *, int,
 
 /* True if an overflow is to be preserved for sanitization.  */
 #define TYPE_OVERFLOW_SANITIZED(TYPE)			\
-  (INTEGRAL_TYPE_P (TYPE)				\
+  (ANY_INTEGRAL_TYPE_P (TYPE)				\
    && !TYPE_OVERFLOW_WRAPS (TYPE)			\
    && (flag_sanitize & SANITIZE_SI_OVERFLOW))
 
@@ -1687,6 +1699,24 @@ class auto_suppress_location_wrappers
 					      OMP_CLAUSE_FROM,		\
 					      OMP_CLAUSE_MAP), 2)
 
+/* An iterator modifier on a clause is represented as a vector.
+   Unexpanded iterators produced by the front-end parsers have 6
+   elements; after expansion, they have 10.  See also the
+   make_omp_iterator and make_expanded_omp_iterator constructors
+   below.  */
+#define OMP_ITERATOR_VAR(NODE)		TREE_VEC_ELT (NODE, 0)
+#define OMP_ITERATOR_BEGIN(NODE)	TREE_VEC_ELT (NODE, 1)
+#define OMP_ITERATOR_END(NODE)		TREE_VEC_ELT (NODE, 2)
+#define OMP_ITERATOR_STEP(NODE)	TREE_VEC_ELT (NODE, 3)
+#define OMP_ITERATOR_ORIG_STEP(NODE)	TREE_VEC_ELT (NODE, 4)
+#define OMP_ITERATOR_BLOCK(NODE)	TREE_VEC_ELT (NODE, 5)
+#define OMP_ITERATOR_LABEL(NODE)	TREE_VEC_ELT (NODE, 6)
+#define OMP_ITERATOR_INDEX(NODE)	TREE_VEC_ELT (NODE, 7)
+#define OMP_ITERATOR_ELEMS(NODE)	TREE_VEC_ELT (NODE, 8)
+#define OMP_ITERATOR_COUNT(NODE)	TREE_VEC_ELT (NODE, 9)
+
+#define OMP_ITERATOR_EXPANDED_P(NODE)	(TREE_VEC_LENGTH (NODE) > 6)
+
 /* True on OMP_FOR and other OpenMP/OpenACC looping constructs if the loop nest
    is non-rectangular.  */
 #define OMP_FOR_NON_RECTANGULAR(NODE) \
@@ -1834,6 +1864,16 @@ class auto_suppress_location_wrappers
   TREE_PRIVATE (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_GRAINSIZE))
 #define OMP_CLAUSE_NUM_TASKS_STRICT(NODE) \
   TREE_PRIVATE (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_NUM_TASKS))
+#define OMP_CLAUSE_NUM_THREADS_STRICT(NODE) \
+  TREE_PRIVATE (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_NUM_THREADS))
+#define OMP_CLAUSE_THREAD_LIMIT_STRICT(NODE) \
+  TREE_PRIVATE (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_THREAD_LIMIT))
+#define OMP_CLAUSE_NUM_TEAMS_DIMS(NODE) \
+  TREE_PROTECTED (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_NUM_TEAMS))
+#define OMP_CLAUSE_NUM_THREADS_DIMS(NODE) \
+  TREE_PROTECTED (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_NUM_THREADS))
+#define OMP_CLAUSE_THREAD_LIMIT_DIMS(NODE) \
+  TREE_PROTECTED (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_THREAD_LIMIT))
 
 /* OpenACC clause expressions  */
 #define OMP_CLAUSE_EXPR(NODE, CLAUSE) \
@@ -1878,6 +1918,17 @@ class auto_suppress_location_wrappers
 /* True if DOACROSS clause is spelled as DEPEND.  */
 #define OMP_CLAUSE_DOACROSS_DEPEND(NODE) \
   TREE_PROTECTED (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_DOACROSS))
+
+/* If the string passed to the 'message' clause is not null terminated,
+   OMP_CLAUSE_MESSAGE_LEN must be set.  */
+#define OMP_CLAUSE_MESSAGE_EXPR(NODE) \
+  OMP_CLAUSE_OPERAND ( \
+    OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_MESSAGE), 0)
+#define OMP_CLAUSE_MESSAGE_LEN(NODE) \
+  OMP_CLAUSE_OPERAND ( \
+    OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_MESSAGE), 1)
+#define OMP_CLAUSE_MESSAGE_SEVERITY_WARN(NODE) \
+  (OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_MESSAGE)->base.public_flag)
 
 #define OMP_CLAUSE_MAP_KIND(NODE) \
   ((enum gomp_map_kind) OMP_CLAUSE_SUBCODE_CHECK (NODE, OMP_CLAUSE_MAP)->omp_clause.subcode.map_kind)
@@ -2530,7 +2581,7 @@ extern tree vector_element_bits_tree (const_tree);
 
 /* Encode/decode the named memory support as part of the qualifier.  If more
    than 8 qualifiers are added, these macros need to be adjusted.  */
-#define ENCODE_QUAL_ADDR_SPACE(NUM) ((NUM & 0xFF) << 8)
+#define ENCODE_QUAL_ADDR_SPACE(NUM) (((NUM) & 0xFF) << 8)
 #define DECODE_QUAL_ADDR_SPACE(X) (((X) >> 8) & 0xFF)
 
 /* Return all qualifiers except for the address space qualifiers.  */
@@ -3682,7 +3733,7 @@ extern vec<tree, va_gc> **decl_debug_args_insert (tree);
    (FUNCTION_DECL_CHECK (NODE)->function_decl.versioned_function)
 
 /* In FUNCTION_DECL, this is set if this function is a C++ constructor.
-   Devirtualization machinery uses this knowledge for determing type of the
+   Devirtualization machinery uses this knowledge for determining type of the
    object constructed.  Also we assume that constructor address is not
    important.  */
 #define DECL_CXX_CONSTRUCTOR_P(NODE)\
@@ -5171,7 +5222,7 @@ strip_pointer_types (const_tree type)
   return type;
 }
 
-/* Desription of the reason why the argument of valid_constant_size_p
+/* Description of the reason why the argument of valid_constant_size_p
    is not a valid size.  */
 enum cst_size_error {
   cst_size_ok,
@@ -5359,6 +5410,11 @@ extern tree ssa_uniform_vector_p (tree);
    return NULL_TREE.  */
 
 extern tree uniform_integer_cst_p (tree);
+
+/* Return the uniform difference between two INTEGER_CSTs or corresponding
+   elements of two VECTOR_CSTs or NULL_TREE if no such difference exists.  */
+
+extern tree uniform_vector_difference_p (const_tree, const_tree);
 
 extern int single_nonzero_element (const_tree);
 
@@ -5637,6 +5693,9 @@ extern tree decl_type_context (const_tree);
 /* Return true if EXPR is the real constant zero.  */
 extern bool real_zerop (const_tree);
 
+/* Return true if EXPR is the real constant negative zero.  */
+extern bool real_negzerop (const_tree);
+
 /* Initialize the iterator I with arguments from function FNDECL  */
 
 inline void
@@ -5733,6 +5792,7 @@ extern bool auto_var_p (const_tree);
 extern bool auto_var_in_fn_p (const_tree, const_tree);
 extern tree build_low_bits_mask (tree, unsigned);
 extern bool tree_nop_conversion_p (const_tree, const_tree);
+extern bool vector_nop_conversion_p (const_tree, const_tree);
 extern tree tree_strip_nop_conversions (tree);
 extern tree tree_strip_sign_nop_conversions (tree);
 extern const_tree strip_invariant_refs (const_tree);
@@ -5791,6 +5851,27 @@ inline bool
 trunc_or_exact_div_p (tree_code code)
 {
   return code == TRUNC_DIV_EXPR || code == EXACT_DIV_EXPR;
+}
+
+/* Return true if CODE is an integer division or integer mod code. */
+inline bool
+int_divide_or_mod_p (const code_helper &code)
+{
+  switch (code.get_rep())
+    {
+    case TRUNC_DIV_EXPR:
+    case CEIL_DIV_EXPR:
+    case FLOOR_DIV_EXPR:
+    case ROUND_DIV_EXPR:
+    case EXACT_DIV_EXPR:
+    case TRUNC_MOD_EXPR:
+    case FLOOR_MOD_EXPR:
+    case CEIL_MOD_EXPR:
+    case ROUND_MOD_EXPR:
+      return true;
+    default:
+      return false;
+    }
 }
 
 /* Return nonzero if CODE is a tree code that represents a truth value.  */
@@ -5896,6 +5977,7 @@ extern void init_ttree (void);
 extern void build_common_tree_nodes (bool);
 extern void build_common_builtin_nodes (void);
 extern void tree_cc_finalize (void);
+extern tree unsigned_integer_tree_node_for_type (const char *);
 extern tree build_nonstandard_integer_type (unsigned HOST_WIDE_INT, int);
 extern tree build_nonstandard_boolean_type (unsigned HOST_WIDE_INT);
 extern tree build_bitint_type (unsigned HOST_WIDE_INT, int);
@@ -6000,6 +6082,9 @@ extern int get_range_pos_neg (tree, gimple * = NULL);
 
 /* Return true for a valid pair of new and delete operators.  */
 extern bool valid_new_delete_pair_p (tree, tree, bool * = NULL);
+
+/* Return whether the second argument is a subtree of the first one.  */
+extern bool find_tree (tree, tree);
 
 /* Return simplified tree code of type that is used for canonical type
    merging.  */
@@ -6964,6 +7049,7 @@ extern void gt_pch_nx (tree_raw_data *, gt_pointer_operator, void *);
 extern bool nonnull_arg_p (const_tree);
 extern bool is_empty_type (const_tree);
 extern bool default_is_empty_record (const_tree);
+extern bool flexible_array_member_type_p (const_tree);
 extern bool flexible_array_type_p (const_tree);
 extern HOST_WIDE_INT arg_int_size_in_bytes (const_tree);
 extern tree arg_size_in_bytes (const_tree);
@@ -7193,5 +7279,28 @@ extern auto_vec<string_slice> get_clone_attr_versions
 extern bool disjoint_version_decls (tree, tree);
 /* Checks if two overlapping decls are not mergeable.  */
 extern bool diagnose_versioned_decls (tree, tree);
+
+/* Unshare tree if needed.  */
+extern tree unshare_expr (tree);
+
+/* Unshare tree if needed.
+   Removing the locations if an expr.  */
+extern tree unshare_expr_without_location (tree);
+
+extern void copy_if_shared (tree *, void * = NULL);
+
+/* Make a vector to hold an unexpanded omp iterator vector.  */
+inline tree
+make_omp_iterator (void)
+{
+  return make_tree_vec (6);
+}
+
+/* Make a vector to hold an expanded omp iterator vector.  */
+inline tree
+make_expanded_omp_iterator (void)
+{
+  return make_tree_vec (10);
+}
 
 #endif  /* GCC_TREE_H  */

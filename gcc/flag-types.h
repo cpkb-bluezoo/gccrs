@@ -456,7 +456,8 @@ enum gfc_fcoarray
 {
   GFC_FCOARRAY_NONE = 0,
   GFC_FCOARRAY_SINGLE,
-  GFC_FCOARRAY_LIB
+  GFC_FCOARRAY_LIB,
+  GFC_FCOARRAY_SHARED
 };
 
 
@@ -582,6 +583,14 @@ enum omp_target_simd_clone_device_kind
   OMP_TARGET_SIMD_CLONE_HOST = 1,
   OMP_TARGET_SIMD_CLONE_NOHOST = 2,
   OMP_TARGET_SIMD_CLONE_ANY = 3
+};
+
+/* Levels for -fopenmp-ompt.  */
+enum omp_ompt_level
+{
+  OMP_OMPT_LEVEL_MINIMAL = 0,
+  OMP_OMPT_LEVEL_BASIC = 1,
+  OMP_OMPT_LEVEL_EXTENDED = 2
 };
 
 #endif

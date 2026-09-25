@@ -854,13 +854,17 @@ gcn_can_split_p (machine_mode, rtx op)
    if it is not possible or non-profitable.  */
 
 static reg_class_t
-gcn_spill_class (reg_class_t c, machine_mode /*mode */ )
+gcn_spill_class (reg_class_t c, machine_mode mode)
 {
   if (reg_classes_intersect_p (ALL_CONDITIONAL_REGS, c)
       || c == VCC_CONDITIONAL_REG || c == EXEC_MASK_REG)
     return SGPR_REGS;
+  else if (c == VGPR_REGS && !VECTOR_MODE_P (mode))
+    return SGPR_REGS;
+  else if (c == VGPR_REGS && TARGET_AVGPRS)
+    return AVGPR_REGS;
   else
-    return c == VGPR_REGS && TARGET_AVGPRS ? AVGPR_REGS : NO_REGS;
+    return NO_REGS;
 }
 
 /* Implement TARGET_IRA_CHANGE_PSEUDO_ALLOCNO_CLASS.
@@ -1242,7 +1246,7 @@ gcn_gen_undef (machine_mode mode)
 /* {{{ Utility functions.  */
 
 /*  Generalised accessor functions for instruction patterns.
-    The machine desription '@' prefix does something similar, but as of
+    The machine description '@' prefix does something similar, but as of
     GCC 10 is incompatible with define_subst, and anyway it doesn't
     auto-handle the exec feature.
 
@@ -1874,6 +1878,14 @@ gcn_addr_space_subset_p (addr_space_t subset, addr_space_t superset)
   return false;
 }
 
+static bool
+gcn_addr_space_zero_address_valid (addr_space_t as)
+{
+  if (as == ADDR_SPACE_LDS)
+    return true;
+  return false;
+}
+
 static addr_space_t
 gcn_addr_space_resolve_default (addr_space_t as)
 {
@@ -1956,7 +1968,7 @@ gcn_addr_space_debug (addr_space_t as)
 
 /* Implement REGNO_MODE_CODE_OK_FOR_BASE_P via gcn.h
 
-   Retun true if REGNO is OK for memory adressing.  */
+   Return true if REGNO is OK for memory addressing.  */
 
 bool
 gcn_regno_mode_code_ok_for_base_p (int regno,
@@ -2987,7 +2999,7 @@ gcn_init_cumulative_args (CUMULATIVE_ARGS *cum /* Argument info to init */ ,
     {
       warning_at (UNKNOWN_LOCATION, 0,
 		  "Unified Shared Memory is required, but XNACK is disabled");
-      inform (UNKNOWN_LOCATION, "Try -foffload-options=-mxnack=any");
+      inform (UNKNOWN_LOCATION, "try %<-foffload-options=-mxnack=any%>");
       warned_xnack = 1;
     }
 
@@ -3395,8 +3407,8 @@ gcn_expand_prologue ()
 	+ offsets->local_vars + offsets->outgoing_args_size;
       if (sp_adjust > 0)
 	{
-	  /* Adding RTX_FRAME_RELATED_P effectively disables spliting, so
-	     we use split add explictly, and specify the DImode add in
+	  /* Adding RTX_FRAME_RELATED_P effectively disables splitting, so
+	     we use split add explicitly, and specify the DImode add in
 	     the note.  */
 	  rtx scc = gen_rtx_REG (BImode, SCC_REG);
 	  rtx adjustment = gen_int_mode (sp_adjust, SImode);
@@ -3415,8 +3427,8 @@ gcn_expand_prologue ()
 
       if (offsets->need_frame_pointer)
 	{
-	  /* Adding RTX_FRAME_RELATED_P effectively disables spliting, so
-	     we use split add explictly, and specify the DImode add in
+	  /* Adding RTX_FRAME_RELATED_P effectively disables splitting, so
+	     we use split add explicitly, and specify the DImode add in
 	     the note.  */
 	  rtx scc = gen_rtx_REG (BImode, SCC_REG);
 	  int fp_adjust = -(offsets->local_vars + offsets->outgoing_args_size);
@@ -3446,7 +3458,7 @@ gcn_expand_prologue ()
     {
       if (TARGET_PACKED_WORK_ITEMS)
 	{
-	  /* v0 conatins the X, Y and Z dimensions all in one.
+	  /* v0 contains the X, Y and Z dimensions all in one.
 	     Expand them out for ABI compatibility.  */
 	  /* TODO: implement and use zero_extract.  */
 	  rtx v1 = gen_rtx_REG (V64SImode, VGPR_REGNO (1));
@@ -3540,8 +3552,8 @@ gcn_expand_prologue ()
       emit_insn (gen_addsi3_scalar_carry (fp_lo, fp_lo, wave_offset, scc));
       emit_insn (gen_addcsi3_scalar_zero (fp_hi, fp_hi, scc));
 
-      /* Adding RTX_FRAME_RELATED_P effectively disables spliting, so we use
-	 split add explictly, and specify the DImode add in the note.
+      /* Adding RTX_FRAME_RELATED_P effectively disables splitting, so we use
+	 split add explicitly, and specify the DImode add in the note.
          The DWARF info expects that the callee-save data is in the frame,
          even though it isn't (because this is the entry point), so we
          make a notional adjustment to the DWARF frame offset here.  */
@@ -3680,7 +3692,7 @@ gcn_frame_pointer_rqd (void)
 {
   /* GDB needs the frame pointer in order to unwind properly,
      but that's not important for the entry point, unless alloca is used.
-     It's not important for code execution, so we should repect the
+     It's not important for code execution, so we should respect the
      -fomit-frame-pointer flag.  */
   return (!flag_omit_frame_pointer
 	  && cfun
@@ -8085,6 +8097,8 @@ gcn_dwarf_register_span (rtx rtl)
 #define TARGET_ADDR_SPACE_POINTER_MODE gcn_addr_space_pointer_mode
 #undef  TARGET_ADDR_SPACE_SUBSET_P
 #define TARGET_ADDR_SPACE_SUBSET_P gcn_addr_space_subset_p
+#undef  TARGET_ADDR_SPACE_ZERO_ADDRESS_VALID
+#define TARGET_ADDR_SPACE_ZERO_ADDRESS_VALID gcn_addr_space_zero_address_valid
 #undef  TARGET_ADDR_SPACE_CONVERT
 #define TARGET_ADDR_SPACE_CONVERT gcn_addr_space_convert
 #undef  TARGET_ARG_PARTIAL_BYTES

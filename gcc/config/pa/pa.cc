@@ -200,6 +200,9 @@ static bool pa_cannot_force_const_mem (machine_mode, rtx);
 static bool pa_legitimate_constant_p (machine_mode, rtx);
 static bool pa_legitimate_address_p (machine_mode, rtx, bool,
 				     code_helper = ERROR_MARK);
+static reg_class_t pa_spill_class (reg_class_t, machine_mode);
+static bool pa_legitimize_address_displacement (rtx *, rtx *, poly_int64,
+						machine_mode);
 static bool pa_callee_copies (cumulative_args_t, const function_arg_info &);
 static unsigned int pa_hard_regno_nregs (unsigned int, machine_mode);
 static bool pa_hard_regno_mode_ok (unsigned int, machine_mode);
@@ -411,6 +414,11 @@ static size_t n_deferred_plabels = 0;
 #define TARGET_LEGITIMATE_CONSTANT_P pa_legitimate_constant_p
 #undef TARGET_LEGITIMATE_ADDRESS_P
 #define TARGET_LEGITIMATE_ADDRESS_P pa_legitimate_address_p
+#undef TARGET_SPILL_CLASS
+#define TARGET_SPILL_CLASS pa_spill_class
+#undef TARGET_LEGITIMIZE_ADDRESS_DISPLACEMENT
+#define TARGET_LEGITIMIZE_ADDRESS_DISPLACEMENT \
+  pa_legitimize_address_displacement
 
 #undef TARGET_LRA_P
 #define TARGET_LRA_P pa_use_lra_p
@@ -3627,7 +3635,7 @@ pa_assemble_integer (rtx x, unsigned int size, int aligned_p)
   /* When we have a SYMBOL_REF with a SYMBOL_REF_DECL, we need to call
      call assemble_external and set the SYMBOL_REF_DECL to NULL before
      calling output_addr_const.  Otherwise, it may call assemble_external
-     in the midst of outputing the assembler code for the SYMBOL_REF.
+     in the midst of outputting the assembler code for the SYMBOL_REF.
      We restore the SYMBOL_REF_DECL after the output is done.  */
   if (GET_CODE (x) == SYMBOL_REF)
     {
@@ -6348,7 +6356,59 @@ pa_secondary_reload (bool in_p, rtx x, reg_class_t rclass_i,
   int regno;
   enum reg_class rclass = (enum reg_class) rclass_i;
 
+  /* Strip the SUBREG to find the true underlying register entity.  */
+  if (GET_CODE (x) == SUBREG)
+    {
+      rtx inner = SUBREG_REG (x);
+      machine_mode inner_mode = GET_MODE (inner);
+
+      /* Check if we are bridging a 32 or 64-bit Float/Integer Type-Pun.  */
+      if (REG_P (inner)
+	  && ((mode == DImode && inner_mode == DFmode)
+	      || (mode == DFmode && inner_mode == DImode)
+	      || (mode == SImode && inner_mode == SFmode)
+	      || (mode == SFmode && inner_mode == SImode)))
+	{
+	  regno = REGNO (inner);
+
+	  /* If the inner register has not been assigned or is bound
+	     to a floating-point class, we may need a general register
+	     scratchpad to handle the secondary reload.  */
+	  if (regno >= FIRST_PSEUDO_REGISTER
+	      || FP_REG_CLASS_P (REGNO_REG_CLASS (regno)))
+	    {
+	      /* If we need to load/store into an FP register block
+		 but our current instruction class is floating, force
+		 a general register scratchpad.  */
+	      if (FP_REG_CLASS_P (rclass))
+		{
+		  sri->icode = (in_p
+		    ? direct_optab_handler (reload_in_optab, mode)
+		    : direct_optab_handler (reload_out_optab, mode));
+		  return GENERAL_REGS;
+		}
+	    }
+	}
+
+      /* Let normal processing handle the un-wrapped inner rtx if needed.  */
+      x = inner;
+    }
+
   /* Handle the easy stuff first.  */
+  if ((rclass == GENERAL_REGS || FP_REG_CLASS_P (rclass))
+      && reg_plus_base_memory_operand (x, mode))
+    {
+      /* Guard this fallback check against narrow modes.  This guarantees
+	 QImode/HImode will completely bypass direct_optab_handler loops. */
+      if (mode == SImode || mode == DImode)
+	sri->icode = (in_p
+	  ? direct_optab_handler (reload_in_optab, mode)
+	  : direct_optab_handler (reload_out_optab, mode));
+      else
+	sri->icode = CODE_FOR_nothing;
+      return NO_REGS;
+    }
+
   if (rclass == R1_REGS)
     return NO_REGS;
 
@@ -10527,7 +10587,7 @@ pa_can_change_mode_class (machine_mode from, machine_mode to,
 
    We should return FALSE for QImode and HImode because these modes
    are not ok in the floating-point registers.  However, this prevents
-   tieing these modes to SImode and DImode in the general registers.
+   tying these modes to SImode and DImode in the general registers.
    So, this isn't a good idea.  We rely on TARGET_HARD_REGNO_MODE_OK and
    TARGET_CAN_CHANGE_MODE_CLASS to prevent these modes from being used
    in the floating-point registers.  */
@@ -10651,10 +10711,7 @@ static void
 pa_trampoline_init (rtx m_tramp, tree fndecl, rtx chain_value)
 {
   rtx fnaddr = XEXP (DECL_RTL (fndecl), 0);
-  rtx start_addr = gen_reg_rtx (Pmode);
-  rtx end_addr = gen_reg_rtx (Pmode);
-  rtx line_length = gen_reg_rtx (Pmode);
-  rtx r_tramp, tmp;
+  rtx start, end, r_tramp, tmp;
 
   emit_block_move (m_tramp, assemble_trampoline_template (),
 		   GEN_INT (TRAMPOLINE_SIZE), BLOCK_OP_NORMAL);
@@ -10662,6 +10719,9 @@ pa_trampoline_init (rtx m_tramp, tree fndecl, rtx chain_value)
 
   if (!TARGET_64BIT)
     {
+      /* Start of trampoline code.  */
+      start = r_tramp;
+
       tmp = adjust_address (m_tramp, Pmode, 48);
       emit_move_insn (tmp, fnaddr);
       tmp = adjust_address (m_tramp, Pmode, 52);
@@ -10669,28 +10729,15 @@ pa_trampoline_init (rtx m_tramp, tree fndecl, rtx chain_value)
 
       /* Create a fat pointer for the trampoline.  */
       tmp = adjust_address (m_tramp, Pmode, 56);
-      emit_move_insn (tmp, r_tramp);
+      emit_move_insn (tmp, start);
       tmp = adjust_address (m_tramp, Pmode, 60);
       emit_move_insn (tmp, gen_rtx_REG (Pmode, 19));
-
-      /* fdc and fic only use registers for the address to flush,
-	 they do not accept integer displacements.  We align the
-	 start and end addresses to the beginning of their respective
-	 cache lines to minimize the number of lines flushed.  */
-      emit_insn (gen_andsi3 (start_addr, r_tramp,
-			     GEN_INT (-MIN_CACHELINE_SIZE)));
-      tmp = force_reg (Pmode, plus_constant (Pmode, r_tramp,
-					     TRAMPOLINE_CODE_SIZE-1));
-      emit_insn (gen_andsi3 (end_addr, tmp,
-			     GEN_INT (-MIN_CACHELINE_SIZE)));
-      emit_move_insn (line_length, GEN_INT (MIN_CACHELINE_SIZE));
-      emit_insn (gen_dcacheflushsi (start_addr, end_addr, line_length));
-      emit_insn (gen_icacheflushsi (start_addr, end_addr, line_length,
-				    gen_reg_rtx (Pmode),
-				    gen_reg_rtx (Pmode)));
     }
   else
     {
+      /* Start of trampoline code.  */
+      start = force_reg (Pmode, plus_constant (Pmode, r_tramp, 32));
+
       tmp = adjust_address (m_tramp, Pmode, 56);
       emit_move_insn (tmp, fnaddr);
       tmp = adjust_address (m_tramp, Pmode, 64);
@@ -10698,28 +10745,15 @@ pa_trampoline_init (rtx m_tramp, tree fndecl, rtx chain_value)
 
       /* Create a fat pointer for the trampoline.  */
       tmp = adjust_address (m_tramp, Pmode, 16);
-      emit_move_insn (tmp, force_reg (Pmode, plus_constant (Pmode,
-							    r_tramp, 32)));
+      emit_move_insn (tmp, start);
       tmp = adjust_address (m_tramp, Pmode, 24);
       emit_move_insn (tmp, gen_rtx_REG (Pmode, 27));
-
-      /* fdc and fic only use registers for the address to flush,
-	 they do not accept integer displacements.  We align the
-	 start and end addresses to the beginning of their respective
-	 cache lines to minimize the number of lines flushed.  */
-      tmp = force_reg (Pmode, plus_constant (Pmode, r_tramp, 32));
-      emit_insn (gen_anddi3 (start_addr, tmp,
-			     GEN_INT (-MIN_CACHELINE_SIZE)));
-      tmp = force_reg (Pmode, plus_constant (Pmode, tmp,
-					     TRAMPOLINE_CODE_SIZE - 1));
-      emit_insn (gen_anddi3 (end_addr, tmp,
-			     GEN_INT (-MIN_CACHELINE_SIZE)));
-      emit_move_insn (line_length, GEN_INT (MIN_CACHELINE_SIZE));
-      emit_insn (gen_dcacheflushdi (start_addr, end_addr, line_length));
-      emit_insn (gen_icacheflushdi (start_addr, end_addr, line_length,
-				    gen_reg_rtx (Pmode),
-				    gen_reg_rtx (Pmode)));
     }
+
+  end = force_reg (Pmode, plus_constant (Pmode, start, TRAMPOLINE_CODE_SIZE));
+
+  /* Flush trampoline.  */
+  emit_insn (gen_clear_cache (start, end));
 
 #ifdef HAVE_ENABLE_EXECUTE_STACK
   emit_library_call (gen_rtx_SYMBOL_REF (Pmode, "__enable_execute_stack"),
@@ -11004,7 +11038,7 @@ pa_legitimate_address_p (machine_mode mode, rtx x, bool strict, code_helper)
 	  /* Long 14-bit displacements always okay for these cases.  */
 	  if (INT14_OK_STRICT
 	      || reload_completed
-	      || (reload_in_progress && !strict)
+	      || ((lra_in_progress || reload_in_progress) && !strict)
 	      || mode == QImode
 	      || mode == HImode)
 	    return true;
@@ -11090,6 +11124,62 @@ pa_legitimate_address_p (machine_mode mode, rtx x, bool strict, code_helper)
     return true;
 
   return false;
+}
+
+/* Implement TARGET_SPILL_CLASS.
+
+   On PA-RISC 1.x, floating-point loads and stores strictly require 5-bit
+   offsets, whereas integer loads and stores support full 14-bit offsets.
+   When LRA/reload runs out of hardware registers and needs to spill a
+   pseudo-register to a stack slot during heavy frame pressure, spilling
+   directly into or out of FP_REGS can violate these offset boundaries —
+   especially when handling type-punned subregisters (e.g., SImode/DImode
+   views of float data).
+
+   Forcing these scalar spills to route through GENERAL_REGS provides
+   a safe intermediate bounce path with a full 14-bit offset, preventing
+   compiler allocation failures (ICEs) during complex frame elimination.  */
+
+static reg_class_t
+pa_spill_class (reg_class_t rclass, machine_mode mode)
+{
+  if ((mode == SImode || mode == DImode) && FP_REG_CLASS_P (rclass))
+    return GENERAL_REGS;
+
+  return NO_REGS;
+}
+
+/* Implement TARGET_LEGITIMIZE_ADDRESS_DISPLACEMENT.  */
+
+static bool
+pa_legitimize_address_displacement (rtx *offset1, rtx *offset2,
+				    poly_int64 orig_offset,
+				    machine_mode mode)
+{
+  HOST_WIDE_INT val;
+
+  /* Ensure the incoming poly_int64 offset can be treated as a standard
+     scalar integer.  */
+  if (!orig_offset.is_constant (&val))
+    return false;
+
+  /* If it fits in 5 bits, do not split it.  */
+  if (VAL_5_BITS_P (val))
+    return false;
+
+  /* If it fits in 14 bits and the mode can handle it, do not split it.  */
+  if ((INT14_OK_STRICT || mode == QImode || mode == HImode)
+      && VAL_14_BITS_P (val))
+    return false;
+
+  /* Split displacement so residual 'lo' is a signed 5-bit
+     value (-16 to 15).  */
+  HOST_WIDE_INT lo = ((val + 16) & 0x1f) - 16;
+  HOST_WIDE_INT hi = val - lo;
+
+  *offset1 = GEN_INT (hi);
+  *offset2 = GEN_INT (lo);
+  return true;
 }
 
 /* Look for machine dependent ways to make the invalid address AD a

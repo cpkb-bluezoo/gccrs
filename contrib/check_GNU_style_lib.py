@@ -78,11 +78,10 @@ class CheckError:
 class LineLengthCheck:
     def __init__(self):
         self.limit = 80
-        self.expanded_tab = ' ' * ts
 
     def check(self, filename, lineno, line):
-        line_expanded = line.replace('\t', self.expanded_tab)
-        if len(line_expanded) > self.limit:
+        line_expanded = line.expandtabs(ts)
+        if not filename.endswith(".opt") and len(line_expanded) > self.limit:
             return CheckError(filename, lineno,
                 line_expanded[:self.limit]
                     + error_string(line_expanded[self.limit:]),
@@ -167,6 +166,9 @@ class FunctionParenthesisCheck:
         self.re = re.compile(r'\w(\s{2,})?(\()')
 
     def check(self, filename, lineno, line):
+        if filename.endswith(".opt"):
+            return None
+
         if '#define' in line:
             return None
 

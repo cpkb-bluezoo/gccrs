@@ -66,7 +66,7 @@ LIST = \
   lm32-rtems lm32-uclinux \
   loongarch32-linux-gnuf64 loongarch32-linux-gnuf32 loongarch32-linux-gnusf \
   loongarch64-linux-gnuf64 loongarch64-linux-gnuf32 loongarch64-linux-gnusf \
-  m32c-elfOPT-enable-obsolete m32r-elf m32rle-elf \
+  m32r-elf m32rle-elf \
   m68k-elf m68k-netbsdelf \
   m68k-uclinux m68k-linux m68k-rtems \
   mcore-elf microblaze-linux microblaze-elf \
@@ -94,12 +94,12 @@ LIST = \
   pru-elf \
   riscv32-unknown-linux-gnu riscv64-unknown-linux-gnu \
   powerpc-ibm-aix7.1 powerpc-ibm-aix7.2 \
-  rl78-elf rx-elf s390-linux-gnu s390x-linux-gnu s390x-ibm-tpf sh-elf \
+  rl78-elf rx-elf s390x-linux-gnu s390x-ibm-tpf sh-elf \
   shle-linux sh-netbsdelf sh-superh-elf \
   sh-rtems sh-wrs-vxworks sparc-elf \
   sparc-leon-elf sparc-rtems sparc-linux-gnu \
   sparc-leon3-linux-gnuOPT-enable-target=all sparc-netbsdelf \
-  sparc64-sun-solaris2.11OPT-with-gnu-ldOPT-with-gnu-asOPT-enable-threads=posix \
+  sparc64-sun-solaris2.11OPT-enable-threads=posix \
   sparc-wrs-vxworks sparc64-elf sparc64-rtems sparc64-linux \
   sparc64-netbsd sparc64-openbsd \
   v850e1-elf v850e-elf v850-elf v850-rtems vax-linux-gnu \

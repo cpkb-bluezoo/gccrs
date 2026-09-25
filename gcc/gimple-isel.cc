@@ -40,6 +40,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-fold.h"
 #include "internal-fn.h"
 #include "fold-const.h"
+#include "gimple-range.h"
+
 
 /* Expand all ARRAY_REF(VIEW_CONVERT_EXPR) gimple assignments into calls to
    internal function based on vector type of selected expansion.
@@ -94,10 +96,11 @@ gimple_expand_vec_set_extract_expr (struct function *fun,
     return false;
 
   tree op0 = TREE_OPERAND (ref, 0);
-  if (TREE_CODE (op0) == VIEW_CONVERT_EXPR && DECL_P (TREE_OPERAND (op0, 0))
+  if (TREE_CODE (op0) == VIEW_CONVERT_EXPR
+      && DECL_P (TREE_OPERAND (op0, 0))
       && VECTOR_TYPE_P (TREE_TYPE (TREE_OPERAND (op0, 0)))
-      && TYPE_MODE (TREE_TYPE (ref))
-	   == TYPE_MODE (TREE_TYPE (TREE_TYPE (TREE_OPERAND (op0, 0)))))
+      && (TYPE_MODE (TREE_TYPE (ref))
+	  == TYPE_MODE (TREE_TYPE (TREE_TYPE (TREE_OPERAND (op0, 0))))))
     {
       tree pos = TREE_OPERAND (ref, 1);
 
@@ -109,9 +112,13 @@ gimple_expand_vec_set_extract_expr (struct function *fun,
       if (poly_int_tree_p (idx, &idx_poly))
 	{
 	  poly_uint64 nelts = TYPE_VECTOR_SUBPARTS (TREE_TYPE (view_op0));
-	  if (known_gt (idx_poly, nelts))
+	  if (known_ge (idx_poly, nelts))
 	    return false;
 	}
+      else if (poly_int_tree_p (idx))
+	// if idx doesn't fit into poly_uint64, but is constant, it
+	// must be out of bounds
+	return false;
       machine_mode outermode = TYPE_MODE (TREE_TYPE (view_op0));
       machine_mode extract_mode = TYPE_MODE (TREE_TYPE (ref));
 
@@ -1352,6 +1359,8 @@ pass_gimple_isel::execute (struct function *fun)
   gimple_stmt_iterator gsi;
   basic_block bb;
   bool cfg_changed = false;
+  if (optimize)
+    enable_ranger (fun);
 
   FOR_EACH_BB_FN (bb, fun)
     {
@@ -1390,6 +1399,8 @@ pass_gimple_isel::execute (struct function *fun)
 	}
     }
 
+  if (optimize)
+    disable_ranger (fun);
   return cfg_changed ? TODO_cleanup_cfg : 0;
 }
 

@@ -2026,12 +2026,29 @@ namespace __rb_tree
 	pair<const_iterator, const_iterator>
 	_M_equal_range_tr(const _Kt& __k) const
 	{
-	  const_iterator __low(_M_lower_bound_tr(__k));
-	  auto __high = __low;
-	  auto& __cmp = _M_impl._M_key_compare;
-	  while (__high != end() && !__cmp(__k, _S_key(__high._M_node)))
-	    ++__high;
-	  return { __low, __high };
+	  auto __x = _M_begin();
+	  auto __y = _M_end();
+	  while (__x)
+	    {
+	      if (_M_key_compare(_S_key(__x), __k))
+		__x = _S_right(__x);
+	      else if (_M_key_compare(__k, _S_key(__x)))
+		{
+		  __y = __x;
+		  __x = _S_left(__x);
+		}
+	      else
+		{
+		  auto __xu(__x);
+		  auto __yu(__y);
+		  __y = __x;
+		  __x = _S_left(__x);
+		  __xu = _S_right(__xu);
+		  return { const_iterator(_M_lower_bound_tr(__x, __y, __k)),
+			 const_iterator(_M_upper_bound_tr(__xu, __yu, __k)) };
+		}
+	    }
+	  return { const_iterator(__y), const_iterator(__y) };
 	}
 #endif // __glibcxx_generic_associative_lookup
 
@@ -3274,11 +3291,6 @@ namespace __rb_tree
       }
 
 #ifdef __glibcxx_associative_heterogeneous_insertion  // C++26
-
-  // If __pos.second == &_M_impl._M_header, insert at root;
-  // else if __pos.first == __pos.second, insert at __pos.second._M_left;
-  // else insert at __pos.second._M_right, and rebalance.
-
   template <typename _Key, typename _Val, typename _KeyOfValue,
 	    typename _Compare, typename _Alloc>
     template <typename... _Args>

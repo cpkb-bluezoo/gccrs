@@ -207,6 +207,9 @@
 ;; This code iterator allows signed and unsigned widening multiplications
 ;; to use the same template.
 (define_code_iterator any_extend [sign_extend zero_extend])
+
+(define_code_iterator cond_extend [sign_extend (zero_extend "!TARGET_ZALASR")])
+
 (define_code_attr extend_name [
   (sign_extend "extend") (zero_extend "zero_extend")
 ])
@@ -266,7 +269,7 @@
 (define_code_iterator any_eq [eq ne])
 
 ;; Iterators for conditions we can emit a sCC against 0 or a reg directly
-(define_code_iterator scc_0  [eq ne gt gtu])
+(define_code_iterator scc_0  [any_eq any_gt any_lt])
 
 ; atomics code iterator
 (define_code_iterator any_atomic [plus ior xor and])

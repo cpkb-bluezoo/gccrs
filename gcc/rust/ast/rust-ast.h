@@ -27,50 +27,13 @@
 #include "rust-diagnostics.h"
 #include "rust-keyword-values.h"
 #include "rust-cloneable.h"
+#include "rust-ast-identifier.h"
 
 namespace Rust {
 // TODO: remove typedefs and make actual types for these
 typedef int TupleIndex;
 struct Session;
 struct MacroExpander;
-
-class Identifier
-{
-public:
-  // Create dummy identifier
-  Identifier () : ident (""), loc (UNDEF_LOCATION) {}
-  // Create identifier with dummy location
-  Identifier (std::string ident, location_t loc = UNDEF_LOCATION)
-    : ident (ident), loc (loc)
-  {}
-  // Create identifier from token
-  Identifier (const_TokenPtr token)
-    : ident (token->get_str ()), loc (token->get_locus ())
-  {}
-
-  Identifier (const Identifier &) = default;
-  Identifier (Identifier &&) = default;
-  Identifier &operator= (const Identifier &) = default;
-  Identifier &operator= (Identifier &&) = default;
-
-  location_t get_locus () const { return loc; }
-  const std::string &as_string () const { return ident; }
-
-  bool empty () const { return ident.empty (); }
-
-  bool operator== (const Identifier &other) const
-  {
-    return ident == other.ident;
-  }
-
-  operator const std::string & () const { return ident; }
-
-private:
-  std::string ident;
-  location_t loc;
-};
-
-std::ostream &operator<< (std::ostream &os, Identifier const &i);
 
 namespace AST {
 // foward decl: ast visitor
@@ -209,6 +172,7 @@ public:
       case STRING_LITERAL:
       case BYTE_STRING_LITERAL:
       case RAW_STRING_LITERAL:
+      case C_STRING_LITERAL:
 	return true;
       default:
 	return false;
@@ -272,6 +236,7 @@ public:
     BYTE,
     BYTE_STRING,
     RAW_STRING,
+    C_STRING,
     INT,
     FLOAT,
     BOOL,
@@ -632,6 +597,11 @@ public:
 
   AttrInput &get_attr_input () const { return *attr_input; }
 
+  void set_attr_input (std::unique_ptr<AST::AttrInput> input)
+  {
+    attr_input = std::move (input);
+  }
+
   /* e.g.:
       #![crate_type = "lib"]
       #[test]
@@ -726,7 +696,6 @@ public:
   {
     EXPR,
     LITERAL,
-    MACRO,
     META_ITEM,
     TOKEN_TREE,
   };

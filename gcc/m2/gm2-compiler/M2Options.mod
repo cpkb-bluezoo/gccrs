@@ -54,6 +54,8 @@ FROM DynamicStrings IMPORT String, Length, InitString, Mark, Slice, EqualArray,
 
 CONST
    Debugging = FALSE ;
+   (* DefaultRuntimeModuleOverride must match
+      DEFAULT_RUNTIME_MODULE_OVERRIDE in libgm2/libm2iso/m2rts.h.  *)
    DefaultRuntimeModuleOverride = "m2iso:RTentity,m2iso:Storage,m2iso:SYSTEM,m2iso:M2RTS,m2iso:RTExceptions,m2iso:IOLink" ;
 
 VAR
@@ -76,6 +78,7 @@ VAR
    UselistFilename,
    RuntimeModuleOverride,
    CppArgs              : String ;
+   DumpBuiltinsFlag,
    EnableForward,
    DebugFunctionLineNumbers,
    DebugTraceQuad,   (* -fm2-debug-trace=quad.  *)
@@ -1269,6 +1272,26 @@ END SetDumpSystemExports ;
 
 
 (*
+   SetDumpBuiltins - set the value of -fdump-builtins.
+*)
+
+PROCEDURE SetDumpBuiltins (value: BOOLEAN) ;
+BEGIN
+   DumpBuiltinsFlag := value
+END SetDumpBuiltins ;
+
+
+(*
+   GetDumpBuiltins - return the value of -fdump-builtins.
+*)
+
+PROCEDURE GetDumpBuiltins () : BOOLEAN ;
+BEGIN
+   RETURN DumpBuiltinsFlag
+END GetDumpBuiltins ;
+
+
+(*
    SetSearchPath -
 *)
 
@@ -2217,4 +2240,5 @@ BEGIN
    EnableForward                     := TRUE ;
    OffTBits                          := 0 ;  (* Default to CSSIZE_T.  *)
    WidesetFlag                       := TRUE ;
+   DumpBuiltinsFlag                  := FALSE ;
 END M2Options.

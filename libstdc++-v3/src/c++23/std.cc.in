@@ -695,6 +695,10 @@ export namespace std
 #if __cpp_lib_byteswap // >= C++23
   using std::byteswap;
 #endif
+#if __cpp_lib_bitops >= 202606L // >= C++29
+  using std::shl;
+  using std::shr;
+#endif
 }
 
 // 22.9 <bitset>
@@ -1368,21 +1372,26 @@ export namespace std
 #endif
   using std::formatter;
   using std::make_format_args;
-  using std::make_wformat_args;
-#if __cpp_lib_format >= 202311L // >= C++26
-  using std::runtime_format;
+#if __cpp_lib_format >= 202603L // >= C++26
+  using std::dynamic_format;
 #endif
   using std::vformat;
   using std::vformat_to;
   using std::visit_format_arg;
+#ifdef _GLIBCXX_USE_WCHAR_T
+  using std::make_wformat_args;
   using std::wformat_args;
   using std::wformat_context;
   using std::wformat_parse_context;
   using std::wformat_string;
+#endif
 #ifdef __cpp_lib_format_ranges
   using std::format_kind;
   using std::range_format;
   using std::range_formatter;
+#endif
+#if __glibcxx_print >= 202403L
+  using std::enable_nonlocking_formatter_optimization;
 #endif
 }
 
@@ -1413,10 +1422,12 @@ export namespace std
   using std::ifstream;
   using std::ofstream;
   using std::swap;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wfilebuf;
   using std::wfstream;
   using std::wifstream;
   using std::wofstream;
+#endif
 }
 
 // <functional>
@@ -1617,7 +1628,9 @@ export namespace std
   using std::streamsize;
   using std::unitbuf;
   using std::uppercase;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wios;
+#endif
 }
 
 // <iosfwd>
@@ -1636,8 +1649,10 @@ export namespace std
   using std::basic_syncbuf;
   using std::osyncstream;
   using std::syncbuf;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wosyncstream;
   using std::wsyncbuf;
+#endif
 #endif
 }
 
@@ -1648,10 +1663,12 @@ export namespace std
   using std::cin;
   using std::clog;
   using std::cout;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wcerr;
   using std::wcin;
   using std::wclog;
   using std::wcout;
+#endif
 }
 
 // <istream>
@@ -1661,8 +1678,10 @@ export namespace std
   using std::basic_istream;
   using std::iostream;
   using std::istream;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wiostream;
   using std::wistream;
+#endif
   using std::ws;
   using std::operator>>;
 }
@@ -1911,7 +1930,8 @@ export namespace std
   using std::layout_right_padded;
 #endif
 #if __glibcxx_submdspan
-  using std::strided_slice;
+  using std::extent_slice;
+  using std::range_slice;
   using std::full_extent_t;
   using std::full_extent;
   using std::submdspan_mapping_result;
@@ -1933,7 +1953,7 @@ export namespace std
   using std::assume_aligned;
 #if __glibcxx_is_sufficiently_aligned
   using std::is_sufficiently_aligned;
-#endif  
+#endif
   using std::make_obj_using_allocator;
   using std::pointer_traits;
   using std::to_address;
@@ -2055,6 +2075,12 @@ export namespace std
   using std::start_lifetime_as;
   using std::start_lifetime_as_array;
 #endif
+#ifdef __glibcxx_allocate_at_least
+  using std::allocation_result;
+#endif
+#if __cpp_lib_start_lifetime
+  using std::start_lifetime;
+#endif
 }
 
 // 20.4 <memory_resource>
@@ -2076,7 +2102,7 @@ export namespace std::pmr
 }
 
 // <meta>
-#if __glibcxx_reflection >= 202506L
+#if __glibcxx_reflection >= 202603L
 export namespace std
 {
 #if __has_builtin(__builtin_is_string_literal)
@@ -2155,7 +2181,7 @@ export namespace std
     using std::meta::is_function_parameter;
     using std::meta::is_explicit_object_parameter;
     using std::meta::has_default_argument;
-    using std::meta::has_ellipsis_parameter;
+    using std::meta::is_vararg_function;
     using std::meta::is_template;
     using std::meta::is_function_template;
     using std::meta::is_variable_template;
@@ -2189,6 +2215,9 @@ export namespace std
     using std::meta::has_inaccessible_nonstatic_data_members;
     using std::meta::has_inaccessible_bases;
     using std::meta::has_inaccessible_subobjects;
+    using std::meta::current_function;
+    using std::meta::current_class;
+    using std::meta::current_namespace;
     using std::meta::members_of;
     using std::meta::bases_of;
     using std::meta::static_data_members_of;
@@ -2244,7 +2273,9 @@ export namespace std
     using std::meta::is_abstract_type;
     using std::meta::is_final_type;
     using std::meta::is_aggregate_type;
-    using std::meta::is_consteval_only_type;
+#if __glibcxx_is_structural >= 202603L
+    using std::meta::is_structural_type;
+#endif
     using std::meta::is_signed_type;
     using std::meta::is_unsigned_type;
     using std::meta::is_bounded_array_type;
@@ -2440,11 +2471,11 @@ export namespace std
   }
 #endif
 #if __cpp_lib_saturation_arithmetic
-  using std::add_sat;
-  using std::sub_sat;
-  using std::mul_sat;
-  using std::div_sat;
-  using std::saturate_cast;
+  using std::saturating_add;
+  using std::saturating_sub;
+  using std::saturating_mul;
+  using std::saturating_div;
+  using std::saturating_cast;
 #endif
 }
 
@@ -2475,7 +2506,9 @@ export namespace std
   using std::ends;
   using std::flush;
   using std::ostream;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wostream;
+#endif
   using std::operator<<;
 #ifdef __cpp_lib_syncbuf
   using std::emit_on_flush;
@@ -2556,6 +2589,11 @@ export namespace std
   using std::uniform_random_bit_generator;
   using std::uniform_real_distribution;
   using std::weibull_distribution;
+#if __cpp_lib_philox_engine
+  using std::philox_engine;
+  using std::philox4x32;
+  using std::philox4x64;
+#endif
 }
 
 // <ranges>
@@ -2783,9 +2821,12 @@ export namespace std
     using ranges::cache_latest_view;
     namespace views { using views::cache_latest; }
 #endif
-#if __glibcxx_ranges_to_input // C++ >= 26
-    using ranges::to_input_view;
-    namespace views { using views::to_input; }
+#if __glibcxx_ranges_as_input // C++ >= 26
+    using ranges::as_input_view;
+    namespace views { using views::as_input; }
+#endif
+#ifdef __cpp_lib_ranges_indices // C++ >= 26
+    namespace views { using views::indices; }
 #endif
   }
 #if __glibcxx_ranges_to_container // C++ >= 23
@@ -2896,9 +2937,11 @@ export namespace std
   using std::ssub_match;
   using std::sub_match;
   using std::swap;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wcsub_match;
   using std::wregex;
   using std::wssub_match;
+#endif
   using std::operator==;
   using std::operator<=>;
   using std::operator<<;
@@ -2914,20 +2957,24 @@ export namespace std
   using std::smatch;
   using std::sregex_iterator;
   using std::sregex_token_iterator;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wcmatch;
   using std::wcregex_iterator;
   using std::wcregex_token_iterator;
   using std::wsmatch;
   using std::wsregex_iterator;
   using std::wsregex_token_iterator;
+#endif
   namespace pmr
   {
 #if _GLIBCXX_USE_CXX11_ABI
     using std::pmr::cmatch;
     using std::pmr::match_results;
     using std::pmr::smatch;
+#ifdef _GLIBCXX_USE_WCHAR_T
     using std::pmr::wcmatch;
     using std::pmr::wsmatch;
+#endif
 #endif
   }
 }
@@ -3000,17 +3047,19 @@ export namespace std
 export namespace std
 {
   using std::basic_spanbuf;
-  using std::spanbuf;
-  using std::wspanbuf;
   using std::basic_ispanstream;
-  using std::ispanstream;
-  using std::wispanstream;
   using std::basic_ospanstream;
-  using std::ospanstream;
-  using std::wospanstream;
   using std::basic_spanstream;
+  using std::spanbuf;
+  using std::ispanstream;
+  using std::ospanstream;
   using std::spanstream;
+#ifdef _GLIBCXX_USE_WCHAR_T
+  using std::wspanbuf;
+  using std::wispanstream;
+  using std::wospanstream;
   using std::wspanstream;
+#endif
 }
 #endif
 
@@ -3026,10 +3075,12 @@ export namespace std
   using std::stringbuf;
   using std::stringstream;
   using std::swap;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wistringstream;
   using std::wostringstream;
   using std::wstringbuf;
   using std::wstringstream;
+#endif
 }
 
 // <stack>
@@ -3124,7 +3175,9 @@ export namespace std
 {
   using std::basic_streambuf;
   using std::streambuf;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wstreambuf;
+#endif
 }
 
 // <string>
@@ -3151,7 +3204,9 @@ export namespace std
   using std::stoull;
   using std::string;
   using std::to_string;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::to_wstring;
+#endif
   using std::u16string;
   using std::u32string;
   using std::u8string;
@@ -3216,8 +3271,10 @@ export namespace std
   using std::basic_osyncstream;
   using std::osyncstream;
   using std::syncbuf;
+#ifdef _GLIBCXX_USE_WCHAR_T
   using std::wosyncstream;
   using std::wsyncbuf;
+#endif
 #endif
 }
 
@@ -3552,6 +3609,17 @@ export namespace std
   using std::is_implicit_lifetime;
   using std::is_implicit_lifetime_v;
 #endif
+#if __cpp_impl_reflection >= 202506L
+  using std::is_reflection;
+  using std::is_reflection_v;
+#endif
+#if __glibcxx_is_structural >= 202603L
+  using std::is_structural;
+  using std::is_structural_v;
+#endif
+#if __cpp_lib_within_lifetime >= 202306L
+  using std::is_within_lifetime;
+#endif
 }
 
 // <typeindex>
@@ -3623,10 +3691,6 @@ export namespace std
   using std::make_integer_sequence;
   using std::move;
   using std::move_if_noexcept;
-#if __cpp_lib_function_ref
-  using std::nontype_t;
-  using std::nontype;
-#endif
   using std::pair;
   using std::swap;
   using std::operator==;

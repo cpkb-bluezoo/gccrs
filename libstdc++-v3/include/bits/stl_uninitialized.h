@@ -275,7 +275,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
 #if __cplusplus >= 201103L
       using _Dest = decltype(std::__niter_base(__result));
-      using _Src = decltype(std::__niter_base(__first));
+      using _Src = decltype(std::__miter_base(std::__niter_base(__first)));
       using _ValT = typename iterator_traits<_ForwardIterator>::value_type;
 
 #if __glibcxx_raw_memory_algorithms >= 202411L // >= C++26
@@ -292,7 +292,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	    {
 	      using _ValT = typename remove_pointer<_Src>::type;
 	      __builtin_memcpy(std::__niter_base(__result),
-			       std::__niter_base(__first),
+			       std::__miter_base(std::__niter_base(__first)),
 			       __n * sizeof(_ValT));
 	      __result += __n;
 	    }
@@ -403,11 +403,11 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
    *  @param  __first  A forward iterator.
    *  @param  __last   A forward iterator.
    *  @param  __x      The source value.
-   *  @return   Nothing.
    *
    *  Like std::fill, but does not require an initialized output range.
   */
-  template<typename _ForwardIterator, typename _Tp>
+  template<typename _ForwardIterator,
+	   typename _Tp _GLIBCXX26_ALGO_DEF_VAL_T(_ForwardIterator)>
     _GLIBCXX26_CONSTEXPR
     inline void
     uninitialized_fill(_ForwardIterator __first, _ForwardIterator __last,
@@ -543,7 +543,8 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
    *
    *  Like std::fill_n, but does not require an initialized output range.
   */
-  template<typename _ForwardIterator, typename _Size, typename _Tp>
+  template<typename _ForwardIterator, typename _Size,
+	   typename _Tp _GLIBCXX26_ALGO_DEF_VAL_T(_ForwardIterator)>
     _GLIBCXX26_CONSTEXPR
     inline _ForwardIterator
     uninitialized_fill_n(_ForwardIterator __first, _Size __n, const _Tp& __x)
@@ -665,6 +666,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 #if __cplusplus >= 201103L
   template<typename _ITp, typename _IRef, typename _IPtr, typename _OTp,
 	   typename _Tp>
+    _GLIBCXX26_CONSTEXPR
     _GLIBCXX_STD_C::_Deque_iterator<_OTp, _OTp&, _OTp*>
     __uninitialized_copy_a(
       _GLIBCXX_STD_C::_Deque_iterator<_ITp, _IRef, _IPtr> __first,
@@ -673,6 +675,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
       allocator<_Tp>&);
 
   template<typename _Iter, typename _OTp, typename _Tp>
+    _GLIBCXX26_CONSTEXPR
     __enable_if_t<__is_random_access_iter<_Iter>::value,
 		  _GLIBCXX_STD_C::_Deque_iterator<_OTp, _OTp&, _OTp*>>
     __uninitialized_copy_a(_Iter __first, _Iter __last,
@@ -681,6 +684,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
   template<typename _ITp, typename _IRef, typename _IPtr, typename _OTp,
 	   typename _Tp>
+    _GLIBCXX26_CONSTEXPR
     _GLIBCXX_STD_C::_Deque_iterator<_OTp, _OTp&, _OTp*>
     __uninitialized_move_a(
       _GLIBCXX_STD_C::_Deque_iterator<_ITp, _IRef, _IPtr> __first,
@@ -1002,7 +1006,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
   // Fills [first, last) with value_types constructed by the allocator
   // alloc, with no arguments passed to the construct call.
   template<typename _ForwardIterator, typename _Allocator>
-    void
+    _GLIBCXX20_CONSTEXPR void
     __uninitialized_default_a(_ForwardIterator __first,
 			      _ForwardIterator __last,
 			      _Allocator& __alloc)
@@ -1017,7 +1021,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
 #if _GLIBCXX_HOSTED
   template<typename _ForwardIterator, typename _Tp>
-    inline void
+    inline _GLIBCXX20_CONSTEXPR void
     __uninitialized_default_a(_ForwardIterator __first,
 			      _ForwardIterator __last,
 			      allocator<_Tp>&)

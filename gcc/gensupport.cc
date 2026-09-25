@@ -407,6 +407,8 @@ static hash_map<nofree_string_hash, unsigned int> register_filter_map;
 /* All register filter conditions, indexed by identifier.  */
 vec<const char *> register_filters;
 
+unsigned int num_dependent_filters;
+
 /* Return the unique identifier for filter condition FILTER.  Identifiers
    are assigned automatically when the define_register_constraint is
    parsed.  */
@@ -424,19 +426,30 @@ get_register_filter_id (const char *filter)
 static void
 process_define_register_constraint (rtx desc, file_location loc)
 {
-  /* Assign identifiers to each unique register filter condition.  */
-  if (const char *filter = XSTR (desc, 3))
+  const char *filter = XSTR (desc, 3);
+  if (!filter)
+    return;
+
+  const char *reference_op = XSTR (desc, 4);
+
+  if (reference_op)
     {
-      bool existed = false;
-      unsigned int &id = register_filter_map.get_or_insert (filter, &existed);
-      if (!existed)
-	{
-	  id = register_filters.length ();
-	  if (id == 32)
-	    fatal_at (loc, "too many distinct register filters, maximum"
-		      " is 32");
-	  register_filters.safe_push (filter);
-	}
+      /* Nothing to do here, genpreds, handles dependent filter building.
+	 genconfig needs to know the number of dependent filters, so at
+	 least count them.  */
+      num_dependent_filters++;
+      return;
+    }
+
+  bool existed = false;
+  unsigned int &id = register_filter_map.get_or_insert (filter, &existed);
+  if (!existed)
+    {
+      id = register_filters.length ();
+      if (id == 32)
+	fatal_at (loc, "too many distinct register filters, maximum"
+		  " is 32");
+      register_filters.safe_push (filter);
     }
 }
 
@@ -888,7 +901,7 @@ parse_section (const char **templ, unsigned int n_elems, unsigned int alt_no,
   list[i].add (',');
 }
 
-/* The compact syntax has more convience syntaxes.  As such we post process
+/* The compact syntax has more convenience syntaxes.  As such we post process
    the lines to get them back to something the normal syntax understands.  */
 
 static void
@@ -946,7 +959,7 @@ convert_syntax (rtx x, file_location loc)
   skip_spaces (&templ);
 
   if (!expect_char (&templ, '['))
-    fatal_at (loc, "expecing `[' to begin section list");
+    fatal_at (loc, "expecting `[' to begin section list");
 
   skip_spaces (&templ);
 
@@ -1016,7 +1029,7 @@ convert_syntax (rtx x, file_location loc)
 	{
 	  templ += 2;
 	  /* Glob till newline or end of string.  */
-	  while (*templ != '\n' || *templ != '\0')
+	  while (*templ != '\n' && *templ != '\0')
 	    templ++;
 
 	  /* Skip any newlines or whitespaces needed.  */
@@ -2566,7 +2579,7 @@ mark_operands_from_match_dup (rtx pattern)
 /* This is a subroutine of adjust_operands_numbers.
    It goes through all expressions in PATTERN and when MATCH_DUP is
    met, all MATCH_OPERANDs inside it is marked as occupied.  The
-   process of marking is done by routin mark_operands_from_match_dup.  */
+   process of marking is done by routine mark_operands_from_match_dup.  */
 static void
 mark_operands_used_in_match_dup (rtx pattern)
 {

@@ -3161,15 +3161,15 @@ typedef struct GTY((chain_circular ("%h.die_sib"), for_user)) die_struct {
   unsigned int decl_id;
   enum dwarf_tag die_tag;
   /* Die is used and must not be pruned as unused.  */
-  BOOL_BITFIELD die_perennial_p : 1;
-  BOOL_BITFIELD comdat_type_p : 1; /* DIE has a type signature */
+  bool die_perennial_p : 1;
+  bool comdat_type_p : 1; /* DIE has a type signature */
   /* For an external ref to die_symbol if die_offset contains an extra
      offset to that symbol.  */
-  BOOL_BITFIELD with_offset : 1;
+  bool with_offset : 1;
   /* Whether this DIE was removed from the DIE tree, for example via
      prune_unused_types.  We don't consider those present from the
      DIE lookup routines.  */
-  BOOL_BITFIELD removed : 1;
+  bool removed : 1;
   /* Lots of spare bits.  */
 }
 die_node;
@@ -13997,7 +13997,16 @@ modified_type_die (tree type, int cv_quals, tree type_attrs, bool reverse,
       tree dtype = TREE_TYPE (name);
 
       /* Skip the typedef for base types with DW_AT_endianity, no big deal.  */
-      if (qualified_type == dtype && !reverse_type)
+      if (!reverse_type
+	  && (qualified_type == dtype
+	      /* Pointer identity check above might fail when qualified_type
+		 is a different variant node of the same typedef yet requires
+		 the same handling as if they matched (see PR/125421).
+		 Skip this when btf_type_tag attributes are present, as those
+		 need to be handled in the else branch below.  */
+	      || (TYPE_NAME (qualified_type) == name
+		  && TYPE_QUALS (qualified_type) == TYPE_QUALS (dtype)
+		  && !lookup_attribute ("btf_type_tag", type_attrs))))
 	{
 	  tree origin = decl_ultimate_origin (name);
 
@@ -14009,8 +14018,8 @@ modified_type_die (tree type, int cv_quals, tree type_attrs, bool reverse,
 				      reverse, context_die);
 
 	  /* For a named type, use the typedef.  */
-	  gen_type_die (qualified_type, context_die);
-	  return lookup_type_die (qualified_type);
+	  gen_type_die (dtype, context_die);
+	  return lookup_type_die (dtype);
 	}
       else
 	{
@@ -18321,7 +18330,7 @@ cst_pool_loc_descr (tree loc)
   if (!TREE_ASM_WRITTEN (SYMBOL_REF_DECL (XEXP (rtl, 0))))
     {
       expansion_failed (loc, NULL_RTX,
-			"CST value in contant pool but not marked.");
+			"CST value in constant pool but not marked.");
       return 0;
     }
   return mem_loc_descriptor (XEXP (rtl, 0), get_address_mode (rtl),
@@ -18356,7 +18365,7 @@ loc_list_for_address_of_addr_expr_of_indirect_ref (tree loc, bool toplev,
   if (!INDIRECT_REF_P (obj))
     {
       expansion_failed (obj,
-			NULL_RTX, "no indirect ref in inner refrence");
+			NULL_RTX, "no indirect ref in inner reference");
       return 0;
     }
   if (!offset && known_eq (bitpos, 0))
@@ -18609,7 +18618,7 @@ resolve_args_picking_1 (dw_loc_descr_ref loc, unsigned initial_frame_offset,
 	     one stack slot per argument (0 for the first one, 1 for the second
 	     one, etc.).
 
-	     The targetted argument number (N) is already set as the operand,
+	     The targeted argument number (N) is already set as the operand,
 	     and the number of temporaries can be computed with:
 	       frame_offsets_ - dpi->args_count */
 	  off += frame_offset_ - dpi->args_count;
@@ -19029,7 +19038,7 @@ typed_binop_from_tree (enum dwarf_location_atom op, tree loc,
 /* Generate Dwarf location list representing LOC.
    If WANT_ADDRESS is false, expression computing LOC will be computed
    If WANT_ADDRESS is 1, expression computing address of LOC will be returned
-   if WANT_ADDRESS is 2, expression computing address useable in location
+   if WANT_ADDRESS is 2, expression computing address usable in location
      will be returned (i.e. DW_OP_reg can be used
      to refer to register values).
 
@@ -22912,7 +22921,7 @@ gen_array_type_die (tree type, dw_die_ref context_die)
      there is no difference between an array of arrays and a multidimensional
      array.  We don't do this for Ada to remain as close as possible to the
      actual representation, which is especially important against the language
-     flexibilty wrt arrays of variable size.  */
+     flexibility wrt arrays of variable size.  */
 
   bool collapse_nested_arrays = !is_ada ();
 
@@ -23790,6 +23799,7 @@ dwarf2out_abstract_function (tree decl)
     }
 
   if (DECL_DECLARED_INLINE_P (decl)
+      && !DECL_ARTIFICIAL (decl)
       && lookup_attribute ("artificial", DECL_ATTRIBUTES (decl)))
     add_AT_flag (old_die, DW_AT_artificial, 1);
 
@@ -25639,6 +25649,8 @@ static char *producer_string;
 static const char *
 highest_c_language (const char *lang1, const char *lang2)
 {
+  if (strcmp ("GNU C++29", lang1) == 0 || strcmp ("GNU C++29", lang2) == 0)
+    return "GNU C++29";
   if (strcmp ("GNU C++26", lang1) == 0 || strcmp ("GNU C++26", lang2) == 0)
     return "GNU C++26";
   if (strcmp ("GNU C++23", lang1) == 0 || strcmp ("GNU C++23", lang2) == 0)
@@ -25793,7 +25805,13 @@ gen_compile_unit_die (const char *filename)
 	    {
 	      language = DW_LANG_C_plus_plus_14;
 	      lname = DW_LNAME_C_plus_plus;
-	      lversion = 202400;
+	      lversion = 202603;
+	    }
+	  else if (strcmp (language_string, "GNU C++29") == 0)
+	    {
+	      language = DW_LANG_C_plus_plus_14;
+	      lname = DW_LNAME_C_plus_plus;
+	      lversion = 202700;
 	    }
 	}
     }

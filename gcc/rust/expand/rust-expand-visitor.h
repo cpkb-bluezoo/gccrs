@@ -272,6 +272,8 @@ public:
   void visit (AST::LifetimeParam &) override;
   void visit (AST::ConstGenericParam &) override;
 
+  void visit (AST::Attribute &attribute) override;
+
   void visit (AST::MacroInvocation &macro_invoc) override;
 
   void visit (AST::PathInExpression &path) override;
@@ -282,30 +284,20 @@ public:
 
   void visit (AST::LiteralExpr &expr) override;
   void visit (AST::AttrInputLiteral &) override;
-  void visit (AST::AttrInputMacro &) override;
+  void visit (AST::AttrInputExpr &) override;
   void visit (AST::MetaItemLitExpr &) override;
   void visit (AST::MetaItemPathExpr &) override;
-  void visit (AST::ArithmeticOrLogicalExpr &expr) override;
-  void visit (AST::ComparisonExpr &expr) override;
-  void visit (AST::LazyBooleanExpr &expr) override;
-  void visit (AST::TypeCastExpr &expr) override;
-  void visit (AST::AssignmentExpr &expr) override;
-  void visit (AST::CompoundAssignmentExpr &expr) override;
-  void visit (AST::GroupedExpr &expr) override;
   void visit (AST::StructExprStruct &expr) override;
 
-  void visit (AST::CallExpr &expr) override;
   void visit (AST::ClosureExprInner &expr) override;
 
   void visit (AST::BlockExpr &expr) override;
 
   void visit (AST::ClosureExprInnerTyped &expr) override;
-  void visit (AST::ContinueExpr &expr) override;
   void visit (AST::IfExpr &expr) override;
   void visit (AST::IfExprConseqElse &expr) override;
   void visit (AST::IfLetExpr &expr) override;
   void visit (AST::IfLetExprConseqElse &expr) override;
-  void visit (AST::TupleExpr &expr) override;
   void visit (AST::TypeParam &param) override;
   void visit (AST::LifetimeWhereClauseItem &) override;
   void visit (AST::TypeBoundWhereClauseItem &item) override;
@@ -316,20 +308,12 @@ public:
   void visit (AST::UseTreeRebind &) override;
   void visit (AST::UseDeclaration &use_decl) override;
   void visit (AST::Function &function) override;
-  void visit (AST::StructStruct &struct_item) override;
-  void visit (AST::TupleStruct &tuple_struct) override;
   void visit (AST::EnumItem &item) override;
-  void visit (AST::EnumItemTuple &item) override;
-  void visit (AST::EnumItemStruct &item) override;
   void visit (AST::EnumItemDiscriminant &item) override;
-  void visit (AST::Union &union_item) override;
-  void visit (AST::ConstantItem &const_item) override;
-  void visit (AST::StaticItem &static_item) override;
   void visit (AST::Trait &trait) override;
   void visit (AST::InherentImpl &impl) override;
   void visit (AST::TraitImpl &impl) override;
   void visit (AST::ExternalTypeItem &item) override;
-  void visit (AST::ExternalStaticItem &item) override;
   void visit (AST::ExternBlock &block) override;
 
   // I don't think it would be possible to strip macros without expansion
@@ -341,17 +325,6 @@ public:
   void visit (AST::MetaListPaths &) override;
   void visit (AST::MetaListNameValueStr &) override;
   void visit (AST::StructPatternFieldIdent &field) override;
-  void visit (AST::GroupedPattern &pattern) override;
-  void visit (AST::SlicePatternItemsNoRest &items) override;
-  void visit (AST::SlicePatternItemsHasRest &items) override;
-  void visit (AST::AltPattern &pattern) override;
-  void visit (AST::TupleStructItemsNoRest &tuple_items) override;
-  void visit (AST::TupleStructItemsHasRest &tuple_items) override;
-  void visit (AST::TuplePatternItemsNoRest &tuple_items) override;
-  void visit (AST::TuplePatternItemsHasRest &tuple_items) override;
-
-  void visit (AST::LetStmt &stmt) override;
-  void visit (AST::ExprStmt &stmt) override;
 
   void visit (AST::BareFunctionType &type) override;
   void visit (AST::FunctionParam &param) override;
@@ -369,16 +342,6 @@ public:
 private:
   MacroExpander &expander;
   NodeId macro_invoc_expect_id;
-
-  /**
-   * Helper to expand all macro invocations in lieu of types within a vector of
-   * fields (StructField or TupleField).
-   */
-  template <typename T> void expand_fields (std::vector<T> &fields)
-  {
-    for (auto &field : fields)
-      maybe_expand_type (field.get_field_type_ptr ());
-  }
 };
 
 } // namespace Rust

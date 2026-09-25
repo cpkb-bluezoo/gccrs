@@ -314,8 +314,7 @@ Parser<ManagedTokenSource>::parse_attr_input ()
 	    if (!invoke)
 	      return Parse::Error::AttrInput::make_bad_macro_invocation ();
 
-	    return std::unique_ptr<AST::AttrInput> (
-	      new AST::AttrInputMacro (std::move (invoke)));
+	    return std::make_unique<AST::AttrInputExpr> (std::move (invoke));
 	  }
 
 	AST::Literal::LitType lit_type = AST::Literal::STRING;
@@ -336,6 +335,9 @@ Parser<ManagedTokenSource>::parse_attr_input ()
 	    break;
 	  case BYTE_STRING_LITERAL:
 	    lit_type = AST::Literal::BYTE_STRING;
+	    break;
+	  case C_STRING_LITERAL:
+	    lit_type = AST::Literal::C_STRING;
 	    break;
 	  case RAW_STRING_LITERAL:
 	    lit_type = AST::Literal::RAW_STRING;

@@ -1,16 +1,16 @@
 #include "rust-compile-asm.h"
 #include "rust-compile-expr.h"
 #include "rust-system.h"
+#include "rust-ggc.h"
 
 namespace Rust {
 namespace Compile {
 
-static tree
-chain_asm_operand (tree head, const char *constraint, tree value)
+static void
+chain_asm_operand (GGC::ChainList &ls, const char *constraint, tree value)
 {
   auto name = build_string (strlen (constraint) + 1, constraint);
-  return chainon (head,
-		  build_tree_list (build_tree_list (NULL_TREE, name), value));
+  ls.push_back (build_tree_list (build_tree_list (NULL_TREE, name), value));
 }
 
 CompileAsm::CompileAsm (Context *ctx) : HIRCompileBase (ctx) {}
@@ -107,7 +107,7 @@ CompileAsm::asm_construct_outputs (HIR::InlineAsm &expr)
 {
   // TODO: Do i need to do this?
 
-  tree head = NULL_TREE;
+  GGC::ChainList ls;
   for (auto &operand : expr.get_operands ())
     {
       tl::optional<std::reference_wrapper<HIR::Expr>> out_expr
@@ -118,9 +118,9 @@ CompileAsm::asm_construct_outputs (HIR::InlineAsm &expr)
       tree out_tree = CompileExpr::Compile (*out_expr, this->ctx);
       // expects a tree list
       // TODO: This assumes that the output is a register
-      head = chain_asm_operand (head, "=r", out_tree);
+      chain_asm_operand (ls, "=r", out_tree);
     }
-  return head;
+  return ls.get_head ();
 }
 
 tl::optional<std::reference_wrapper<HIR::Expr>>
@@ -147,7 +147,8 @@ tree
 CompileAsm::asm_construct_inputs (HIR::InlineAsm &expr)
 {
   // TODO: Do i need to do this?
-  tree head = NULL_TREE;
+
+  GGC::ChainList ls;
   for (auto &operand : expr.get_operands ())
     {
       tl::optional<std::reference_wrapper<HIR::Expr>> in_expr
@@ -158,9 +159,9 @@ CompileAsm::asm_construct_inputs (HIR::InlineAsm &expr)
       tree in_tree = CompileExpr::Compile (*in_expr, this->ctx);
       // expects a tree list
       // TODO: This assumes that the input is a register
-      head = chain_asm_operand (head, "r", in_tree);
+      chain_asm_operand (ls, "r", in_tree);
     }
-  return head;
+  return ls.get_head ();
 }
 
 tree
@@ -182,29 +183,42 @@ CompileLlvmAsm::CompileLlvmAsm (Context *ctx) : HIRCompileBase (ctx) {}
 tree
 CompileLlvmAsm::construct_operands (std::vector<HIR::LlvmOperand> operands)
 {
-  tree head = NULL_TREE;
+  GGC::ChainList ls;
   for (auto &operand : operands)
     {
       tree t = CompileExpr::Compile (*operand.expr, this->ctx);
-      auto name = build_string (operand.constraint.size () + 1,
-				operand.constraint.c_str ());
-      head = chainon (head,
-		      build_tree_list (build_tree_list (NULL_TREE, name), t));
+
+      // handle indirect memory operand
+      std::string *constraint;
+      std::string constraint_copy;
+      if (operand.constraint == "=*m")
+	{
+	  constraint = &constraint_copy;
+	  constraint_copy = "=m";
+	  t = indirect_expression (t, operand.expr->get_locus ());
+	}
+      else
+	{
+	  constraint = &operand.constraint;
+	}
+
+      auto name = build_string (constraint->size () + 1, constraint->c_str ());
+      ls.push_back (build_tree_list (build_tree_list (NULL_TREE, name), t));
     }
-  return head;
+  return ls.get_head ();
 }
 
 tree
 CompileLlvmAsm::construct_clobbers (std::vector<AST::TupleClobber> clobbers)
 {
-  tree head = NULL_TREE;
+  GGC::ChainList ls;
   for (auto &clobber : clobbers)
     {
       auto name
 	= build_string (clobber.symbol.size () + 1, clobber.symbol.c_str ());
-      head = chainon (head, build_tree_list (NULL_TREE, name));
+      ls.push_back (build_tree_list (NULL_TREE, name));
     }
-  return head;
+  return ls.get_head ();
 }
 
 tree
@@ -215,13 +229,8 @@ CompileLlvmAsm::tree_codegen_asm (HIR::LlvmInlineAsm &expr)
   SET_EXPR_LOCATION (ret, expr.get_locus ());
   ASM_VOLATILE_P (ret) = expr.options.is_volatile;
 
-  std::stringstream ss;
-  for (const auto &template_str : expr.templates)
-    {
-      ss << template_str.symbol << "\n";
-    }
-
-  ASM_STRING (ret) = Backend::string_constant_expression (ss.str ());
+  ASM_STRING (ret)
+    = Backend::string_constant_expression (expr.template_str.symbol);
   ASM_INPUTS (ret) = construct_operands (expr.inputs);
   ASM_OUTPUTS (ret) = construct_operands (expr.outputs);
   ASM_CLOBBERS (ret) = construct_clobbers (expr.get_clobbers ());

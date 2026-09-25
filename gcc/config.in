@@ -373,6 +373,12 @@
 #endif
 
 
+/* Define to 1 if using the AIX assembler. */
+#ifndef USED_FOR_TARGET
+#undef HAVE_AIX_AS
+#endif
+
+
 /* Define if your assembler supports LSX and SCQ for 16B atomic. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_AS_16B_ATOMIC
@@ -388,6 +394,12 @@
 /* Define if your assembler supports architecture modifiers. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_AS_ARCHITECTURE_MODIFIERS
+#endif
+
+
+/* Define if your avr assembler supports .gnu_attribute. */
+#ifndef USED_FOR_TARGET
+#undef HAVE_AS_AVR_GNU_ATTRIBUTE
 #endif
 
 
@@ -443,6 +455,12 @@
 /* Define if your assembler supports .dtprelword. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_AS_DTPRELWORD
+#endif
+
+
+/* Define if your assembler supports DTPREL relocation. */
+#ifndef USED_FOR_TARGET
+#undef HAVE_AS_DTPREL_RELOC
 #endif
 
 
@@ -507,13 +525,6 @@
 #endif
 
 
-/* Define if your assembler supports the subtraction of symbols in different
-   sections. */
-#ifndef USED_FOR_TARGET
-#undef HAVE_AS_IX86_DIFF_SECT_DELTA
-#endif
-
-
 /* Define if your assembler supports the ffreep mnemonic. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_AS_IX86_FFREEP
@@ -547,12 +558,6 @@
 /* Define if your assembler supports interunit movq mnemonic. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_AS_IX86_INTERUNIT_MOVQ
-#endif
-
-
-/* Define if your assembler supports the .quad directive. */
-#ifndef USED_FOR_TARGET
-#undef HAVE_AS_IX86_QUAD
 #endif
 
 
@@ -1523,14 +1528,13 @@
 #endif
 
 
-/* Define 0/1 if your assembler supports 'o' flag in .section directive. */
+/* Define 0/1 if your assembler and linker support SHF_LINK_ORDER. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_GAS_SECTION_LINK_ORDER
 #endif
 
 
-/* Define 0/1 if your assembler supports marking sections with SHF_GNU_RETAIN
-   flag. */
+/* Define 0/1 if your assembler and linker support SHF_GNU_RETAIN. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_GAS_SHF_GNU_RETAIN
 #endif
@@ -1610,21 +1614,9 @@
 #endif
 
 
-/* Define to 1 if using GNU as. */
-#ifndef USED_FOR_TARGET
-#undef HAVE_GNU_AS
-#endif
-
-
 /* Define if your system supports gnu indirect functions. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_GNU_INDIRECT_FUNCTION
-#endif
-
-
-/* Define to 1 if using GNU ld. */
-#ifndef USED_FOR_TARGET
-#undef HAVE_GNU_LD
 #endif
 
 
@@ -1709,6 +1701,12 @@
 #endif
 
 
+/* Define if your linker supports GNU style response files. */
+#ifndef USED_FOR_TARGET
+#undef HAVE_LD_AT_FILE
+#endif
+
+
 /* Define if your linker supports emulation avrxmega2_flmap. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_LD_AVR_AVRXMEGA2_FLMAP
@@ -1743,13 +1741,6 @@
 /* Define if your linker supports --build-id. */
 #ifndef USED_FOR_TARGET
 #undef HAVE_LD_BUILDID
-#endif
-
-
-/* Define if the linker supports clearing hardware capabilities via mapfile.
-   */
-#ifndef USED_FOR_TARGET
-#undef HAVE_LD_CLEARCAP
 #endif
 
 

@@ -238,7 +238,7 @@ add_symbol_to_partition_1 (ltrans_partition part, symtab_node *node)
 	  }
       }
 
-  /* Ensure that SAME_COMDAT_GROUP lists all allways added in a group.  */
+  /* Ensure that SAME_COMDAT_GROUP lists all always added in a group.  */
   if (node->same_comdat_group)
     for (node1 = node->same_comdat_group;
 	 node1 != node; node1 = node1->same_comdat_group)
@@ -366,10 +366,25 @@ node_into_file_partition (toplevel_node* node,
   add_symbol_to_partition (partition, node);
 }
 
+/* map_1_to_1 is able to partition a subset of symbols/asm.
+   map1to1_forced covers symbols/asm that we are forced to partition
+   with 1_to_1 partitioning, otherwise they may become broken.
+   Other symbols may be partitioned arbitrarily.  */
+enum map1to1_content {
+    /* Forced symbols are always attempted.  */
+    map1to1_forced_symbols = 0,
+
+    map1to1_asm = 1,
+    map1to1_other_symbols = 2,
+    map1to1_symbols = map1to1_forced_symbols | map1to1_other_symbols,
+    map1to1_forced = map1to1_asm | map1to1_forced_symbols,
+    map1to1_all = map1to1_symbols | map1to1_asm,
+};
+
 /* Group cgraph nodes by input files.  Used for symbols that must remain
    together.  */
 static void
-map_1_to_1 (bool forced_symbols_only)
+map_1_to_1 (map1to1_content content)
 {
   symtab_node *node;
   hash_map<lto_file_decl_data *, ltrans_partition> pmap;
@@ -380,7 +395,7 @@ map_1_to_1 (bool forced_symbols_only)
 	  || symbol_partitioned_p (node))
 	continue;
 
-      if (forced_symbols_only && !node->must_remain_in_tu_name
+      if (!(content & map1to1_other_symbols) && !node->must_remain_in_tu_name
 	  && !node->must_remain_in_tu_body && !node->no_reorder)
 	continue;
 
@@ -388,8 +403,10 @@ map_1_to_1 (bool forced_symbols_only)
     }
 
   struct asm_node *anode;
-  for (anode = symtab->first_asm_symbol (); anode; anode = safe_as_a<asm_node*>(anode->next))
-    node_into_file_partition (anode, pmap);
+  if (content & map1to1_asm)
+    for (anode = symtab->first_asm_symbol (); anode;
+	 anode = safe_as_a<asm_node*>(anode->next))
+      node_into_file_partition (anode, pmap);
 
   /* Order partitions by order of symbols because they are linked into binary
      that way.  */
@@ -402,7 +419,7 @@ map_1_to_1 (bool forced_symbols_only)
 void
 lto_1_to_1_map (void)
 {
-  map_1_to_1 (false);
+  map_1_to_1 (map1to1_all);
   create_partition_if_empty ();
 }
 
@@ -420,7 +437,7 @@ create_asm_partitions (int64_t target_size)
 {
   if (!symtab->first_asm_symbol ())
     return;
-  map_1_to_1 (true);
+  map_1_to_1 (map1to1_forced);
 
   size_t join_into = 0;
   size_t join_from = 0;
@@ -486,7 +503,7 @@ lto_max_map (void)
   ltrans_partition partition;
 
   /* Needed for toplevel assembly.  */
-  map_1_to_1 (true);
+  map_1_to_1 (map1to1_forced);
 
   FOR_EACH_SYMBOL (node)
     {
@@ -819,7 +836,7 @@ partition_over_target_split (partition_set& p)
   if (small.sym_groups.size ())
     {
       /* Handles special case where n_partitions might be smaller than
-	 all.size ().  Which can happen as result of interger division or with
+	 all.size ().  Which can happen as result of integer division or with
 	 0 sized partition_sets.  Then also prevents too small symbol group.
 	 This should also be a special case; more common one,
 	 but with no correctness problems.  */
@@ -970,11 +987,9 @@ public:
 
 protected:
   partitioner_base (int64_t min_partition_size, int64_t max_partition_size):
-    min_partition_size (min_partition_size),
-    max_partition_size (max_partition_size)
+    min_partition_size (std::max<int64_t>(min_partition_size, 1)),
+    max_partition_size (std::max<int64_t>(max_partition_size, 1))
   {
-    gcc_assert (min_partition_size != 0);
-    gcc_assert (max_partition_size != 0);
   }
   virtual ~partitioner_base ()
   {}
@@ -1111,15 +1126,29 @@ private:
 void
 lto_cache_map (int n_lto_partitions, int max_partition_size)
 {
-  lto_1_to_1_map ();
+  cgraph_node *node;
+  int64_t total_size = 0;
+  FOR_EACH_DEFINED_FUNCTION (node)
+    if (node->get_partitioning_class () == SYMBOL_PARTITION && !node->alias)
+      total_size += ipa_size_summaries->get (node)->size;
+
+  /* Separates toplevel asm into its own partitions and handles name conflicts.
+
+     We could do this directly in cache partitioning without separating asm
+     into its own partitions in most cases.  */
+  create_asm_partitions (total_size / n_lto_partitions);
+  unsigned asm_n = ltrans_partitions.length ();
+
+  map_1_to_1 (map1to1_symbols);
+  create_partition_if_empty ();
 
   std::vector<ltrans_partition> partitions;
-  for (unsigned i = 0; i < ltrans_partitions.length (); ++i)
+  for (unsigned i = asm_n; i < ltrans_partitions.length (); ++i)
     {
       ltrans_partition part = ltrans_partitions[i];
       partitions.push_back (part);
     }
-  ltrans_partitions.truncate (0);
+  ltrans_partitions.truncate (asm_n);
 
   partitioner_default partitioner = partitioner_default
     (param_min_partition_size, max_partition_size);
@@ -1205,7 +1234,7 @@ lto_balanced_map (int n_lto_partitions, int max_partition_size)
   /* Streaming works best when the source units do not cross partition
      boundaries much.  This is because importing function from a source
      unit tends to import a lot of global trees defined there.  We should
-     get better about minimizing the function bounday, but until that
+     get better about minimizing the function boundary, but until that
      things works smoother if we order in source order.  */
   order.qsort (tp_first_run_node_cmp);
   noreorder.qsort (node_cmp);
@@ -1512,7 +1541,7 @@ lto_balanced_map (int n_lto_partitions, int max_partition_size)
 
   next_nodes.truncate (0);
 
-  /* Varables that are not reachable from the code go into last partition.  */
+  /* Variables that are not reachable from the code go into last partition.  */
   FOR_EACH_VARIABLE (vnode)
     if (vnode->get_partitioning_class () == SYMBOL_PARTITION
 	&& !symbol_partitioned_p (vnode))
@@ -1925,7 +1954,7 @@ rename_statics (lto_symtab_encoder_t encoder, symtab_node *node)
 	    || lto_symtab_encoder_lookup (encoder, s) != LCC_NOT_FOUND))
        break;
 
-  /* OK, no confict, so we have nothing to do.  */
+  /* OK, no conflict, so we have nothing to do.  */
   if (!s)
     return;
 

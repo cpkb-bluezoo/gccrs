@@ -417,7 +417,11 @@ evaluate_conditions_for_known_args (struct cgraph_node *node,
 
 	  if (tree sval = avals->safe_sval_at (c->operand_num))
 	    val = ipa_find_agg_cst_from_init (sval, c->offset, c->by_ref);
-	  if (!val)
+	  /* ipa_argagg_value_list is indexed by byte offsets, so a condition
+	     which does not start at a byte boundary (a bit-field) cannot be
+	     looked up in it; the containing byte would be reinterpreted as
+	     the whole field below.  */
+	  if (!val && (c->offset % BITS_PER_UNIT) == 0)
 	    {
 	      ipa_argagg_value_list avs (avals);
 	      val = avs.get_value (c->operand_num, c->offset / BITS_PER_UNIT,
@@ -452,7 +456,16 @@ evaluate_conditions_for_known_args (struct cgraph_node *node,
 	  continue;
 	}
 
-      if (val && TYPE_SIZE (c->type) == TYPE_SIZE (TREE_TYPE (val)))
+      if (val
+	  && (c->type == TREE_TYPE (val)
+	      || (TYPE_SIZE (c->type) == TYPE_SIZE (TREE_TYPE (val))
+		  /* Avoid precision mismatch like with bit-fields where the
+		     VIEW_CONVERT_EXPR does not truncate excess bits
+		     appropriately.  */
+		  && ((!INTEGRAL_TYPE_P (c->type)
+		       || type_has_mode_precision_p (c->type))
+		      && (!INTEGRAL_TYPE_P (TREE_TYPE (val))
+			  || type_has_mode_precision_p (TREE_TYPE (val)))))))
 	{
 	  if (c->type != TREE_TYPE (val))
 	    val = fold_unary (VIEW_CONVERT_EXPR, c->type, val);
@@ -566,7 +579,7 @@ evaluate_conditions_for_known_args (struct cgraph_node *node,
     *ret_nonspec_clause = nonspec_clause;
 }
 
-/* Return true if VRP will be exectued on the function.
+/* Return true if VRP will be executed on the function.
    We do not want to anticipate optimizations that will not happen.
 
    FIXME: This can be confused with -fdisable and debug counters and thus
@@ -693,7 +706,8 @@ evaluate_properties_for_edge (struct cgraph_edge *e, bool inline_p,
 			    avals->m_known_value_ranges.safe_grow_cleared (count,
 									   true);
 			    for (int i = 0; i < count; ++i)
-			      avals->m_known_value_ranges[i].set_type (void_type_node);
+			      avals->m_known_value_ranges[i].set_range_class
+				(void_type_node);
 			  }
 			avals->m_known_value_ranges[i] = vr;
 		      }
@@ -1322,7 +1336,7 @@ unmodified_parm_or_parm_agg_item (struct ipa_func_body_info *fbi,
 				 size_p, &aggpos->by_ref);
 }
 
-/* If stmt is simple load or store of value pointed to by a function parmaeter,
+/* If stmt is simple load or store of value pointed to by a function parameter,
    return its index.  */
 
 static int
@@ -2744,7 +2758,7 @@ guards_builtin_unreachable (basic_block bb, vec<unsigned char> &cache)
 	if (dump_file && (dump_flags & TDF_DETAILS))
 	  fprintf (dump_file,
 		   "BB %i ends with conditional guarding __builtin_unreachable;"
-		   " conditinal is unnecesary\n", bb->index);
+		   " conditinal is unnecessary\n", bb->index);
 	return true;
       }
   return false;
@@ -3010,7 +3024,7 @@ analyze_function_body (struct cgraph_node *node, bool early)
 	    {
 	      if (dump_file && (dump_flags & TDF_DETAILS))
 		{
-		  fprintf (dump_file, "  skipping unnecesary stmt ");
+		  fprintf (dump_file, "  skipping unnecessary stmt ");
 		  print_gimple_stmt (dump_file, stmt, 0);
 		}
 	      /* TODO: const calls used only to produce values for
@@ -3609,7 +3623,7 @@ estimate_edge_devirt_benefit (struct cgraph_edge *ie,
 /* Increase SIZE, MIN_SIZE (if non-NULL) and TIME for size and time needed to
    handle edge E with probability PROB.  Set HINTS accordingly if edge may be
    devirtualized.  AVALS, if non-NULL, describes the context of the call site
-   as far as values of parameters are concerened.  */
+   as far as values of parameters are concerned.  */
 
 static inline void
 estimate_edge_size_and_time (struct cgraph_edge *e, int *size, int *min_size,

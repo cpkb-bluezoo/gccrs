@@ -50,6 +50,7 @@
 #include "io.h"
 #include "common-defs.h"
 #include "gcobolio.h"
+#include "cobol-endian.h"
 #include "libgcobol.h"
 #include "gfileio.h"
 #include "charmaps.h"
@@ -359,12 +360,17 @@ __gg__file_init(
   {
   if( !(file->flags & file_flag_initialized_e) )
     {
-    charmap_t *charmap = __gg__get_charmap(encoding);
+    const charmap_t *charmap = __gg__get_charmap(encoding);
 
     file->name                = strdup(name);
     file->symbol_table_index  = symbol_table_index;
     file->filename            = NULL ;
     file->file_pointer        = NULL ;
+    file->file_fpos           = 0;
+    file->buffer              = static_cast<char *>(malloc(FILE_BUFFER_SIZE));
+    massert(file->buffer);
+    file->buffer_pos          = 0;
+    file->buffer_len          = 0;
     file->keys                = keys;
     file->key_numbers         = key_numbers;
     file->uniques             = uniques;
@@ -380,7 +386,6 @@ __gg__file_init(
     file->access              = (cbl_file_access_t)access ;
     file->errnum              = 0 ;
     file->io_status           = FsSuccess ;
-    file->delimiter           = charmap->mapped_character(ascii_newline) ;
     file->stride              = charmap->stride();
     file->flags               = file_flag_none_e;
         file->flags          |= (optional ? file_flag_optional_e : file_flag_none_e)
@@ -391,6 +396,18 @@ __gg__file_init(
     file->prior_op            = file_op_none;
     file->encoding            = encoding;
     file->alphabet            = alphabet;
+
+    // Note: eventually the delimiter needs to be a variable; it can be set
+    // by the programmer.
+    size_t nbytes;
+    const char ch = ascii_newline;
+    const char *delim = __gg__iconverter(DEFAULT_SOURCE_ENCODING,
+                                         file->encoding,
+                                         &ch,
+                                         1,
+                                         &nbytes);
+    memset(&file->delimiter, 0, 4);
+    memcpy(&file->delimiter, delim, file->stride);
 
     if( file->access == file_inaccessible_e )
       {
@@ -696,6 +713,7 @@ relative_file_delete(cblc_file_t *file, bool is_random)
   file->io_status = FsErrno;
 
   cbl_char_t record_marker;
+  uint8_t record_marker_ch;
 
   unsigned char *stash = static_cast<unsigned char *>(malloc(file->default_record->capacity));
   massert(stash);
@@ -741,8 +759,9 @@ relative_file_delete(cblc_file_t *file, bool is_random)
     record_marker = 0x00;
     errno = 0;
     file->errnum = 0;
+    record_marker_ch = record_marker;
     if( pwrite( rfp.fd,
-                &record_marker,
+                &record_marker_ch,
                 1,
                 file->prior_read_location
                       + rfp.record_size - 1 ) == -1 )
@@ -760,18 +779,19 @@ relative_file_delete(cblc_file_t *file, bool is_random)
 
     errno = 0;
     file->errnum = 0;
-    record_marker = 0;
-    ssize_t presult = pread(rfp.fd, &record_marker, 1, rfp.flag_position);
+    ssize_t presult = pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position);
     if( presult < 0 )
       {
+      record_marker = record_marker_ch;
       handle_errno(file, __func__, "pread() error");
       goto done;
       }
-
-    charmap_t *charmap = __gg__get_charmap(file->encoding);
-
+    record_marker = record_marker_ch;
+    const charmap_t *charmap = __gg__get_charmap(file->encoding);
+    uint8_t newline =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
     if(    presult == 0
-        || record_marker != charmap->mapped_character(ascii_newline) )
+        || record_marker_ch != newline )
       {
       // There isn't a record there for us to delete, which is an error
       file->io_status = FsNotFound;   // "23"
@@ -782,7 +802,8 @@ relative_file_delete(cblc_file_t *file, bool is_random)
     record_marker = 0x00;
     errno = 0;
     file->errnum = 0;
-    if( pwrite(rfp.fd, &record_marker, 1, rfp.flag_position) == -1 )
+    record_marker_ch = record_marker;
+    if( pwrite(rfp.fd, &record_marker_ch, 1, rfp.flag_position) == -1 )
       {
       file->errnum = errno;
       handle_ferror(file, __func__, "pwrite() error");
@@ -1544,9 +1565,8 @@ relative_file_start(cblc_file_t *file,
   while(      rfp.record_position >= 0
           &&  rfp.record_position+total_record_length <= rfp.file_size )
     {
-    cbl_char_t record_marker;
-    record_marker = 0;
-    ssize_t presult = pread(rfp.fd, &record_marker, 1, rfp.flag_position);
+    uint8_t record_marker_ch;
+    ssize_t presult = pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position);
     if( presult < 0 )
       {
       handle_errno(file, __func__, "pread() error");
@@ -1557,8 +1577,10 @@ relative_file_start(cblc_file_t *file,
       // end of file
       goto done;
       }
-    charmap_t *charmap = __gg__get_charmap(file->encoding);
-    if( record_marker == charmap->mapped_character(ascii_newline) )
+    const charmap_t *charmap = __gg__get_charmap(file->encoding);
+    uint8_t newline =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
+    if( record_marker_ch == newline )
       {
       // The record is a valid one
       fpos = rfp.record_position;
@@ -1993,7 +2015,6 @@ relative_file_rewrite( cblc_file_t *file, size_t length, bool is_random )
     {
     // This is like a write, except the place we are putting
     // it has to be occupied instead of empty.
-    cbl_char_t record_marker;
     if( relative_file_parameters_get(   rfp,
                                         rfm_microfocus_e,
                                         file,
@@ -2004,16 +2025,18 @@ relative_file_rewrite( cblc_file_t *file, size_t length, bool is_random )
       goto done;
       }
 
-    record_marker = 0;
-    ssize_t presult = pread(rfp.fd, &record_marker, 1, rfp.flag_position);
+    uint8_t record_marker_ch;
+    ssize_t presult = pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position);
     if( presult < 0 )
       {
       handle_errno(file, __func__, "pread() error");
       goto done;
       }
 
-    charmap_t *charmap = __gg__get_charmap(file->encoding);
-    if( presult == 0 || record_marker != charmap->mapped_character(ascii_newline) )
+    const charmap_t *charmap = __gg__get_charmap(file->encoding);
+    uint8_t newline =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
+    if( presult == 0 || record_marker_ch != newline )
       {
       // The record is not specified:
       file->io_status = FsNotFound;   // "23"
@@ -2506,15 +2529,28 @@ relative_file_write(cblc_file_t    *file,
     return relative_file_write_varying(file, location, length, is_random);
     }
 
+  // relative files have fixed record sizes, which end with a hardcoded ASCII
+  // CR-LF.
+
+
   file->errnum = 0;
   file->io_status = FsErrno;
 
   long necessary_file_size;
   charmap_t *charmap = __gg__get_charmap(file->encoding);
+  char ach_space[4];
+  charmap->get_byte_string(ach_space, ascii_space);
+  int stride = charmap->stride();
+
+  uint8_t carriage_return =
+                   charmap->is_like_ebcdic() ? ebcdic_return : ascii_return;
+
+  unsigned char newline =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
   const unsigned char achPostamble[] =
     {
-    (unsigned char)charmap->mapped_character(ascii_cr),
-    (unsigned char)charmap->mapped_character(ascii_newline)
+    carriage_return,
+    newline
     };
 
   relative_file_parameters rfp;
@@ -2555,16 +2591,15 @@ relative_file_write(cblc_file_t    *file,
         }
       }
     // Let's check to make sure the slot for this record is currently available:
-    cbl_char_t record_marker;
-    record_marker = 0;
-    ssize_t presult = pread(rfp.fd, &record_marker, 1, rfp.flag_position);
+    uint8_t record_marker_ch;
+    ssize_t presult = pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position);
     if( presult < 0 )
       {
       handle_errno(file, __func__, "pread() error");
       goto done;
       }
 
-    if( presult == 1 && record_marker == charmap->mapped_character(ascii_newline) )
+    if( presult == 1 && record_marker_ch == newline )
       {
       // The slot has something in it already:
       file->io_status = FsDupWrite;   // "22"
@@ -2604,9 +2639,17 @@ relative_file_write(cblc_file_t    *file,
   if( file->record_area_max > length )
     {
     size_t padding = file->record_area_max - length;
+    while(padding)
+      {
+      fwrite(ach_space, stride, 1, file->file_pointer);
+      padding -= stride;
+      }
     while(padding--)
       {
-      fputc(charmap->mapped_character(ascii_space), file->file_pointer);
+      // This probably shouldn't happen.  It means that the file record area
+      // size wasn't a multiple of the stride.  <shrug>  That's the COBOL
+      // programmer's problem.
+      fputc(0, file->file_pointer);
       }
     }
 
@@ -2634,6 +2677,20 @@ done:
   }
 
 static void
+write_a_char(cblc_file_t *file, cbl_char_t ch)
+  {
+  size_t nbytes;
+  // Whether big- or little-endian, this will give us the character we want
+  unsigned char uch = ch % 256;
+  const char *converted = __gg__iconverter(DEFAULT_SOURCE_ENCODING,
+                                           file->encoding,
+                                           &uch,
+                                           1,
+                                           &nbytes);
+  fwrite(converted, nbytes, 1, file->file_pointer);
+  }
+
+static void
 sequential_file_write(cblc_file_t    *file,
                 const unsigned char  *location,
                       size_t          length,
@@ -2644,8 +2701,8 @@ sequential_file_write(cblc_file_t    *file,
   charmap_t *charmap = __gg__get_charmap(file->encoding);
   int stride = charmap->stride();
 
-  // ch is the vertical control character
-  cbl_char_t ch = '\0';
+  // chvert is the vertical control character
+  uint8_t chvert = '\0';
   size_t bytes_to_write;
 
   int lcount;
@@ -2653,7 +2710,7 @@ sequential_file_write(cblc_file_t    *file,
   if( lines < -1 )
     {
     // We are using -666 for a form feed
-    ch = charmap->mapped_character(ascii_ff);  // Form feed
+    chvert = ascii_ff;
     lcount = 1;
     }
   else if( lines == -1 )
@@ -2664,12 +2721,12 @@ sequential_file_write(cblc_file_t    *file,
   else if( lines == 0 )
     {
     lcount = 1;
-    ch = charmap->mapped_character(ascii_return);
+    chvert = ascii_newline;
     }
   else /* if( lines > 0 ) */
     {
     lcount = lines;
-    ch = charmap->mapped_character(ascii_newline);
+    chvert = ascii_newline;
     }
 
   // By default, we write out the number of characters in the record area
@@ -2686,24 +2743,25 @@ sequential_file_write(cblc_file_t    *file,
 
   if( file->org == file_line_sequential_e )
     {
-    // If file-sequential, then trailing spaces are removed:
+    // If line-sequential, then trailing spaces are removed:
     while(bytes_to_write > 0
-           && charmap->getch(location, bytes_to_write-stride) 
+           && charmap->getch(location, bytes_to_write-stride)
                                   == charmap->mapped_character(ascii_space) )
       {
       bytes_to_write -= stride;
       }
     }
 
-  if( after && file->org == file_line_sequential_e 
-                           && ch == charmap->mapped_character(ascii_newline) )
+  if(    after
+      && file->org == file_line_sequential_e
+      && chvert == ascii_newline )
     {
     // In general, we terminate every line with a newline.  Because this
     // line is supposed to start with a newline, we decrement the line
     // counter by one if we had already sent one.
-    if( lcount && 
-            (   file->recent_char == charmap->mapped_character(ascii_newline)
-                || file->recent_char == charmap->mapped_character(ascii_ff)) )
+    if(    lcount
+        && (   file->recent_char == charmap->mapped_character(ascii_newline)
+            || file->recent_char == charmap->mapped_character(ascii_ff)) )
       {
       lcount -= 1;
       }
@@ -2711,20 +2769,20 @@ sequential_file_write(cblc_file_t    *file,
 
   if( after )
     {
+    // We send out any vertical control character here, because the content
+    // comes AFTER the vertical control
+
     while(lcount--)
       {
-      fwrite( &ch,
-              stride,
-              1,
-              file->file_pointer);
-      if( handle_ferror(file, __func__, "fputc() error [3]") )
+      write_a_char(file, chvert);
+      if( handle_ferror(file, __func__, "fwrite() error") )
         {
         goto done;
         }
-      file->recent_char = ch;
+      file->recent_char = charmap->mapped_character(chvert);
       }
     // That might have been a formfeed; switch back to newline:
-    ch = charmap->mapped_character(ascii_newline);
+    chvert = ascii_newline;
     }
 
   switch(file->org)
@@ -2804,15 +2862,12 @@ sequential_file_write(cblc_file_t    *file,
     {
     // Special case:  when AFTER NON-ZERO lines, we stick a newline on the
     // end of this record:
-    fwrite( &ch,
-            stride,
-            1,
-            file->file_pointer);
-    if( handle_ferror(file, __func__, "fputc() error [4]") )
+    write_a_char(file, chvert);
+    if( handle_ferror(file, __func__, "fwrite() error [4]") )
       {
       goto done;
       }
-    file->recent_char = charmap->mapped_character(ascii_newline);
+    file->recent_char = charmap->mapped_character(chvert);
     }
 
   if( !after  )
@@ -2820,15 +2875,12 @@ sequential_file_write(cblc_file_t    *file,
     // We did the output BEFORE, so now it's time to send some newlines
     while(lcount--)
       {
-      fwrite( &ch,
-              stride,
-              1,
-              file->file_pointer);
-      if( handle_ferror(file, __func__, "fputc() error [5]") )
+      write_a_char(file, chvert);
+      if( handle_ferror(file, __func__, "fwrite() error [5]") )
         {
         goto done;
         }
-      file->recent_char = ch;
+      file->recent_char = charmap->mapped_character(chvert);
       }
     }
 
@@ -3097,12 +3149,11 @@ done:
   }
 
 static void
-line_sequential_file_read(  cblc_file_t *file)
+line_sequential_file_read_sbc(cblc_file_t *file, char space)
   {
   file->errnum = 0;
   file->io_status = FsErrno;
   size_t bytes_read = 0;
-  bool hit_eof;
 
   // According to IBM:
 
@@ -3121,101 +3172,346 @@ line_sequential_file_read(  cblc_file_t *file)
   // characters to the right as undefined.  I'm going with IBM,
   // it makes more sense to me.
 
-  charmap_t *charmap = __gg__get_charmap(file->encoding);
-  int stride = charmap->stride();
+  long fpos = static_cast<long>(file->file_fpos);
 
-  // We first stage the data into the record area.
-  cbl_char_t ch;
-
-  long fpos = ftell(file->file_pointer);
-  if( handle_ferror(file, __func__, "ftell() error") )
-    {
-    fpos = -1;
-    goto done;
-    }
-
-  hit_eof = false;
+  const char *pstart = NULL;
+  const char *pnewline = NULL;
   while( bytes_read < file->record_area_max )
     {
-    ch = 0;
-    fread(&ch, 1, stride, file->file_pointer);
-    file->errnum = ferror(file->file_pointer);
-    if( ch == file->delimiter )
+    // We need more characters from file->buffer:
+    if( file->buffer_pos >= file->buffer_len )
       {
-      break;
-      }
-    if( feof(file->file_pointer) )
-      {
-      hit_eof = true;
-      clearerr(file->file_pointer);
-      break;
-      }
-    if( handle_ferror(file, __func__, "fgetc() error") )
-      {
-      fpos = -1;
-      goto done;
-      }
-    memcpy(file->default_record->data+bytes_read, &ch, stride);
-    bytes_read += stride;
-    }
-  // Space fill shorty records
-    charmap->memset(file->default_record->data+bytes_read,
-                    charmap->mapped_character(ascii_space),
-                    file->record_area_max  - bytes_read);
-
-  if( hit_eof && !bytes_read)
-    {
-    // We got an end-of-file without characters
-    file->io_status = FsEofSeq; // "10"
-    file->prior_read_location = -1;
-    }
-  else if( hit_eof )
-    {
-    // We got an end-of-file whilst reading characters
-    // Override the FsEofSeq.  We'll get an actual EOF if the programmer
-    // does another READ:
-    file->io_status = FsErrno;
-    }
-  else if (bytes_read < file->record_area_max )
-    {
-    // Just discard an early record delimiter
-    file->io_status = FsRecordLength;   // "04"
-    }
-  else // We filled the whole record area.  Look ahead one character
-    {
-#ifdef POSSIBLY_IBM
-    // In this code, unread characters before the newline
-    // are read next time.  See page 133 of the IBM Language Reference
-    // Manual: "If the first unread character is the record delimiter, it
-    // is discarded. Otherwise, the first unread character becomes the first
-    // character read by the next READ statement."
-#else
-    // In this code, extra characters before the newline
-    // are read next time are discarded.  GnuCOBOL works this way, and
-    // the Michael Coughlin "Beginning COBOL" examples require this mode.
-    // The ISO/IEC 2014 standard is silent on the question of LINE
-    // SEQUENTIAL; it describes only SEQUENTIAL.
-    for(;;)
-      {
-      ch = 0;
-      fread(&ch, 1, stride, file->file_pointer);
+      // file->buffer has been exhausted; it's time to read another buffer
+      file->buffer_len = fread( file->buffer,
+                                1,
+                                FILE_BUFFER_SIZE,
+                                file->file_pointer);
+      file->buffer_pos = 0;
       file->errnum = ferror(file->file_pointer);
-      // We can't use handle_ferror() directly, because an EOF is
-      // a legitimate way to end the last line.
-      if( ch == file->delimiter || feof(file->file_pointer) )
+      if( feof(file->file_pointer) )
         {
         clearerr(file->file_pointer);
-        break;
         }
-      if(     ferror(file->file_pointer)
-          &&  handle_ferror(file, __func__, "fgetc() error") )
+      else if( handle_ferror(file, __func__, "fread() error") )
         {
         fpos = -1;
         goto done;
         }
+      }
+    // Much hinges on where the next newline is to be found:
+    pstart = file->buffer+file->buffer_pos;
+    char ch = reinterpret_cast<const char *>(&file->delimiter)[0];
+    pnewline = reinterpret_cast<const char *>(memchr(pstart,
+                      ch,
+                      file->buffer_len - file->buffer_pos));
+    if( file->buffer_pos >= file->buffer_len )
+      {
+      // There no more characters in the file->buffer, but we are trying to
+      // fill the record_area.
+      if( !bytes_read)
+        {
+        // We hit an EOF without reading any characters.  This is an ordinary
+        // end-of-file condition.
+        file->io_status = FsEofSeq; // "10"
+        file->prior_read_location = -1;
+        goto done;
+        }
+      // We have a partially-filled record_area that was ended by running out
+      // of characters.  That is, the final line of the file was not terminated
+      // by a line delimiter.  We break out of the loop here, and that
+      // gets handled below.
+      break;
+      }
+
+    size_t len;
+    if( !pnewline )
+      {
+      // There is no newline in the input buffer.  Copy over what we need, or
+      // what we have, whichever is smaller:
+      len = std::min(file->record_area_max - bytes_read,
+                     file->buffer_len - file->buffer_pos);
+      memcpy( file->default_record->data+bytes_read,
+              pstart,
+              len);
+      pstart           += len;
+      bytes_read       += len;
+      file->file_fpos  += len;
+      file->buffer_pos += len;
+      continue;
+      }
+    else
+      {
+      // There is a newline in the input buffer.  Copy over what we need, or
+      // the characters preceding the newline, whichever is smaller:
+      len = std::min(file->record_area_max - bytes_read,
+                     static_cast<size_t>(pnewline - pstart));
+      memcpy( file->default_record->data+bytes_read,
+              pstart,
+              len);
+      bytes_read       += len;
+      pstart           += len;
+      file->file_fpos  += len;
+      file->buffer_pos += len;
+      break;
+      }
+    }
+
+  // Space fill shorty records when bytes_read didn't fill the record area.
+  memset(file->default_record->data+bytes_read,
+         space,
+         file->record_area_max - bytes_read);
+
+  if( bytes_read < file->record_area_max )
+    {
+    // This means we encountered a line-delimiter before the record_are was
+    // completely filled.
+    file->io_status = FsRecordLength;   // "04"
+    }
+
+  // In this implementation, excess characters after length of the record_area
+  // are discarded.  This matches what the Coughlan examples expect, and how
+  // GnuCOBOL works.
+
+  // The ISO/IEC 2014 standard is silent on the question of LINE
+  // SEQUENTIAL; it describes only SEQUENTIAL.
+
+  // Strict IBM may work differently, as noted above.
+
+  // So we discard characters up to and including the next line-delimiter,
+  // or until we hit an EOF.
+
+  if( pnewline )
+    {
+    size_t discarded = (pnewline - pstart) + 1;
+    if( discarded > 1)
+      {
+      // Set the status to indicate characters were discarded.
       file->io_status = FsRecordLength;   // "04"
       }
-#endif
+    file->file_fpos  += discarded;
+    file->buffer_pos += discarded;
+    }
+  else
+    {
+    // There is no newline in the current buffer.  Throw out the remainder of
+    // the buffer.
+    size_t discarded = file->buffer_len - file->buffer_pos;
+    if( discarded > 1)
+      {
+      // Set the status to indicate characters were discarded.
+      file->io_status = FsRecordLength;   // "04"
+      }
+    file->file_fpos  += discarded;
+    file->buffer_pos += discarded;
+    for(;;)
+      {
+      // Just keep reading until we hit a newline or the EOF
+      if( file->buffer_pos >= file->buffer_len )
+        {
+        // file->buffer has been exhausted; it's time to read another buffer
+        file->buffer_len = fread( file->buffer,
+                                  1,
+                                  FILE_BUFFER_SIZE,
+                                  file->file_pointer);
+        file->buffer_pos = 0;
+        file->errnum = ferror(file->file_pointer);
+        if( feof(file->file_pointer) )
+          {
+          clearerr(file->file_pointer);
+          break;
+          }
+        if( handle_ferror(file, __func__, "fread() error") )
+          {
+          fpos = -1;
+          goto done;
+          }
+        }
+      pstart = file->buffer+file->buffer_pos;
+      char ch = reinterpret_cast<const char *>(&file->delimiter)[0];
+      pnewline = reinterpret_cast<const char *>(memchr(pstart,
+                        ch,
+                        file->buffer_len - file->buffer_pos));
+      if( pnewline )
+        {
+        discarded = (pnewline - pstart) +1 ;
+        file->file_fpos  += discarded;
+        file->buffer_pos += discarded;
+        break;
+        }
+      else
+        {
+        discarded = file->buffer_len - file->buffer_pos ;
+        file->file_fpos  += discarded;
+        file->buffer_pos += discarded;
+        }
+      }
+    }
+
+  if( file->record_length )
+    {
+    __gg__int128_to_field(file->record_length,
+                                    bytes_read,
+                                    0,
+                                    truncation_e,
+                                    NULL);
+    }
+done:
+  file->prior_op = file_op_read;
+  establish_status(file, fpos);
+  }
+
+static void
+line_sequential_file_read(  cblc_file_t *file)
+  {
+  charmap_t *charmap = __gg__get_charmap(file->encoding);
+  int stride = charmap->stride();
+  if( stride == 1 )
+    {
+    line_sequential_file_read_sbc(
+                  file,
+                  static_cast<char>(charmap->mapped_character(ascii_space)));
+    return;
+    }
+
+  file->errnum = 0;
+  file->io_status = FsErrno;
+  size_t bytes_read = 0;
+
+  // According to IBM:
+
+  // Characters are read one at a time until:
+  // - A delimiter is reached.  It is discarded, and the
+  //   record area is filled with spaces.
+  // - The entire record area is filled.  If the next unread
+  //   character is the delimiter, it is discarded.  Otherwise,
+  //   it becomes the first character read by the next READ
+  // - EOF is encountered; the remainder of the record area
+  //   is filled with spaces.
+
+  // This contradicts the ISO/IEC 2014 standard, which says
+  // in section 14.9.29.3, paragraph 14) on page 554 that excess
+  // characters are discarded, and too-short records have
+  // characters to the right as undefined.  I'm going with IBM,
+  // it makes more sense to me.
+
+  // We first stage the data into the record area.
+  uint8_t ch[4];
+
+  long fpos = static_cast<long>(file->file_fpos);
+
+  while( bytes_read < file->record_area_max )
+    {
+    // We need more characters from file->buffer:
+    if( file->buffer_pos >= file->buffer_len )
+      {
+      // file->buffer has been exhausted; it's time to read another buffer
+      file->buffer_len = fread( file->buffer,
+                                1,
+                                FILE_BUFFER_SIZE,
+                                file->file_pointer);
+      file->buffer_pos = 0;
+      file->errnum = ferror(file->file_pointer);
+      if( feof(file->file_pointer) )
+        {
+        clearerr(file->file_pointer);
+        }
+      else if( handle_ferror(file, __func__, "fread() error") )
+        {
+        fpos = -1;
+        goto done;
+        }
+      }
+    if( file->buffer_pos >= file->buffer_len )
+      {
+      // There no more characters in the file->buffer, but we are trying to
+      // fill the record_area
+      if( !bytes_read)
+        {
+        // We hit an EOF without reading any characters.  This is an ordinary
+        // end-of-file condition.
+        file->io_status = FsEofSeq; // "10"
+        file->prior_read_location = -1;
+        goto done;
+        }
+      // We have a partially-filled record_area that was ended by running out
+      // of characters.  That is, the final line of the file was not terminated
+      // by a line delimiter.  We break out of the loop here, and that
+      // gets handled below.
+      break;
+      }
+
+    // There are still characters in the file->buffer, and we are still looking
+    // to fill the record_area, and we are still looking for a end-of-line.
+    memcpy(ch, file->buffer+file->buffer_pos, stride);
+    file->buffer_pos += stride;
+    file->file_fpos += stride;
+    if( memcmp(ch, &file->delimiter, stride) == 0)
+      {
+      break;
+      }
+    memcpy(file->default_record->data+bytes_read, &ch, stride);
+    bytes_read += stride;
+    }
+
+  // Space fill shorty records when bytes_read didn't fill the record area.
+  charmap->memset(file->default_record->data+bytes_read,
+                  charmap->mapped_character(ascii_space),
+                  file->record_area_max - bytes_read);
+
+  if( bytes_read < file->record_area_max )
+    {
+    // This means we encountered a line-delimiter before the record_are was
+    // completely filled.
+    file->io_status = FsRecordLength;   // "04"
+    }
+  else // We filled the whole record area.
+    {
+    // In this implementation, any excess characters after the record_area is
+    // filled until the line-delimiter are discarded.  This matches what the
+    // Coughlan examples expect, and how GnuCOBOL works.
+
+    // The ISO/IEC 2014 standard is silent on the question of LINE
+    // SEQUENTIAL; it describes only SEQUENTIAL.
+
+    // Strict IBM may work differently, as noted above.
+
+    // So we discard characters up to and including the next line-delimiter,
+    // or until we hit an EOF.
+    for(;;)
+      {
+      if( file->buffer_pos >= file->buffer_len )
+        {
+        // file->buffer has been exhausted; it's time to read another buffer
+        file->buffer_len = fread( file->buffer,
+                                  1,
+                                  FILE_BUFFER_SIZE,
+                                  file->file_pointer);
+        file->buffer_pos = 0;
+        file->errnum = ferror(file->file_pointer);
+        if( feof(file->file_pointer) )
+          {
+          clearerr(file->file_pointer);
+          break;
+          }
+        if( handle_ferror(file, __func__, "fread() error") )
+          {
+          fpos = -1;
+          goto done;
+          }
+        }
+      memcpy(ch, file->buffer+file->buffer_pos, stride);
+      file->buffer_pos += stride;
+      file->file_fpos += stride;
+      // We can't use handle_ferror() directly, because an EOF is
+      // a legitimate way to end the last line.
+    if( memcmp(ch, &file->delimiter, stride) == 0 )
+        {
+        clearerr(file->file_pointer);
+        break;
+        }
+      // Set the status to indicate characters were discarded.
+      file->io_status = FsRecordLength;   // "04"
+      }
     }
 
   if( file->record_length )
@@ -3561,6 +3857,10 @@ relative_file_read( cblc_file_t *file,
     return relative_file_read_varying(file, where);
     }
 
+  const charmap_t *charmap = __gg__get_charmap(file->encoding);
+  unsigned char newline_ch =
+                   charmap->is_like_ebcdic() ? ebcdic_newline : ascii_newline;
+
   bool is_random = where > 0;
 
   file->errnum = 0;
@@ -3628,14 +3928,12 @@ relative_file_read( cblc_file_t *file,
       file->prior_read_location = -1;
       goto done;
       }
-    cbl_char_t record_marker;
-    record_marker = 0;
-    if( pread(rfp.fd, &record_marker, 1, rfp.flag_position) <= 0)
+    uint8_t record_marker_ch;
+    if( pread(rfp.fd, &record_marker_ch, 1, rfp.flag_position) <= 0)
       {
       goto done;
       }
-    charmap_t *charmap = __gg__get_charmap(file->encoding);
-    if(record_marker == charmap->mapped_character(ascii_newline) )
+    if(record_marker_ch == newline_ch )
       {
       // We have a good record to read:
 
@@ -4580,7 +4878,7 @@ __gg__file_stash( cblc_file_t *file )
      * cblc_file_t is defined, and where the valid file status values
      * (and relops) are enumerated.
      *
-     * The library contructs the class, providing its own pointers,
+     * The library constructs the class, providing its own pointers,
      * and supplies a known function, gcobol_fileops, to return
      * it. gcobol-compiled programs call the functions, or others
      * supplied by a different implementation, through the pointers.
@@ -4592,7 +4890,7 @@ __gg__file_stash( cblc_file_t *file )
      * GnuCOBOL.  One difference is that the file status is captured
      * in the cblc_file_t, whereas in GnuCOBOL it is the return value.
      *
-     * There is no provision for using more than one implemetation at
+     * There is no provision for using more than one implementation at
      * a time in the same program, as would be needed for CODE-SET
      * support.  To achieve that in C++ without dynamic linking, there
      * would have to be a set of known implementations, each with its

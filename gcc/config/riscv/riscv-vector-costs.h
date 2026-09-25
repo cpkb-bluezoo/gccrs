@@ -71,7 +71,7 @@ private:
 
   /* On some CPUs, VLA and VLS provide the same theoretical vector
      throughput, such as 4x128 VLS vs. 2x256 VLA.  In those
-     situations, we try to predict whether an VLS implementation
+     situations, we try to predict whether a VLS implementation
      of the loop could be completely unrolled and become straight-line code.
      If so, it is generally better to use the VLS version rather
      than length-agnostic VLA, since the VLA loop would execute an unknown
@@ -137,6 +137,12 @@ private:
 			     loop_vec_info,
 			     stmt_vec_info stmt_info, slp_tree,
 			     tree vectype, int stmt_cost);
+  unsigned scale_vector_cost (enum vect_cost_for_stmt kind,
+			      loop_vec_info,
+			      stmt_vec_info stmt_info, slp_tree,
+			      tree vectype,
+			      vect_cost_model_location where,
+			      unsigned stmt_cost);
 };
 
 } // namespace riscv_vector

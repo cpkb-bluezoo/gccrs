@@ -71,10 +71,18 @@ public:
 // A binding of an identifier to a type used in generic arguments in paths
 struct GenericArgsBinding
 {
+public:
+  enum class Kind
+  {
+    Equality,
+    Constraint
+  };
+
 private:
   Identifier identifier;
   std::unique_ptr<Type> type;
   location_t locus;
+  Kind kind;
 
 public:
   // Returns whether binding is in an error state.
@@ -90,7 +98,7 @@ public:
     if (type)
       new_type = type->reconstruct ();
 
-    return GenericArgsBinding (identifier, std::move (new_type), locus);
+    return GenericArgsBinding (identifier, std::move (new_type), locus, kind);
   }
 
   // Creates an error state generic args binding.
@@ -101,13 +109,15 @@ public:
 
   // Pointer type for type in constructor to enable polymorphism
   GenericArgsBinding (Identifier ident, std::unique_ptr<Type> type_ptr,
-		      location_t locus = UNDEF_LOCATION)
-    : identifier (std::move (ident)), type (std::move (type_ptr)), locus (locus)
+		      location_t locus = UNDEF_LOCATION,
+		      Kind kind = Kind::Equality)
+    : identifier (std::move (ident)), type (std::move (type_ptr)),
+      locus (locus), kind (kind)
   {}
 
   // Copy constructor has to deep copy the type as it is a unique pointer
   GenericArgsBinding (GenericArgsBinding const &other)
-    : identifier (other.identifier), locus (other.locus)
+    : identifier (other.identifier), locus (other.locus), kind (other.kind)
   {
     // guard to protect from null pointer dereference
     if (other.type != nullptr)
@@ -122,6 +132,7 @@ public:
   {
     identifier = other.identifier;
     locus = other.locus;
+    kind = other.kind;
 
     // guard to protect from null pointer dereference
     if (other.type != nullptr)
@@ -154,6 +165,7 @@ public:
   location_t get_locus () const { return locus; }
 
   Identifier get_identifier () const { return identifier; }
+  Kind get_kind () const { return kind; }
 };
 
 /* Class representing a const generic application */
@@ -834,7 +846,7 @@ public:
 
 private:
   tl::optional<LangItem::Kind> lang_item;
-  tl::optional<PathIdentSegment> ident_segment;
+  PathIdentSegment ident_segment;
   location_t locus;
 
 protected:
@@ -880,8 +892,9 @@ public:
       node_id (Analysis::Mappings::get ().get_next_node_id ())
   {}
 
-  TypePathSegment (LangItem::Kind lang_item, location_t locus)
-    : lang_item (lang_item), ident_segment (tl::nullopt), locus (locus),
+  TypePathSegment (LangItem::Kind lang_item, PathIdentSegment ident_segment,
+		   location_t locus)
+    : lang_item (lang_item), ident_segment (ident_segment), locus (locus),
       has_separating_scope_resolution (false),
       node_id (Analysis::Mappings::get ().get_next_node_id ())
   {}
@@ -897,7 +910,7 @@ public:
 
   // General constructor
   TypePathSegment (tl::optional<LangItem::Kind> lang_item,
-		   tl::optional<PathIdentSegment> ident_segment,
+		   PathIdentSegment ident_segment,
 		   bool has_separating_scope_resolution, location_t locus)
     : lang_item (lang_item), ident_segment (ident_segment), locus (locus),
       has_separating_scope_resolution (has_separating_scope_resolution),
@@ -930,16 +943,12 @@ public:
     if (lang_item.has_value ())
       return LangItem::PrettyString (*lang_item);
 
-    return ident_segment->as_string ();
+    return ident_segment.as_string ();
   }
 
   /* Returns whether the type path segment is in an error state. May be
    * virtual in future. */
-  bool is_error () const
-  {
-    rust_assert (ident_segment);
-    return ident_segment->is_error ();
-  }
+  bool is_error () const { return ident_segment.is_error (); }
 
   /* Returns whether segment is identifier only (as opposed to generic args or
    * function). Overridden in derived classes with other segments. */
@@ -957,17 +966,9 @@ public:
     return has_separating_scope_resolution;
   }
 
-  PathIdentSegment &get_ident_segment ()
-  {
-    rust_assert (!is_lang_item ());
-    return *ident_segment;
-  };
+  PathIdentSegment &get_ident_segment () { return ident_segment; };
 
-  const PathIdentSegment &get_ident_segment () const
-  {
-    rust_assert (!is_lang_item ());
-    return *ident_segment;
-  };
+  const PathIdentSegment &get_ident_segment () const { return ident_segment; };
 
   LangItem::Kind get_lang_item () const
   {
@@ -1016,9 +1017,10 @@ public:
       generic_args (std::move (generic_args))
   {}
 
-  TypePathSegmentGeneric (LangItem::Kind lang_item, GenericArgs generic_args,
-			  location_t locus)
-    : TypePathSegment (lang_item, locus),
+  TypePathSegmentGeneric (LangItem::Kind lang_item,
+			  PathIdentSegment ident_segment,
+			  GenericArgs generic_args, location_t locus)
+    : TypePathSegment (lang_item, ident_segment, locus),
       generic_args (std::move (generic_args))
   {}
 

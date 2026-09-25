@@ -3251,7 +3251,9 @@ lookup_destructor (tree object, tree scope, tree dtor_name,
     }
   expr = lookup_member (dtor_type, complete_dtor_identifier,
 			/*protect=*/1, /*want_type=*/false,
-			tf_warning_or_error);
+			complain);
+  if (expr == error_mark_node)
+    return error_mark_node;
   if (!expr)
     {
       if (complain & tf_error)
@@ -3594,13 +3596,20 @@ finish_class_member_access_expr (cp_expr object, tree name, bool template_p,
 	      return error_mark_node;
 	    }
 	}
-      else if (splice_p
-	       && (TREE_CODE (name) == FIELD_DECL
-		   || VAR_P (name)
-		   || TREE_CODE (name) == CONST_DECL
-		   || TREE_CODE (name) == FUNCTION_DECL
-		   || DECL_FUNCTION_TEMPLATE_P (OVL_FIRST (name))))
-	scope = context_for_name_lookup (OVL_FIRST (name));
+      else if (splice_p && valid_splice_for_member_access_p (name))
+	{
+	  scope = context_for_name_lookup (OVL_FIRST (name));
+	  if (!CLASS_TYPE_P (scope))
+	    {
+	      if (complain & tf_error)
+		{
+		  auto_diagnostic_group d;
+		  error ("%q#D is not a member of %qT", name, object_type);
+		  inform (DECL_SOURCE_LOCATION (OVL_FIRST (name)), "declared here");
+		}
+	      return error_mark_node;
+	    }
+	}
 
       if (TREE_CODE (name) == TEMPLATE_ID_EXPR)
 	{
@@ -3651,14 +3660,7 @@ finish_class_member_access_expr (cp_expr object, tree name, bool template_p,
 	  gcc_assert (CLASS_TYPE_P (scope));
 	  gcc_assert (identifier_p (name)
 		      || TREE_CODE (name) == BIT_NOT_EXPR
-		      || (splice_p
-			  && (TREE_CODE (name) == FIELD_DECL
-			      || VAR_P (name)
-			      || TREE_CODE (name) == CONST_DECL
-			      || TREE_CODE (name) == FUNCTION_DECL
-			      || DECL_FUNCTION_TEMPLATE_P
-						(OVL_FIRST (name))
-			      || variable_template_p (name))));
+		      || (splice_p && valid_splice_for_member_access_p (name)));
 
 	  if (constructor_name_p (name, scope))
 	    {
@@ -3710,12 +3712,7 @@ finish_class_member_access_expr (cp_expr object, tree name, bool template_p,
 	    goto dependent;
 	  member = lookup_destructor (object, scope, name, complain);
 	}
-      else if (splice_p && (TREE_CODE (name) == FIELD_DECL
-			    || VAR_P (name)
-			    || TREE_CODE (name) == CONST_DECL
-			    || TREE_CODE (name) == FUNCTION_DECL
-			    || DECL_FUNCTION_TEMPLATE_P (OVL_FIRST (name))
-			    || variable_template_p (name)))
+      else if (splice_p && valid_splice_for_member_access_p (name))
 	{
 	  member = name;
 	  name = OVL_FIRST (name);
@@ -4167,7 +4164,8 @@ cp_build_array_ref (location_t loc, tree array, tree idx,
     return error_mark_node;
 
   /* 0[array] */
-  if (TREE_CODE (TREE_TYPE (idx)) == ARRAY_TYPE)
+  if (TREE_CODE (TREE_TYPE (idx)) == ARRAY_TYPE
+      && TREE_CODE (TREE_TYPE (array)) != ARRAY_TYPE)
     {
       std::swap (array, idx);
 
@@ -5958,6 +5956,44 @@ cp_build_binary_op (const op_location_t &location,
 	  return cp_build_binary_op (location, code, op0, op1, complain);
 	}
 
+      if (warn_constant_logical_operand
+	  && (complain & tf_warning)
+	  && (code0 == INTEGER_TYPE || code0 == ENUMERAL_TYPE)
+	  && (code1 == INTEGER_TYPE || code1 == ENUMERAL_TYPE))
+	{
+	  tree cop0 = fold_for_warn (op0), cop1 = fold_for_warn (op1);
+	  const char *name
+	    = ((code == TRUTH_ANDIF_EXPR || code == TRUTH_AND_EXPR)
+	       ? "&&" : "||");
+	  auto enum_other_than_0_1 = [] (tree type) {
+	    if (TREE_CODE (type) != ENUMERAL_TYPE)
+	      return false;
+	    for (tree l = TYPE_VALUES (type); l; l = TREE_CHAIN (l))
+	      {
+		tree v = DECL_INITIAL (TREE_VALUE (l));
+		if (!integer_zerop (v) && !integer_onep (v))
+		  return true;
+	      }
+	    return false;
+	  };
+	  auto diagnose_constant_logical_operand = [=] (tree val, tree type) {
+	    if (TREE_CODE (val) != INTEGER_CST || integer_zerop (val))
+	      return false;
+	    if (integer_onep (val) && !enum_other_than_0_1 (type))
+	      return false;
+	    gcc_rich_location richloc (location);
+	    richloc.add_fixit_replace (name + 1);
+	    auto_diagnostic_group d;
+	    if (warning_at (location, OPT_Wconstant_logical_operand,
+			    "use of logical %qs with constant operand %qE",
+			    name, val))
+	      inform (&richloc, "use %qs for bitwise operation", name + 1);
+	    return true;
+	  };
+	  if (!diagnose_constant_logical_operand (cop1, orig_type1))
+	    diagnose_constant_logical_operand (cop0, orig_type0);
+	}
+
       result_type = boolean_type_node;
       break;
 
@@ -6353,7 +6389,7 @@ cp_build_binary_op (const op_location_t &location,
 	}
       /* [expr.eq]: "If both operands are of type std::meta::info,
 	 comparison is defined as follows..."  */
-      else if (code0 == META_TYPE && code1 == META_TYPE)
+      else if (REFLECTION_TYPE_P (type0) && REFLECTION_TYPE_P (type1))
 	result_type = type0;
       else
 	{
@@ -7074,6 +7110,73 @@ build_x_shufflevector (location_t loc, vec<tree, va_gc> *args,
     {
       exp = build_min_non_dep_call_vec (exp, NULL, args);
       CALL_EXPR_IFN (exp) = IFN_SHUFFLEVECTOR;
+    }
+  return exp;
+}
+
+/* Build __builtin_bswapg (ARG) or __builtin_bitreverseg (ARG).  */
+tree
+build_x_bswapg_bitreverseg (location_t loc, internal_fn ifn,
+			    vec<tree, va_gc> *args, tsubst_flags_t complain)
+{
+  const char *name
+    = ifn == IFN_BSWAP ? "__builtin_bswapg" : "__builtin_bitreverseg";
+  if (args->length () != 1)
+    {
+      if (complain & tf_error)
+	error_at (loc, "wrong number of arguments to %qs", name);
+      return error_mark_node;
+    }
+  tree arg = (*args)[0];
+  if (error_operand_p (arg))
+    return error_mark_node;
+  if (type_dependent_expression_p (arg))
+    {
+      tree exp = build_min_nt_call_vec (NULL, args);
+      CALL_EXPR_IFN (exp) = ifn;
+      return exp;
+    }
+  tree type = TYPE_MAIN_VARIANT (TREE_TYPE (arg));
+  if (!INTEGRAL_TYPE_P (type))
+    {
+      if (complain & tf_error)
+	error_at (loc, "%qs operand not an integral type", name);
+      return error_mark_node;
+    }
+  if (TREE_CODE (type) == ENUMERAL_TYPE)
+    {
+      if (complain & tf_error)
+	error_at (loc, "argument %u in call to function "
+		       "%qs has enumerated type", 1, name);
+      return error_mark_node;
+    }
+  if (TREE_CODE (type) == BOOLEAN_TYPE)
+    {
+      if (complain & tf_error)
+	error_at (loc, "argument %u in call to function "
+		       "%qs has boolean type", 1, name);
+      return error_mark_node;
+    }
+  if (!TYPE_UNSIGNED (type))
+    {
+      if (complain & tf_error)
+	error_at (loc, "argument 1 in call to function "
+		       "%qs has signed type", name);
+      return error_mark_node;
+    }
+  if (ifn == IFN_BSWAP && (TYPE_PRECISION (type) % 8) != 0)
+    {
+      if (complain & tf_error)
+	error_at (loc, "precision %d of argument 1 to function "
+		       "%qs is not a multiple of 8",
+		  TYPE_PRECISION (type), name);
+      return error_mark_node;
+    }
+  tree exp = build_call_expr_internal_loc (loc, ifn, type, 1, arg);
+  if (processing_template_decl)
+    {
+      exp = build_min_non_dep_call_vec (exp, NULL, args);
+      CALL_EXPR_IFN (exp) = ifn;
     }
   return exp;
 }
@@ -7854,8 +7957,7 @@ cp_build_unary_op (enum tree_code code, tree xarg, bool noconvert,
       if (gnu_vector_type_p (TREE_TYPE (arg)))
 	return cp_build_binary_op (input_location, EQ_EXPR, arg,
 				   build_zero_cst (TREE_TYPE (arg)), complain);
-      arg = perform_implicit_conversion (boolean_type_node, arg,
-					 complain);
+      arg = contextual_conv_bool (arg, complain);
       if (arg != error_mark_node)
 	{
 	  if (processing_template_decl)
@@ -8269,6 +8371,10 @@ cxx_mark_addressable (tree exp, bool array_ref_p)
 		    || DECL_IN_AGGR_P (x) == 0
 		    || TREE_STATIC (x)
 		    || DECL_EXTERNAL (x));
+	if (VAR_P (x)
+	    && DECL_ANON_UNION_VAR_P (x)
+	    && !TREE_ADDRESSABLE (x))
+	  cxx_mark_addressable (DECL_VALUE_EXPR (x));
 	/* Fall through.  */
 
       case RESULT_DECL:
@@ -11477,6 +11583,11 @@ check_return_expr (tree retval, bool *no_warning, bool *dangling)
 
   if (processing_template_decl)
     {
+      /* If in expansion statement body, we don't know if the body
+	 will be instantiated at all.  */
+      if (in_expansion_stmt)
+	goto dependent;
+
       current_function_returns_value = 1;
 
       if (check_for_bare_parameter_packs (retval))
@@ -11788,12 +11899,6 @@ check_return_expr (tree retval, bool *no_warning, bool *dangling)
 	       && maybe_warn_about_returning_address_of_local (retval, loc)
 	       && INDIRECT_TYPE_P (valtype))
 	*dangling = true;
-    }
-
-  if (check_out_of_consteval_use (retval))
-    {
-      current_function_return_value = error_mark_node;
-      return error_mark_node;
     }
 
   /* A naive attempt to reduce the number of -Wdangling-reference false

@@ -30,7 +30,7 @@
 static const struct default_options avr_option_optimization_table[] =
   {
     // There is no way to filter out unwanted cswtch transformations:
-    // - Code bload as mentioned in PR81540.
+    // - Code bloat as mentioned in PR81540.
     // - When tree-switch-conversion.cc::build_one_array() finds a
     //   linear function, it will use a formula that involves a
     //   multiplication without even trying to work out the costs.
@@ -42,8 +42,10 @@ static const struct default_options avr_option_optimization_table[] =
     { OPT_LEVELS_ALL, OPT_foptimize_crc, NULL, 0 },
     { OPT_LEVELS_1_PLUS_NOT_DEBUG, OPT_mgas_isr_prologues, NULL, 1 },
     { OPT_LEVELS_1_PLUS, OPT_mmain_is_OS_task, NULL, 1 },
+    { OPT_LEVELS_1_PLUS, OPT_mdemote_switch, NULL, 1 },
     { OPT_LEVELS_1_PLUS, OPT_mfuse_add_, NULL, 1 },
     { OPT_LEVELS_2_PLUS, OPT_mfuse_add_, NULL, 2 },
+    { OPT_LEVELS_1_PLUS, OPT_mfuse_ifelse, NULL, 1 },
     { OPT_LEVELS_1_PLUS, OPT_mfuse_move2, NULL, 1 },
     { OPT_LEVELS_1_PLUS_NOT_DEBUG, OPT_mfuse_move_, NULL, 3 },
     { OPT_LEVELS_2_PLUS, OPT_mfuse_move_, NULL, 23 },

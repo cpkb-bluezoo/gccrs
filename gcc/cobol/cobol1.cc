@@ -103,6 +103,8 @@ struct GTY (()) language_function
     int dummy;
     };
 
+static const char dir_separator[] = {DIR_SEPARATOR, 0};
+
 /*
  *  Language hooks.
  */
@@ -127,6 +129,7 @@ struct GTY (()) language_function
 #define ATTR_TMPURE_NORETURN_NOTHROW_LEAF_COLD_LIST (ECF_TM_PURE|ECF_NORETURN|ECF_NOTHROW|ECF_LEAF|ECF_COLD)
 #define ATTR_NORETURN_NOTHROW_LIST (ECF_NORETURN|ECF_NOTHROW)
 #define ATTR_NOTHROW_NONNULL_LEAF (ECF_NOTHROW|ECF_LEAF)
+#define ATTR_CONST_NOTHROW_LEAF (ECF_CONST | ECF_NOTHROW | ECF_LEAF)
 
 static void
 gfc_define_builtin (const char *name, tree type, enum built_in_function code,
@@ -160,6 +163,8 @@ create_our_type_nodes_init()
   int128_five_node    = build_int_cst_type(INT128,  5);
   int128_ten_node     = build_int_cst_type(INT128, 10);
   char_ptr_type_node  = build_pointer_type(CHAR);
+  const_char_ptr_type_node = build_pointer_type(build_qualified_type(CHAR,
+                                                             TYPE_QUAL_CONST));
   uchar_ptr_type_node = build_pointer_type(UCHAR);
   wchar_ptr_type_node = build_pointer_type(WCHAR);
   long_double_ten_node = build_real_from_int_cst(
@@ -266,6 +271,44 @@ cobol_langhook_init (void)
     gfc_define_builtin ("__builtin_strcpy", ftype, BUILT_IN_STRCPY,
             "strcpy", ATTR_NOTHROW_NONNULL_LEAF);
 
+
+    ftype = build_function_type_list (uint16_type_node,
+                                      uint16_type_node,
+                                      NULL_TREE);
+    gfc_define_builtin ("__builtin_bswap16",
+                        ftype,
+                        BUILT_IN_BSWAP16,
+                        NULL,
+                        ATTR_CONST_NOTHROW_LEAF);
+
+    ftype = build_function_type_list (uint32_type_node,
+                                      uint32_type_node,
+                                      NULL_TREE);
+    gfc_define_builtin ("__builtin_bswap32",
+                        ftype,
+                        BUILT_IN_BSWAP32,
+                        NULL,
+                        ATTR_CONST_NOTHROW_LEAF);
+
+    ftype = build_function_type_list (uint64_type_node,
+                                      uint64_type_node,
+                                      NULL_TREE);
+    gfc_define_builtin ("__builtin_bswap64",
+                        ftype,
+                        BUILT_IN_BSWAP64,
+                        NULL,
+                        ATTR_CONST_NOTHROW_LEAF);
+
+    ftype = build_function_type_list (unsigned_intTI_type_node,
+                                      unsigned_intTI_type_node,
+                                      NULL_TREE);
+    gfc_define_builtin ("__builtin_bswap128",
+                        ftype,
+                        BUILT_IN_BSWAP128,
+                        NULL,
+                        ATTR_CONST_NOTHROW_LEAF);
+
+
     build_common_builtin_nodes ();
 
     // Make sure this is a supported configuration.
@@ -317,19 +360,106 @@ enable_exceptions( bool enable ) {
        NULL != (name = strtok(name, ",")); name = NULL ) {
     ec_type_t type = ec_type_of(name);
     if( type == ec_none_e ) {
-      cbl_message(EcUnknownW, "unrecognized exception '%s'", name);
+      cbl_message(EcUnknownW, "unrecognized exception %qs", name);
       continue;
-    }
-    ec_disposition_t disposition = ec_type_disposition(type);
-    if( disposition != ec_implemented(disposition) ) {
-      cbl_unimplemented("exception '%s'", name);
     }
     add_cobol_exception(type, enable );
   }
 }
 
+static void
+libcompat_copybook(const char *dir)
+  {
+  char *gnu = concat(dir, NULL);
+
+  if (gnu[strlen(gnu) - 1] != DIR_SEPARATOR)
+      gnu = concat(gnu, dir_separator, NULL);
+
+  gnu = concat(gnu, "compat", dir_separator, "gnu", NULL);
+
+  char *paths[] =
+      {
+          concat(gnu, dir_separator, "lib", NULL),
+          concat(gnu, dir_separator, "cpy", NULL),
+          concat(gnu, dir_separator, "udf", NULL)
+      };
+
+  for (size_t i = 0; i < sizeof paths / sizeof *paths; i++)
+      {
+      // Inject the installation prefix paths to the libcompat copybooks.
+      copybook_directory_add(paths[i]);
+      free(paths[i]);
+      }
+
+  free(gnu);
+  }
+
+static void
+libposix_copybook(const char *dir)
+  {
+  char *posix = concat(dir, NULL);
+
+  if (posix[strlen(posix) - 1] != DIR_SEPARATOR)
+    posix = concat(posix, dir_separator, NULL);
+
+  posix = concat(posix, "posix", NULL);
+
+  char *paths[] =
+      {
+      concat(posix, dir_separator, "cpy", NULL),
+      concat(posix, dir_separator, "udf", NULL),
+      };
+
+  for (size_t i = 0; i < sizeof paths / sizeof *paths; i++)
+      {
+      copybook_directory_add(paths[i]);
+      free(paths[i]);
+      }
+
+  free(posix);
+  }
+
+static void
+append_copybook_prefix(const char *prefix, void (*fn)(const char *))
+  {
+    char *opts[] =
+        {
+        concat(prefix, dir_separator, "cobol", NULL),
+        concat(prefix, NULL),
+        NULL
+        };
+
+    for (char **s = opts; *s; ++s)
+        {
+        fn(*s);
+        free(*s);
+        }
+  }
+
 void cobol_warning( cbl_diag_id_t id, int yn, bool );
 void cobol_warning_suppress( cbl_dialect_t dialect );
+
+/*
+ * If an unrecognized/unimplmemented EC is specified, emit a warning.  If the
+ * warning is turned off, keep quiet.
+ * 
+ * Tue Aug 25 09:41:37 2026: For reasons unclear gcobol duplicates some
+ * command-line options to cobol1.  In any case if the user specifies the ssme
+ * EC twice, or uses it more than once in the body of the code, he doesn't
+ * need two messages.
+ */
+void cbl_enabled_exceptions_t::
+complain( ec_type_t type ) {
+  static std::set<ec_type_t> said_so;
+  auto p = said_so.insert(type);
+  if( p.second ) {
+    ec_disposition_t disposition = ec_type_disposition(type);
+    if( disposition != ec_implemented(disposition) ) {
+      cbl_message(EcUnknownW, "sorry, exception %qs not implemented",
+                  ec_type_str(type));
+    }
+  }
+}
 
 static bool
 cobol_langhook_handle_option (size_t scode,
@@ -347,6 +477,10 @@ cobol_langhook_handle_option (size_t scode,
 
     switch(code)
         {
+        case OPT_B:
+            append_copybook_prefix(arg, libcompat_copybook);
+            append_copybook_prefix(arg, libposix_copybook);
+            return true;
         case OPT_D:
             defined_cmd(arg);
             return true;
@@ -358,7 +492,9 @@ cobol_langhook_handle_option (size_t scode,
             copybook_directory_add(arg);
             return true;
         case OPT_copyext:
-            copybook_extension_add(cobol_copyext);
+        case OPT_isystem:
+        case OPT_idirafter:
+            copybook_extension_add(arg);
             return true;
 
         case OPT_fexec_charset_:
@@ -371,6 +507,10 @@ cobol_langhook_handle_option (size_t scode,
           if( ! cobol_national_encoding( arg ) ) {
               cbl_errx( "no such national charset %qs", arg);
             }
+            return true;
+
+        case OPT_ftrunc:
+            cobol_trunc_binary(cobol_trunc_bin);
             return true;
 
         case OPT_M:
@@ -457,8 +597,24 @@ cobol_langhook_handle_option (size_t scode,
 
         // Warnings and errors
 
+        case OPT_Wassign_external:
+          cobol_warning(MfAssignExternal, assign_external, warning_as_error);
+          return true;
+
+        case OPT_Wassign_file:
+          cobol_warning(IsoAssignFile, assign_file, warning_as_error);
+          return true;
+
         case OPT_Wbinary_long_long:
           cobol_warning(MfBinaryLongLong, binary_long_long, warning_as_error);
+          return true;
+
+        case OPT_Wcall_fd:
+          cobol_warning(IbmCallFd, cobol_call_fd, warning_as_error);
+          return true;
+
+        case OPT_Wdynamic_call:
+          cobol_warning(ParDynamicCall, cobol_dynamic_call, warning_as_error);
           return true;
 
         case OPT_Wcall_giving:
@@ -467,6 +623,10 @@ cobol_langhook_handle_option (size_t scode,
 
         case OPT_Wcall_literal:
           cobol_warning(MfCallLiteral, call_literal, warning_as_error);
+          return true;
+
+        case OPT_Wdisplay_screen:
+          cobol_warning(MfDisplayScreen, display_screen, warning_as_error);
           return true;
 
         case OPT_Wcdf_dollar:
@@ -479,6 +639,10 @@ cobol_langhook_handle_option (size_t scode,
 
         case OPT_Wcomp_x:
           cobol_warning(MfCompX, comp_x, warning_as_error);
+          return true;
+
+        case OPT_Whex_numeric:
+          cobol_warning(MfHexNumeric, hex_numeric, warning_as_error);
           return true;
 
         case OPT_Winspect_trailing:
@@ -501,12 +665,28 @@ cobol_langhook_handle_option (size_t scode,
           cobol_warning(MfMovePointer, move_pointer, warning_as_error);
           return true;
 
+        case OPT_Wset_numeric:
+          cobol_warning(MfSetNumeric, set_numeric, warning_as_error);
+          return true;
+
         case OPT_Wlevel_78:
           cobol_warning(MfLevel78, level_78, warning_as_error);
           return true;
 
         case OPT_Wany_length:
           cobol_warning(MfAnyLength, cobol_any_length, warning_as_error);
+          return true;
+
+        case OPT_Wredefines_first:
+          cobol_warning(MfRedefinesFirst, redefines_first, warning_as_error);
+          return true;
+
+        case OPT_Wredefines_table:
+          cobol_warning(MfRedefinesTable, redefines_table, warning_as_error);
+          return true;
+
+        case OPT_Wredefines_grow:
+          cobol_warning(IsoRedefinesGrow, redefines_grow, warning_as_error);
           return true;
 
         case OPT_Wreturning_number:
@@ -613,6 +793,14 @@ cobol_langhook_handle_option (size_t scode,
           cobol_warning(IbmEjectE, cobol_eject, warning_as_error);
           return true;
 
+        case OPT_Wibm_cdf:
+          cobol_warning(IbmCdf, cobol_ibmcdf, warning_as_error);
+          return true;
+
+        case OPT_Wcontent_expr:
+          cobol_warning(IbmContentExpr, content_expr, warning_as_error);
+          return true;
+
         case OPT_Woperator_space:
           cobol_warning(LexSeparatorE, operator_space, warning_as_error);
           return true;
@@ -645,6 +833,10 @@ cobol_langhook_handle_option (size_t scode,
 
         case OPT_Wfile_code_set:
           cobol_warning(SynFileCodeSet, file_code_set, warning_as_error);
+          return true;
+
+        case OPT_Wrecording_mode:
+          cobol_warning(SynRecordingMode, recording_mode, warning_as_error);
           return true;
 
         case OPT_Wset_locale_to:
@@ -757,6 +949,14 @@ cobol_langhook_getdecls (void)
     return NULL;
     }
 
+static bool
+cobol_langhook_post_options (const char **pfilename ATTRIBUTE_UNUSED)
+    {
+    append_copybook_prefix(LIBSUBDIR, libcompat_copybook);
+    append_copybook_prefix(LIBSUBDIR, libposix_copybook);
+    return false;
+    }
+
 char *
 cobol_name_mangler(const char *cobol_name_)
     {
@@ -862,6 +1062,7 @@ cobol_get_sarif_source_language(const char *)
 #undef LANG_HOOKS_GETDECLS
 #undef LANG_HOOKS_GLOBAL_BINDINGS_P
 #undef LANG_HOOKS_HANDLE_OPTION
+#undef LANG_HOOKS_POST_OPTIONS
 #undef LANG_HOOKS_INIT
 #undef LANG_HOOKS_INIT_OPTIONS_STRUCT
 #undef LANG_HOOKS_NAME
@@ -883,6 +1084,7 @@ cobol_get_sarif_source_language(const char *)
 
 #define LANG_HOOKS_INIT_OPTIONS_STRUCT      cobol_langhook_init_options_struct
 #define LANG_HOOKS_HANDLE_OPTION            cobol_langhook_handle_option
+#define LANG_HOOKS_POST_OPTIONS             cobol_langhook_post_options
 
 #define LANG_HOOKS_BUILTIN_FUNCTION         cobol_langhook_builtin_function
 #define LANG_HOOKS_GETDECLS                 cobol_langhook_getdecls

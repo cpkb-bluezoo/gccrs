@@ -2,10 +2,15 @@
 /* { dg-require-effective-target vect_early_break } */
 /* { dg-require-effective-target vect_int } */
 /* { dg-require-effective-target mmap } */
+/* { dg-require-effective-target sysconf } */
 
 /* { dg-final { scan-tree-dump "LOOP VECTORIZED" "vect" } } */
 
 #include <sys/mman.h>
+
+#if defined(__APPLE__) && !defined(MAP_ANONYMOUS)
+#define MAP_ANONYMOUS MAP_ANON
+#endif
 #include <unistd.h>
 
 #include "tree-vect.h"

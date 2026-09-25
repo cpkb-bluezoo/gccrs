@@ -32,6 +32,9 @@ public:
   static constexpr auto &DERIVE_ATTR = "derive";
   static constexpr auto &DEPRECATED = "deprecated";
   static constexpr auto &ALLOW = "allow";
+  static constexpr auto &DENY = "deny";
+  static constexpr auto &WARN = "warn";
+  static constexpr auto &FORBID = "forbid";
   static constexpr auto &ALLOW_INTERNAL_UNSTABLE = "allow_internal_unstable";
   static constexpr auto &DOC = "doc";
   static constexpr auto &MUST_USE = "must_use";
@@ -41,6 +44,8 @@ public:
   static constexpr auto &NO_STD = "no_std";
   static constexpr auto &LINK_SECTION = "link_section";
   static constexpr auto &NO_MANGLE = "no_mangle";
+  static constexpr auto &RUSTC_STD_INTERNAL_SYMBOL
+    = "rustc_std_internal_symbol";
   static constexpr auto &EXPORT_NAME = "export_name";
   static constexpr auto &REPR = "repr";
   static constexpr auto &RUSTC_BUILTIN_MACRO = "rustc_builtin_macro";
@@ -56,6 +61,9 @@ public:
 
   static constexpr auto &TARGET_FEATURE = "target_feature";
   static constexpr auto &FEATURE = "feature";
+
+  static constexpr auto &GLOBAL_ALLOCATOR = "global_allocator";
+
   // From now on, these are reserved by the compiler and gated through
   // #![feature(rustc_attrs)]
   static constexpr auto &RUSTC_DEPRECATED = "rustc_deprecated";
@@ -82,6 +90,9 @@ public:
   static constexpr auto &RUSTC_LAYOUT_SCALAR_VALID_RANGE_START
     = "rustc_layout_scalar_valid_range_start";
 
+  static constexpr auto &COMPILER_BUILTINS = "compiler_builtins";
+  static constexpr auto &NO_BUILTINS = "no_builtins";
+
   static constexpr auto &MAY_DANGLE = "may_dangle";
   static constexpr auto &PRELUDE_IMPORT = "prelude_import";
   static constexpr auto &TRACK_CALLER = "track_caller";
@@ -94,11 +105,28 @@ public:
   static constexpr auto &NON_EXHAUSTIVE = "non_exhaustive";
 
   static constexpr auto &RUSTFMT = "rustfmt";
+  static constexpr auto &CLIPPY = "clippy";
+  static constexpr auto &DIAGNOSTIC = "diagnostic";
+  static constexpr auto &MIRI = "miri";
+  static constexpr auto &RUST_ANALYZER = "rust_analyzer";
 
   static constexpr auto &TEST = "test";
 
   static constexpr auto &RUSTC_ARGS_REQUIRED_CONST
     = "rustc_args_required_const";
+
+  static constexpr auto &RUSTC_LEGACY_CONST_GENERICS
+    = "rustc_legacy_const_generics";
+
+  static constexpr auto &NEEDS_ALLOCATOR = "needs_allocator";
+
+  static constexpr auto &RUSTC_ALLOCATOR = "rustc_allocator";
+  static constexpr auto &RUSTC_ALLOCATOR_NOUNWIND = "rustc_allocator_nounwind";
+
+  static constexpr auto &RUSTC_CONVERSION_SUGGESTION
+    = "rustc_conversion_suggestion";
+
+  static constexpr auto &CFI_ENCODING = "cfi_encoding";
 };
 } // namespace Values
 } // namespace Rust

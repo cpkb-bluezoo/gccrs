@@ -286,6 +286,19 @@ extern HOST_WIDE_INT mul_hwi (HOST_WIDE_INT, HOST_WIDE_INT);
 extern HOST_WIDE_INT least_common_multiple (HOST_WIDE_INT, HOST_WIDE_INT);
 extern unsigned HOST_WIDE_INT reflect_hwi (unsigned HOST_WIDE_INT, unsigned);
 
+/* Calculate CRC for a given initial CRC, DATA, POLYNOMIAL,
+   CRC_SIZE in bits and DATA_SIZE in bits.  */
+extern unsigned HOST_WIDE_INT
+calculate_crc (unsigned HOST_WIDE_INT, unsigned HOST_WIDE_INT,
+	       unsigned HOST_WIDE_INT, unsigned short, unsigned short);
+
+/* Calculate reversed CRC for a given initial CRC, DATA, POLYNOMIAL,
+   CRC_SIZE in bits and DATA_SIZE in bits.  */
+extern unsigned HOST_WIDE_INT
+calculate_reversed_crc (unsigned HOST_WIDE_INT, unsigned HOST_WIDE_INT,
+			unsigned HOST_WIDE_INT, unsigned short,
+			unsigned short);
+
 /* Like ctz_hwi, except 0 when x == 0.  */
 
 inline int
@@ -302,27 +315,24 @@ sext_hwi (HOST_WIDE_INT src, unsigned int prec)
   if (prec == HOST_BITS_PER_WIDE_INT)
     return src;
   else
-#if defined (__GNUC__)
     {
+      gcc_checking_assert (prec < HOST_BITS_PER_WIDE_INT);
+#if defined (__GNUC__)
       /* Take the faster path if the implementation-defined bits it's relying
 	 on are implemented the way we expect them to be.  Namely, conversion
 	 from unsigned to signed preserves bit pattern, and right shift of
 	 a signed value propagates the sign bit.
 	 We have to convert from signed to unsigned and back, because when left
 	 shifting signed values, any overflow is undefined behavior.  */
-      gcc_checking_assert (prec < HOST_BITS_PER_WIDE_INT);
       int shift = HOST_BITS_PER_WIDE_INT - prec;
       return ((HOST_WIDE_INT) ((unsigned HOST_WIDE_INT) src << shift)) >> shift;
-    }
 #else
-    {
       /* Fall back to the slower, well defined path otherwise.  */
-      gcc_checking_assert (prec < HOST_BITS_PER_WIDE_INT);
       HOST_WIDE_INT sign_mask = HOST_WIDE_INT_1 << (prec - 1);
       HOST_WIDE_INT value_mask = (HOST_WIDE_INT_1U << prec) - HOST_WIDE_INT_1U;
       return (((src & value_mask) ^ sign_mask) - sign_mask);
-    }
 #endif
+    }
 }
 
 /* Zero extend SRC starting from PREC.  */
@@ -368,12 +378,11 @@ add_hwi (HOST_WIDE_INT a, HOST_WIDE_INT b, bool *overflow)
     *overflow = true;
   else
     *overflow = false;
-  return result;
 #else
   HOST_WIDE_INT result;
   *overflow = __builtin_add_overflow (a, b, &result);
-  return result;
 #endif
+  return result;
 }
 
 /* Compute the product of signed A and B and indicate in *OVERFLOW whether
@@ -389,12 +398,11 @@ mul_hwi (HOST_WIDE_INT a, HOST_WIDE_INT b, bool *overflow)
     *overflow = true;
   else
     *overflow = false;
-  return result;
 #else
   HOST_WIDE_INT result;
   *overflow = __builtin_mul_overflow (a, b, &result);
-  return result;
 #endif
+  return result;
 }
 
 /* Compute the saturated sum of signed A and B, i.e. upon overflow clamp

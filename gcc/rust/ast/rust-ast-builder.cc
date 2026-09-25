@@ -149,7 +149,8 @@ Builder::function_param (std::unique_ptr<Pattern> &&pattern,
 FunctionQualifiers
 Builder::fn_qualifiers () const
 {
-  return FunctionQualifiers (loc, Async::No, Const::No, Unsafety::Normal);
+  return FunctionQualifiers (loc, Default::No, Async::No, Const::No,
+			     Unsafety::Normal);
 }
 
 std::unique_ptr<Function>
@@ -183,8 +184,10 @@ Builder::type_path_segment (std::string seg) const
 std::unique_ptr<TypePathSegment>
 Builder::type_path_segment (LangItem::Kind lang_item) const
 {
+  auto &mappings = Analysis::Mappings::get ();
+  auto name = mappings.get_lang_item_identifier (lang_item);
   return std::unique_ptr<TypePathSegment> (
-    new TypePathSegment (lang_item, loc));
+    new TypePathSegment (lang_item, PathIdentSegment (name, loc), loc));
 }
 
 std::unique_ptr<TypePathSegment>
@@ -198,8 +201,11 @@ std::unique_ptr<TypePathSegment>
 Builder::type_path_segment_generic (LangItem::Kind lang_item,
 				    GenericArgs args) const
 {
+  auto &mappings = Analysis::Mappings::get ();
+  auto name = mappings.get_lang_item_identifier (lang_item);
   return std::unique_ptr<TypePathSegment> (
-    new TypePathSegmentGeneric (lang_item, args, loc));
+    new TypePathSegmentGeneric (lang_item, PathIdentSegment (name, loc), args,
+				loc));
 }
 
 std::unique_ptr<Type>
@@ -541,7 +547,8 @@ std::unique_ptr<Stmt>
 Builder::discriminant_value (std::string binding_name, std::string instance)
 {
   auto intrinsic = ptrify (
-    path_in_expression ({"core", "intrinsics", "discriminant_value"}, true));
+    path_in_expression ({get_path_start (), "intrinsics", "discriminant_value"},
+			true));
 
   return let (identifier_pattern (binding_name), nullptr,
 	      call (std::move (intrinsic), identifier (instance)));
@@ -575,7 +582,8 @@ Builder::new_const_param (ConstGenericParam &param) const
 
 std::unique_ptr<GenericParam>
 Builder::new_type_param (
-  TypeParam &param, std::vector<std::unique_ptr<TypeParamBound>> extra_bounds)
+  TypeParam &param, std::vector<std::unique_ptr<TypeParamBound>> extra_bounds,
+  DefaultParamGen default_param_generation)
 {
   location_t locus = param.get_locus ();
   AST::AttrVec outer_attrs = param.get_outer_attrs ();
@@ -583,7 +591,7 @@ Builder::new_type_param (
   std::vector<std::unique_ptr<TypeParamBound>> type_param_bounds;
   std::unique_ptr<Type> type = nullptr;
 
-  if (param.has_type ())
+  if (default_param_generation == DefaultParamGen::Keep && param.has_type ())
     type = param.get_type ().reconstruct ();
 
   for (auto &&extra_bound : extra_bounds)
@@ -646,12 +654,7 @@ Builder::new_type_param (
 		    break;
 
 		  case TypePathSegment::FUNCTION:
-		    {
-		      rust_unreachable ();
-		      // TODO
-		      // const TypePathSegmentFunction &fn
-		      //   = (const TypePathSegmentFunction &) (*seg.get ());
-		    }
+		    segments.emplace_back (seg->reconstruct ());
 		    break;
 		  }
 	      }

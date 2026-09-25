@@ -2545,7 +2545,7 @@ model_set_excess_costs (rtx_insn **insns, int count)
   if (!param_cycle_accurate_model)
     return;
 
-  /* Use MAX (baseECC, 0) and baseP to calculcate ECC for each
+  /* Use MAX (baseECC, 0) and baseP to calculate ECC for each
      instruction.  */
   for (i = 0; i < count; i++)
     {
@@ -5608,7 +5608,7 @@ analyze_set_insn_for_autopref (rtx pat, bool write, rtx *base, int *offset)
 /* Functions to model cache auto-prefetcher.
 
    Some of the CPUs have cache auto-prefetcher, which /seems/ to initiate
-   memory prefetches if it sees instructions with consequitive memory accesses
+   memory prefetches if it sees instructions with consecutive memory accesses
    in the instruction stream.  Details of such hardware units are not published,
    so we can only guess what exactly is going on there.
    In the scheduler, we model abstract auto-prefetcher.  If there are memory
@@ -5805,7 +5805,7 @@ autopref_multipass_dfa_lookahead_guard (rtx_insn *insn1, int ready_index)
 
       if (ready_index == 0
 	  && data1->status == AUTOPREF_MULTIPASS_DATA_DONT_DELAY)
-	/* We allow only a single delay on priviledged instructions.
+	/* We allow only a single delay on privileged instructions.
 	   Doing otherwise would cause infinite loop.  */
 	{
 	  if (sched_verbose >= 2)
@@ -5956,9 +5956,14 @@ max_issue (struct ready_list *ready, int privileged_n, state_t state,
   /* Init MAX_LOOKAHEAD_TRIES.  */
   if (max_lookahead_tries == 0)
     {
-      max_lookahead_tries = 100;
+      int64_t max_tries = 100;
       for (i = 0; i < issue_rate; i++)
-	max_lookahead_tries *= dfa_lookahead;
+	{
+	  max_tries *= dfa_lookahead;
+	  if (max_tries > INT_MAX)
+	    break;
+	}
+      max_lookahead_tries = MIN (max_tries, INT_MAX);
     }
 
   /* Init max_points.  */
@@ -6054,7 +6059,9 @@ max_issue (struct ready_list *ready, int privileged_n, state_t state,
       else if (!ready_try [i])
 	{
 	  tries_num++;
-	  if (tries_num > max_lookahead_tries)
+	  /* max_lookahead_tries is capped at INT_MAX, use the >= comparison
+	     to prevent tries_num from overflowing.  */
+	  if (tries_num >= max_lookahead_tries)
 	    break;
 	  insn = ready_element (ready, i);
 	  delay = state_transition (state, insn);

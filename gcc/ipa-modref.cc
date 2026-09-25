@@ -1590,7 +1590,7 @@ modref_access_analysis::process_fnspec (gcall *call)
 	      m_summary_lto->stores->insert (current_function_decl,
 					     0, 0, a, false);
 	  }
-      if (fnspec.errno_maybe_written_p () && flag_errno_math)
+      if (fnspec.errno_maybe_written_p ())
 	{
 	  if (m_summary)
 	    m_summary->writes_errno = true;
@@ -2744,7 +2744,7 @@ modref_eaf_analysis::merge_with_ssa_name (tree dest, tree src, bool deref)
       m_lattice[src_index].do_dataflow = true;
       if (dump_file)
 	fprintf (dump_file,
-		 "%*sWill propgate from ssa_name %i to %i%s\n",
+		 "%*sWill propagate from ssa_name %i to %i%s\n",
 		 m_depth * 4 + 4,
 		 "", src_index, index, deref ? " (deref)" : "");
     }

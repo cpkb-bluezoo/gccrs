@@ -68,7 +68,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
   // [indirect], class template indirect
   template<typename _Tp, typename _Alloc>
-    class indirect
+    class _GLIBCXX_NO_SPECIALIZATIONS indirect
     {
       static_assert(is_object_v<_Tp>);
       static_assert(!is_array_v<_Tp>);
@@ -336,7 +336,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	requires requires (const _Tp& __t, const _Up& __u) { __t == __u; }
 	friend constexpr bool
 	operator==(const indirect& __lhs, const indirect<_Up, _Alloc2>& __rhs)
-	noexcept(noexcept(*__lhs == *__rhs))
+	noexcept(noexcept(bool(*__lhs == *__rhs)))
 	{
 	  if (!__lhs._M_objp || !__rhs._M_objp)
 	    return bool(__lhs._M_objp) == bool(__rhs._M_objp);
@@ -344,12 +344,12 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 	    return __lhs.__get() == __rhs.__get();
 	}
 
-      template<typename _Up>
+      template<typename _Up, same_as<_Tp> _Vp>
 	requires (!__is_indirect<_Up>) // See PR c++/99599
 	  && requires (const _Tp& __t, const _Up& __u) { __t == __u; }
 	friend constexpr bool
-	operator==(const indirect& __lhs, const _Up& __rhs)
-	noexcept(noexcept(*__lhs == __rhs))
+	operator==(const indirect<_Vp, _Alloc>& __lhs, const _Up& __rhs)
+	noexcept(noexcept(bool(*__lhs == __rhs)))
 	{
 	  if (!__lhs._M_objp)
 	    return false;
@@ -467,7 +467,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
 
   // [polymorphic], class template polymorphic
   template<typename _Tp, typename _Alloc>
-    class polymorphic
+    class _GLIBCXX_NO_SPECIALIZATIONS polymorphic
     {
       static_assert(is_object_v<_Tp>);
       static_assert(!is_array_v<_Tp>);

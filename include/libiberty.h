@@ -3,7 +3,7 @@
    Copyright (C) 1997-2026 Free Software Foundation, Inc.
 
    Note - certain prototypes declared in this header file are for
-   functions whoes implementation copyright does not belong to the
+   functions whose implementation copyright does not belong to the
    FSF.  Those prototypes are present in this file for reference
    purposes only and their presence in this file should not construed
    as an indication of ownership by the FSF of the implementation of
@@ -93,6 +93,11 @@ extern int writeargv (char * const *, FILE *);
 /* Return the number of elements in argv.  */
 
 extern int countargv (char * const *);
+
+/* Expand VAL as a response file if it begins with '@' and return the
+   result as a shell-quoted string.  */
+
+extern char *expandargstr (const char *, const char *);
 
 /* Return the last component of a path name.  Note that we can't use a
    prototype here because the parameter is declared inconsistently
@@ -494,7 +499,7 @@ extern struct pex_obj *pex_init (int flags, const char *pname,
 /* Append stdout to existing file instead of truncating it.  */
 #define PEX_STDOUT_APPEND	0x100
 
-/* Thes same as PEX_STDOUT_APPEND, but for STDERR.  */
+/* The same as PEX_STDOUT_APPEND, but for STDERR.  */
 #define PEX_STDERR_APPEND	0x200
 
 /* Execute one program.  Returns NULL on success.  On error returns an

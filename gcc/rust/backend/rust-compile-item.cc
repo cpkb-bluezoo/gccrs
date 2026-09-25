@@ -19,9 +19,10 @@
 #include "rust-compile-item.h"
 #include "rust-compile-implitem.h"
 #include "rust-compile-extern.h"
+#include "rust-rib.h"
 #include "rust-substitution-mapper.h"
 #include "rust-type-util.h"
-#include "rust-immutable-name-resolution-context.h"
+#include "rust-finalized-name-resolution-context.h"
 
 namespace Rust {
 namespace Compile {
@@ -50,11 +51,11 @@ CompileItem::visit (HIR::StaticItem &var)
 
   tree type = TyTyResolveCompile::compile (ctx, resolved_type);
 
-  auto &nr_ctx
-    = Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
   Resolver::CanonicalPath canonical_path
-    = nr_ctx.to_canonical_path (var.get_mappings ().get_nodeid ());
+    = nr_ctx.to_canonical_path (var.get_mappings ().get_nodeid (),
+				Resolver2_0::Namespace::Values);
 
   ctx->push_const_context ();
   tree value
@@ -103,12 +104,12 @@ CompileItem::visit (HIR::ConstantItem &constant)
     const_value_expr.get_mappings ().get_hirid (), &expr_type);
   rust_assert (ok);
 
-  auto &nr_ctx
-    = Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
 
   // canonical path
   Resolver::CanonicalPath canonical_path
-    = nr_ctx.to_canonical_path (mappings.get_nodeid ());
+    = nr_ctx.to_canonical_path (mappings.get_nodeid (),
+				Resolver2_0::Namespace::Values);
   if (constant_type->is<const TyTy::FnType> ())
     {
       if (concrete == nullptr)
@@ -129,8 +130,11 @@ CompileItem::visit (HIR::ConstantItem &constant)
 			     const_value_expr.get_locus ());
   ctx->pop_const_context ();
 
-  ctx->push_const (const_expr);
-  ctx->insert_const_decl (mappings.get_hirid (), const_expr);
+  if (const_expr != error_mark_node)
+    {
+      ctx->push_const (const_expr);
+      ctx->insert_const_decl (mappings.get_hirid (), const_expr);
+    }
   reference = const_expr;
 }
 
@@ -176,32 +180,32 @@ CompileItem::visit (HIR::Function &function)
 				    TyTy::TyWithLocation (concrete),
 				    function.get_locus ());
 
-	  rust_assert (resolved->is<TyTy::FnType> ());
+	  if (!resolved->is<TyTy::FnType> ())
+	    return;
+
 	  fntype = resolved->as<TyTy::FnType> ();
 	}
 
       fntype->monomorphize ();
     }
-  else
+
+  Resolver::AssociatedImplTrait *impl = nullptr;
+  HirId id = function.get_mappings ().get_hirid ();
+  if (auto impl_item = ctx->get_mappings ().lookup_hir_implitem (id))
     {
-      // if this is part of a trait impl block which is not generic we need to
-      // ensure associated types are setup
-      HirId id = function.get_mappings ().get_hirid ();
-      if (auto impl_item = ctx->get_mappings ().lookup_hir_implitem (id))
-	{
-	  Resolver::AssociatedImplTrait *impl = nullptr;
-	  bool found = ctx->get_tyctx ()->lookup_associated_trait_impl (
-	    impl_item->second, &impl);
-	  if (found)
-	    impl->setup_raw_associated_types ();
-	}
+      ctx->get_tyctx ()->lookup_associated_trait_impl (impl_item->second,
+						       &impl);
     }
 
-  auto &nr_ctx
-    = Resolver2_0::ImmutableNameResolutionContext::get ().resolver ();
+  auto &nr_ctx = Resolver2_0::FinalizedNameResolutionContext::get ();
+
+  tl::optional<Resolver::ImplTraitFrameGuard> guard;
+  if (impl)
+    guard.emplace (impl->get_frame ());
 
   Resolver::CanonicalPath canonical_path
-    = nr_ctx.to_canonical_path (function.get_mappings ().get_nodeid ());
+    = nr_ctx.to_canonical_path (function.get_mappings ().get_nodeid (),
+				Resolver2_0::Namespace::Values);
 
   const std::string asm_name = ctx->mangle_item (fntype, canonical_path);
 
@@ -224,7 +228,7 @@ CompileItem::visit (HIR::Function &function)
   if (function.get_qualifiers ().is_const ())
     ctx->push_const_context ();
 
-  auto lookup_root_item = ctx->get_mappings ().lookup_hir_item (
+  auto lookup_root_item = ctx->get_mappings ().hir.items.lookup (
     function.get_mappings ().get_hirid ());
   bool is_root_item = lookup_root_item.has_value ();
   tree fndecl

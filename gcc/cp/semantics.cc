@@ -1138,13 +1138,13 @@ maybe_convert_cond (tree cond)
 
   /* For structured binding used in condition, the conversion needs to be
      evaluated before the individual variables are initialized in the
-     std::tuple_{size,elemenet} case.  cp_finish_decomp saved the conversion
-     result in a TARGET_EXPR, pick it up from there.  */
+     std::tuple_{size,element} case.  cp_finish_decomp saved the conversion
+     result in a NON_LVALUE_EXPR, pick it up from there.  */
   if (DECL_DECOMPOSITION_P (cond)
       && DECL_DECOMP_IS_BASE (cond)
       && DECL_DECOMP_BASE (cond)
-      && TREE_CODE (DECL_DECOMP_BASE (cond)) == TARGET_EXPR)
-    cond = TARGET_EXPR_SLOT (DECL_DECOMP_BASE (cond));
+      && TREE_CODE (DECL_DECOMP_BASE (cond)) == NON_LVALUE_EXPR)
+    cond = TREE_OPERAND (DECL_DECOMP_BASE (cond), 0);
 
   if (warn_sequence_point && !processing_template_decl)
     verify_sequence_points (cond);
@@ -1931,13 +1931,13 @@ finish_switch_cond (tree cond, tree switch_stmt)
       tree orig_cond = cond;
       /* For structured binding used in condition, the conversion needs to be
 	 evaluated before the individual variables are initialized in the
-	 std::tuple_{size,elemenet} case.  cp_finish_decomp saved the
-	 conversion result in a TARGET_EXPR, pick it up from there.  */
+	 std::tuple_{size,element} case.  cp_finish_decomp saved the
+	 conversion result in a NON_LVALUE_EXPR, pick it up from there.  */
       if (DECL_DECOMPOSITION_P (cond)
 	  && DECL_DECOMP_IS_BASE (cond)
 	  && DECL_DECOMP_BASE (cond)
-	  && TREE_CODE (DECL_DECOMP_BASE (cond)) == TARGET_EXPR)
-	cond = TARGET_EXPR_SLOT (DECL_DECOMP_BASE (cond));
+	  && TREE_CODE (DECL_DECOMP_BASE (cond)) == NON_LVALUE_EXPR)
+	cond = TREE_OPERAND (DECL_DECOMP_BASE (cond), 0);
       cond = build_expr_type_conversion (WANT_INT | WANT_ENUM, cond, true);
       if (cond == NULL_TREE)
 	{
@@ -3300,6 +3300,63 @@ perform_koenig_lookup (cp_expr fn_expr, vec<tree, va_gc> *args,
   return cp_expr (fn, loc);
 }
 
+/* Analyze call to a front-end builtin FN with arguments *ARGS.  Return true
+   if the call is correct, false if erroneous.  */
+
+static bool
+check_frontend_builtin (tree fn, vec<tree, va_gc> **args,
+			tsubst_flags_t complain)
+{
+  tree arg, ptype, type;
+  switch (DECL_UNCHECKED_FUNCTION_CODE (fn))
+    {
+    case CP_BUILT_IN_IS_WITHIN_LIFETIME:
+    case CP_BUILT_IN_START_LIFETIME:
+      /* Unless users call the builtin directly, the following 2 checks
+	 should be ensured from std::is_within_lifetime or
+	 std::start_lifetime template.  */
+      if (vec_safe_length (*args) != 1)
+	{
+	  if (complain & tf_error)
+	    error ("%qE needs a single argument", DECL_NAME (fn));
+	  return false;
+	}
+      arg = (**args)[0];
+      if (error_operand_p (arg))
+	return false;
+      ptype = TREE_TYPE (arg);
+      if (!POINTER_TYPE_P (ptype))
+	{
+	  if (complain & tf_error)
+	    error ("%qE argument type %qT is not pointer type",
+		   DECL_NAME (fn), ptype);
+	  return false;
+	}
+      if (DECL_UNCHECKED_FUNCTION_CODE (fn) == CP_BUILT_IN_IS_WITHIN_LIFETIME)
+	return true;
+      type = TREE_TYPE (ptype);
+      if (!complete_type_or_maybe_complain (type, NULL_TREE, complain))
+	return false;
+      if (!CP_AGGREGATE_TYPE_P (type))
+	{
+	  if (complain & tf_error)
+	    error ("%qE argument type %qT is not a pointer to aggregate type",
+		   DECL_NAME (fn), ptype);
+	  return false;
+	}
+      if (!implicit_lifetime_type_p (type))
+	{
+	  if (complain & tf_error)
+	    error ("%qE argument type %qT is not a pointer to "
+		   "implicit-lifetime type", DECL_NAME (fn), ptype);
+	  return false;
+	}
+      return true;
+    default:
+      return true;
+    }
+}
+
 /* Generate an expression for `FN (ARGS)'.  This may change the
    contents of ARGS.
 
@@ -3539,6 +3596,11 @@ finish_call_expr (tree fn, vec<tree, va_gc> **args, bool disallow_virtual,
 				  | (literal_integer_zerop (arg2) << 2));
 	      warn_for_memset (input_location, arg0, arg2, literal_mask);
 	    }
+
+	  if (TREE_CODE (fn) == FUNCTION_DECL
+	      && fndecl_built_in_p (fn, BUILT_IN_FRONTEND)
+	      && !check_frontend_builtin (fn, args, complain))
+	    return error_mark_node;
 
 	  /* A call to a namespace-scope function.  */
 	  result = build_new_function_call (fn, args, orig_complain);
@@ -3946,6 +4008,8 @@ finish_compound_literal (tree type, tree compound_literal,
       if (type == error_mark_node)
 	return error_mark_node;
     }
+  if (abstract_virtuals_error (ACU_UNKNOWN, type, complain))
+    return error_mark_node;
   compound_literal = digest_init_flags (type, compound_literal,
 					LOOKUP_NORMAL | LOOKUP_NO_NARROWING,
 					complain);
@@ -4279,12 +4343,69 @@ finish_member_declaration (tree decl)
   if (TREE_CODE (decl) != CONST_DECL)
     DECL_CONTEXT (decl) = current_class_type;
 
-  /* Remember the single FIELD_DECL an anonymous aggregate type is used for.  */
-  if (TREE_CODE (decl) == FIELD_DECL
-      && ANON_AGGR_TYPE_P (TREE_TYPE (decl)))
+  if (TREE_TYPE (decl)
+      && ANON_AGGR_TYPE_P (TREE_TYPE (decl))
+      && TREE_CODE (decl) != TYPE_DECL)
     {
-      gcc_assert (!ANON_AGGR_TYPE_FIELD (TYPE_MAIN_VARIANT (TREE_TYPE (decl))));
-      ANON_AGGR_TYPE_FIELD (TYPE_MAIN_VARIANT (TREE_TYPE (decl))) = decl;
+      /* Remember the single FIELD_DECL an anonymous aggregate type is used
+	 for.  */
+      if (TREE_CODE (decl) == FIELD_DECL && DECL_NAME (decl) == NULL_TREE)
+	{
+	  tree type = TYPE_MAIN_VARIANT (TREE_TYPE (decl));
+	  gcc_assert (!ANON_AGGR_TYPE_FIELD (type));
+	  SET_ANON_AGGR_TYPE_FIELD (type, decl);
+	}
+      /* [class.union.anon]/1: Each object of such an unnamed type shall
+	 be such an unnamed object.  */
+      else if (ANON_UNION_TYPE_P (TREE_TYPE (decl)))
+	{
+	  tree adecl = TYPE_MAIN_DECL (TYPE_MAIN_VARIANT (TREE_TYPE (decl)));
+	  auto_diagnostic_group d;
+	  error_at (location_of (decl),
+		    "declaration of member %qD with anonymous union type %qT",
+		    decl, TREE_TYPE (decl));
+	  inform (DECL_SOURCE_LOCATION (adecl),
+		  "anonymous union declared here");
+	}
+      else
+	{
+	  tree adecl = TYPE_MAIN_DECL (TYPE_MAIN_VARIANT (TREE_TYPE (decl)));
+	  auto_diagnostic_group d;
+	  error_at (location_of (decl),
+		    "declaration of member %qD with anonymous struct type %qT",
+		    decl, TREE_TYPE (decl));
+	  inform (DECL_SOURCE_LOCATION (adecl),
+		  "anonymous struct declared here");
+	}
+    }
+  else if (TREE_TYPE (decl)
+	   && TREE_CODE (TREE_TYPE (decl)) == ARRAY_TYPE
+	   && TREE_CODE (decl) != TYPE_DECL)
+    {
+      tree type = strip_array_types (TREE_TYPE (decl));
+      if (ANON_AGGR_TYPE_P (type))
+	{
+	  /* [class.union.anon]/1: Each object of such an unnamed type shall
+	     be such an unnamed object.  */
+	  tree adecl = TYPE_MAIN_DECL (TYPE_MAIN_VARIANT (type));
+	  auto_diagnostic_group d;
+	  if (ANON_UNION_TYPE_P (type))
+	    {
+	      error_at (location_of (decl),
+			"declaration of member %qD with array of anonymous "
+			"union type %qT", decl, TREE_TYPE (decl));
+	      inform (DECL_SOURCE_LOCATION (adecl),
+		      "anonymous union declared here");
+	    }
+	  else
+	    {
+	      error_at (location_of (decl),
+			"declaration of member %qD with array of anonymous "
+			"struct type %qT", decl, TREE_TYPE (decl));
+	      inform (DECL_SOURCE_LOCATION (adecl),
+		      "anonymous struct declared here");
+	    }
+	}
     }
 
   if (TREE_CODE (decl) == USING_DECL)
@@ -4505,23 +4626,22 @@ finish_base_specifier (tree base, tree access, bool virtual_p,
 /* If FNS is a member function, a set of member functions, or a
    template-id referring to one or more member functions, return a
    BASELINK for FNS, incorporating the current access context.
-   Otherwise, return FNS unchanged.  */
+   Otherwise, return FNS unchanged.  If IGNORE_CURRENT_CLASS_P is
+   true, we do not consider the currently open derived class.  */
 
 tree
-baselink_for_fns (tree fns)
+baselink_for_fns (tree fns, bool ignore_current_class_p/*=false*/)
 {
-  tree scope;
-  tree cl;
-
-  if (BASELINK_P (fns)
-      || error_operand_p (fns))
+  if (BASELINK_P (fns) || error_operand_p (fns))
     return fns;
 
-  scope = ovl_scope (fns);
+  tree scope = ovl_scope (fns);
   if (!CLASS_TYPE_P (scope))
     return fns;
 
-  cl = currently_open_derived_class (scope);
+  tree cl = (ignore_current_class_p
+	     ? NULL_TREE
+	     : currently_open_derived_class (scope));
   if (!cl)
     cl = scope;
   tree access_path = TYPE_BINFO (cl);
@@ -4575,6 +4695,18 @@ outer_automatic_var_p (tree decl)
 	  && !TREE_STATIC (decl));
 }
 
+/* Note whether capture proxy D is only used in a contract condition.  */
+
+static void
+set_contract_capture_flag (tree d, bool val)
+{
+  gcc_checking_assert (DECL_HAS_VALUE_EXPR_P (d));
+  tree proxy = DECL_VALUE_EXPR (d);
+  gcc_checking_assert (TREE_CODE (proxy) == COMPONENT_REF
+		       && TREE_CODE (TREE_OPERAND (proxy, 1)) == FIELD_DECL);
+  DECL_CONTRACT_CAPTURE_P (TREE_OPERAND (proxy, 1)) = val;
+}
+
 /* DECL satisfies outer_automatic_var_p.  Possibly complain about it or
    rewrite it for lambda capture.
 
@@ -4583,17 +4715,24 @@ outer_automatic_var_p (tree decl)
    id-expression, and we do lambda capture.  */
 
 tree
-process_outer_var_ref (tree decl, tsubst_flags_t complain, bool odr_use)
+process_outer_var_ref (tree decl, tsubst_flags_t complain,
+		       bool odr_use/*=false*/)
 {
+  bool in_typeid_probe = false;
   if (cp_unevaluated_operand)
     {
       tree type = TREE_TYPE (decl);
       if (!dependent_type_p (type)
 	  && variably_modified_type_p (type, NULL_TREE))
 	/* VLAs are used even in unevaluated context.  */;
-      else
+      else if (cp_unevaluated_operand > cp_unevaluated_typeid_cutoff)
 	/* It's not a use (3.2) if we're in an unevaluated context.  */
 	return decl;
+      else
+	/* Inside a typeid operand's own probe: capture is still
+	   attempted below ([expr.prim.lambda.capture]/7), but a missing
+	   capture-default must not be diagnosed yet - see below.  */
+	in_typeid_probe = true;
     }
   if (decl == error_mark_node)
     return decl;
@@ -4619,6 +4758,11 @@ process_outer_var_ref (tree decl, tsubst_flags_t complain, bool odr_use)
 
       if (d && d != decl && is_capture_proxy (d))
 	{
+	  if (flag_contracts && !processing_contract_condition)
+	    /* We might have created a capture for a contract_assert ref. to
+	       some var, if that is now captured 'normally' then this is OK.
+	       Otherwise we leave the capture marked as incorrect.  */
+	    set_contract_capture_flag (d, false);
 	  if (DECL_CONTEXT (d) == containing_function)
 	    /* We already have an inner proxy.  */
 	    return d;
@@ -4667,14 +4811,28 @@ process_outer_var_ref (tree decl, tsubst_flags_t complain, bool odr_use)
       return error_mark_node;
     }
   /* Do lambda capture when processing the id-expression, not when
-     odr-using a variable.  */
+     odr-using a variable, but uses in a contract must not cause a capture.  */
   if (!odr_use && context == containing_function)
-    decl = add_default_capture (lambda_stack,
-				/*id=*/DECL_NAME (decl), initializer);
+    {
+      decl = add_default_capture (lambda_stack,
+				  /*id=*/DECL_NAME (decl), initializer);
+      if (flag_contracts && processing_contract_condition)
+	set_contract_capture_flag (decl, true);
+    }
+  /* Capture was attempted above; whether it's really needed depends on
+     an evaluated-ness we don't know yet.  Defer instead of diagnosing:
+     a later, non-probe pass will complain if the operand turns out
+     evaluated, and there's nothing to complain about if it doesn't.  */
+  else if (in_typeid_probe)
+    return var;
   /* Only an odr-use of an outer automatic variable causes an
      error, and a constant variable can decay to a prvalue
      constant without odr-use.  So don't complain yet.  */
   else if (!odr_use && decl_constant_var_p (var))
+    return var;
+  /* Don't complain when DECL is dependent, because it can turn out to
+     be constant (and therefore needing no capture) when instantiating.  */
+  else if (VAR_P (var) && instantiation_dependent_expression_p (var))
     return var;
   else if (lambda_expr)
     {
@@ -4694,7 +4852,7 @@ process_outer_var_ref (tree decl, tsubst_flags_t complain, bool odr_use)
 	}
       return error_mark_node;
     }
-  else if (processing_contract_condition && (TREE_CODE (decl) == PARM_DECL))
+  else if (processing_contract_condition && TREE_CODE (decl) == PARM_DECL)
     /* Use of a parameter in a contract condition is fine.  */
     return decl;
   else
@@ -6924,7 +7082,12 @@ cxx_omp_map_array_section (location_t loc, tree t)
       if (TREE_CODE (TREE_TYPE (t)) == REFERENCE_TYPE)
 	t = convert_from_reference (t);
 
-      t = build_array_ref (loc, t, low);
+      if (TYPE_PTR_P (TREE_TYPE (t))
+	  || TREE_CODE (TREE_TYPE (t)) == ARRAY_TYPE)
+	t = build_array_ref (loc, t, low);
+      else
+	/* handle_omp_array_sections_1 has already diagnosed the error.  */
+	t = error_mark_node;
     }
 
   return t;
@@ -7416,22 +7579,66 @@ finish_omp_reduction_clause (tree c, bool *need_default_ctor, bool *need_dtor)
 bool
 cp_check_omp_declare_mapper (tree udm)
 {
-  tree type = TREE_TYPE (udm);
-  location_t loc = DECL_SOURCE_LOCATION (udm);
+  tree var = OMP_DECLARE_MAPPER_DECL (udm);
+  tree type = TREE_TYPE (var);
+  location_t loc = DECL_SOURCE_LOCATION (var);
 
   if (type == error_mark_node)
     return false;
 
-  if (!processing_template_decl && !RECORD_OR_UNION_TYPE_P (type))
+  if (processing_template_decl)
+    return true;
+
+  if (!RECORD_OR_UNION_TYPE_P (type))
     {
       error_at (loc, "%qT is not a struct, union or class type in "
 		"%<#pragma omp declare mapper%>", type);
       return false;
     }
-  if (!processing_template_decl && CLASSTYPE_VBASECLASSES (type))
+  if (CLASSTYPE_VBASECLASSES (type))
     {
       error_at (loc, "%qT must not be a virtual base class in "
 		"%<#pragma omp declare mapper%>", type);
+      return false;
+    }
+
+  tree c = OMP_DECLARE_MAPPER_CLAUSES (udm);
+  for ( ; c; c = OMP_CLAUSE_CHAIN (c))
+    {
+      tree dvar = OMP_CLAUSE_DECL (c);
+      while (!DECL_P (dvar) && TREE_OPERAND_LENGTH (dvar))
+	dvar = TREE_OPERAND (dvar, 0);
+      if (dvar == var)
+	break;
+    }
+  if (!c)
+    {
+      // After template handling, the var is mangled, demangle it
+      const char *name = IDENTIFIER_POINTER (DECL_NAME (var));
+      char *n = NULL;
+      if (startswith (name, "omp declare mapper "))
+	{
+	  name += strlen ("omp declare mapper ");
+	  n = xstrdup (name);
+	  n[strchr (n, '~')-n] = '\0';
+	  name = n;
+	}
+      error_at (loc, "at least one %<map%> clause must map %qs or an "
+		     "element of it", name);
+      if (n)
+	free (n);
+      return false;
+    }
+
+  /* FIXME: The vardecl created for the mapper_id uses DECL_DECLARED_CONSTEXPR_P
+     = 1, which is set to false in finalize_literal_type_property for C++ < 11,
+     leading to an error in ensure_literal_type_for_constexpr_object.
+     Examples (compile with -std=c++98): gcc.dg/gomp/declare-mapper-13.c and
+     libgomp.c++/declare-mapper-{5,6,8}.C.  */
+  if (cxx_dialect < cxx11)
+    {
+      sorry_at (loc, "%<#pragma omp declare mapper%> with %<-std=%> set to "
+		     "before C++11");
       return false;
     }
 
@@ -7511,7 +7718,7 @@ cp_finish_omp_clause_doacross_sink (tree sink_clause)
   return false;
 }
 
-/* Finish OpenMP iterators ITER.  Return true if they are errorneous
+/* Finish OpenMP iterators ITER.  Return true if they are erroneous
    and clauses containing them should be removed.  */
 
 static bool
@@ -7520,10 +7727,10 @@ cp_omp_finish_iterators (tree iter)
   bool ret = false;
   for (tree it = iter; it; it = TREE_CHAIN (it))
     {
-      tree var = TREE_VEC_ELT (it, 0);
-      tree begin = TREE_VEC_ELT (it, 1);
-      tree end = TREE_VEC_ELT (it, 2);
-      tree step = TREE_VEC_ELT (it, 3);
+      tree var = OMP_ITERATOR_VAR (it);
+      tree begin = OMP_ITERATOR_BEGIN (it);
+      tree end = OMP_ITERATOR_END (it);
+      tree step = OMP_ITERATOR_STEP (it);
       tree orig_step;
       tree type = TREE_TYPE (var);
       location_t loc = DECL_SOURCE_LOCATION (var);
@@ -7621,10 +7828,10 @@ cp_omp_finish_iterators (tree iter)
       tree it2;
       for (it2 = TREE_CHAIN (it); it2; it2 = TREE_CHAIN (it2))
 	{
-	  tree var2 = TREE_VEC_ELT (it2, 0);
-	  tree begin2 = TREE_VEC_ELT (it2, 1);
-	  tree end2 = TREE_VEC_ELT (it2, 2);
-	  tree step2 = TREE_VEC_ELT (it2, 3);
+	  tree var2 = OMP_ITERATOR_VAR (it2);
+	  tree begin2 = OMP_ITERATOR_BEGIN (it2);
+	  tree end2 = OMP_ITERATOR_END (it2);
+	  tree step2 = OMP_ITERATOR_STEP (it2);
 	  location_t loc2 = DECL_SOURCE_LOCATION (var2);
 	  if (cp_walk_tree (&begin2, find_omp_placeholder_r, var, &pset))
 	    {
@@ -7650,14 +7857,14 @@ cp_omp_finish_iterators (tree iter)
 	  ret = true;
 	  continue;
 	}
-      TREE_VEC_ELT (it, 1) = begin;
-      TREE_VEC_ELT (it, 2) = end;
+      OMP_ITERATOR_BEGIN (it) = begin;
+      OMP_ITERATOR_END (it) = end;
       if (processing_template_decl)
-	TREE_VEC_ELT (it, 3) = orig_step;
+	OMP_ITERATOR_STEP (it) = orig_step;
       else
 	{
-	  TREE_VEC_ELT (it, 3) = step;
-	  TREE_VEC_ELT (it, 4) = orig_step;
+	  OMP_ITERATOR_STEP (it) = step;
+	  OMP_ITERATOR_ORIG_STEP (it) = orig_step;
 	}
     }
   return ret;
@@ -7804,6 +8011,9 @@ finish_omp_clauses (tree clauses, enum c_omp_region_type ort)
   bool init_use_destroy_seen = false;
   tree init_no_targetsync_clause = NULL_TREE;
   tree depend_clause = NULL_TREE;
+
+  if (!openacc)
+    clauses = omp_remove_duplicate_maps (clauses, true);
 
   bitmap_obstack_initialize (NULL);
   bitmap_initialize (&generic_head, &bitmap_default_obstack);
@@ -9544,7 +9754,8 @@ finish_omp_clauses (tree clauses, enum c_omp_region_type ort)
 	      {
 		if (bitmap_bit_p (&generic_head, DECL_UID (t))
 		    || bitmap_bit_p (&firstprivate_head, DECL_UID (t))
-		    || bitmap_bit_p (&map_firstprivate_head, DECL_UID (t)))
+		    || (openacc
+			&& bitmap_bit_p (&map_firstprivate_head, DECL_UID (t))))
 		  {
 		    error_at (OMP_CLAUSE_LOCATION (c),
 			      "%qD appears more than once in data clauses", t);
@@ -9568,6 +9779,7 @@ finish_omp_clauses (tree clauses, enum c_omp_region_type ort)
 	    else if (bitmap_bit_p (&map_head, DECL_UID (t))
 		     && !bitmap_bit_p (&map_field_head, DECL_UID (t))
 		     && ort != C_ORT_OMP
+		     && ort != C_ORT_OMP_TARGET
 		     && ort != C_ORT_OMP_EXIT_DATA)
 	      {
 		if (OMP_CLAUSE_CODE (c) != OMP_CLAUSE_MAP)
@@ -10598,6 +10810,7 @@ finish_omp_clauses (tree clauses, enum c_omp_region_type ort)
       && (!init_use_destroy_seen
 	  || (init_seen && init_no_targetsync_clause)))
     {
+      auto_diagnostic_group d;
       error_at (OMP_CLAUSE_LOCATION (depend_clause),
 		"%<depend%> clause requires action clauses with "
 		"%<targetsync%> interop-type");
@@ -10971,7 +11184,7 @@ finish_omp_target_clauses_r (tree *tp, int *walk_subtrees, void *ptr)
     }
 
   /* When the current_function_decl is a lambda function, the closure object
-     argument's type seems to not yet have fields layed out, so a recording
+     argument's type seems to not yet have fields laid out, so a recording
      of DECL_VALUE_EXPRs during the target body walk seems the only way to
      find them.  */
   if (current_closure
@@ -12466,6 +12679,7 @@ finish_omp_barrier (void)
 {
   tree fn = builtin_decl_explicit (BUILT_IN_GOMP_BARRIER);
   releasing_vec vec;
+  vec->quick_push (build_int_cst (integer_type_node, GOMP_BARRIER_EXPLICIT));
   tree stmt = finish_call_expr (fn, &vec, false, false, tf_warning_or_error);
   finish_expr_stmt (stmt);
 }
@@ -13232,7 +13446,7 @@ finish_decltype_type (tree expr, bool id_expression_or_member_access_p,
 	 is T , and decltype((r)) is const T&."  */
       expr = strip_contract_const_wrapper (expr);
 
-      if (INDIRECT_REF_P (expr)
+      if (REFERENCE_REF_P (expr)
 	  || TREE_CODE (expr) == VIEW_CONVERT_EXPR)
         /* This can happen when the expression is, e.g., "a.b". Just
            look at the underlying operand.  */
@@ -14170,8 +14384,8 @@ trait_expr_value (cp_trait_kind kind, tree type1, tree type2)
     case CPTK_IS_DEDUCIBLE:
       return type_targs_deducible_from (type1, type2);
 
-    case CPTK_IS_CONSTEVAL_ONLY:
-      return consteval_only_p (type1);
+    case CPTK_IS_STRUCTURAL:
+      return structural_type_p (type1);
 
     /* __array_rank, __builtin_type_order and __builtin_structured_binding_size
        are handled in finish_trait_expr.  */
@@ -14204,10 +14418,13 @@ trait_expr_value (cp_trait_kind kind, tree type1, tree type2)
    If TYPE is a non-union class type, it must be complete.
 
    When KIND == 4:
-   If TYPE is a class type, it must be complete.  */
+   If TYPE is a class type, it must be complete.
+
+   If COMPLAIN is not tf_none, we permerror and return false if that doesn't
+   produce a hard error.  */
 
 static bool
-check_trait_type (tree type, int kind = 1)
+check_trait_type (tree type, int kind, tsubst_flags_t complain)
 {
   if (type == NULL_TREE)
     return true;
@@ -14215,7 +14432,7 @@ check_trait_type (tree type, int kind = 1)
   if (TREE_CODE (type) == TREE_VEC)
     {
       for (tree arg : tree_vec_range (type))
-	if (!check_trait_type (arg, kind))
+	if (!check_trait_type (arg, kind, complain))
 	  return false;
       return true;
     }
@@ -14234,9 +14451,12 @@ check_trait_type (tree type, int kind = 1)
 
   type = complete_type (strip_array_types (type));
   if (!COMPLETE_TYPE_P (type)
-      && cxx_incomplete_type_diagnostic (NULL_TREE, type,
-					 diagnostics::kind::permerror)
-      && !flag_permissive)
+      /* If we're not emitting error messages, always return false for
+	 incomplete types.  */
+      && (complain == tf_none
+	  || (cxx_incomplete_type_diagnostic (NULL_TREE, type,
+					      diagnostics::kind::permerror)
+	      && !flag_permissive)))
     return false;
   return true;
 }
@@ -14306,7 +14526,8 @@ finish_structured_binding_size (location_t loc, tree type,
 /* Process a trait expression.  */
 
 tree
-finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
+finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2,
+		   tsubst_flags_t complain/*=tf_warning_or_error*/)
 {
   if (type1 == error_mark_node
       || type2 == error_mark_node)
@@ -14344,7 +14565,7 @@ finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
     case CPTK_IS_DESTRUCTIBLE:
     case CPTK_IS_NOTHROW_DESTRUCTIBLE:
     case CPTK_IS_TRIVIALLY_DESTRUCTIBLE:
-      if (!check_trait_type (type1))
+      if (!check_trait_type (type1, /*kind=*/1, complain))
 	return error_mark_node;
       break;
 
@@ -14353,9 +14574,9 @@ finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
     case CPTK_IS_STD_LAYOUT:
     case CPTK_IS_TRIVIAL:
     case CPTK_IS_TRIVIALLY_COPYABLE:
-    case CPTK_IS_CONSTEVAL_ONLY:
+    case CPTK_IS_STRUCTURAL:
     case CPTK_HAS_UNIQUE_OBJ_REPRESENTATIONS:
-      if (!check_trait_type (type1, /* kind = */ 2))
+      if (!check_trait_type (type1, /* kind = */ 2, complain))
 	return error_mark_node;
       break;
 
@@ -14363,7 +14584,7 @@ finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
     case CPTK_IS_EMPTY:
     case CPTK_IS_POLYMORPHIC:
     case CPTK_HAS_VIRTUAL_DESTRUCTOR:
-      if (!check_trait_type (type1, /* kind = */ 3))
+      if (!check_trait_type (type1, /* kind = */ 3, complain))
 	return error_mark_node;
       break;
 
@@ -14372,7 +14593,7 @@ finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
     case CPTK_IS_AGGREGATE:
     case CPTK_IS_FINAL:
     case CPTK_IS_IMPLICIT_LIFETIME:
-      if (!check_trait_type (type1, /* kind = */ 4))
+      if (!check_trait_type (type1, /* kind = */ 4, complain))
 	return error_mark_node;
       break;
 
@@ -14383,8 +14604,6 @@ finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
     case CPTK_IS_NOTHROW_CONVERTIBLE:
     case CPTK_IS_NOTHROW_INVOCABLE:
     case CPTK_IS_TRIVIALLY_CONSTRUCTIBLE:
-    case CPTK_REF_CONSTRUCTS_FROM_TEMPORARY:
-    case CPTK_REF_CONVERTS_FROM_TEMPORARY:
       /* Don't check completeness for direct reference binding.  */;
       if (same_type_ref_bind_p (kind, type1, type2))
 	break;
@@ -14393,8 +14612,10 @@ finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
     case CPTK_IS_ASSIGNABLE:
     case CPTK_IS_NOTHROW_ASSIGNABLE:
     case CPTK_IS_TRIVIALLY_ASSIGNABLE:
-      if (!check_trait_type (type1)
-	  || !check_trait_type (type2))
+    case CPTK_REF_CONSTRUCTS_FROM_TEMPORARY:
+    case CPTK_REF_CONVERTS_FROM_TEMPORARY:
+      if (!check_trait_type (type1, /*kind=*/1, complain)
+	  || !check_trait_type (type2, /*kind=*/1, complain))
 	return error_mark_node;
       break;
 
@@ -14402,14 +14623,14 @@ finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
     case CPTK_IS_POINTER_INTERCONVERTIBLE_BASE_OF:
       if (NON_UNION_CLASS_TYPE_P (type1) && NON_UNION_CLASS_TYPE_P (type2)
 	  && !same_type_ignoring_top_level_qualifiers_p (type1, type2)
-	  && !complete_type_or_else (type2, NULL_TREE))
+	  && !complete_type_or_maybe_complain (type2, NULL_TREE, complain))
 	/* We already issued an error.  */
 	return error_mark_node;
       break;
 
     case CPTK_IS_VIRTUAL_BASE_OF:
       if (NON_UNION_CLASS_TYPE_P (type1) && NON_UNION_CLASS_TYPE_P (type2)
-	  && !complete_type_or_else (type2, NULL_TREE))
+	  && !complete_type_or_maybe_complain (type2, NULL_TREE, complain))
 	/* We already issued an error.  */
 	return error_mark_node;
       break;
@@ -14446,17 +14667,17 @@ finish_trait_expr (location_t loc, cp_trait_kind kind, tree type1, tree type2)
       return maybe_wrap_with_location (type_order_value (type1, type2), loc);
 
     case CPTK_STRUCTURED_BINDING_SIZE:
-      return finish_structured_binding_size (loc, type1, tf_warning_or_error);
+      return finish_structured_binding_size (loc, type1, complain);
 
     case CPTK_IS_LAYOUT_COMPATIBLE:
       if (!array_of_unknown_bound_p (type1)
 	  && TREE_CODE (type1) != VOID_TYPE
-	  && !complete_type_or_else (type1, NULL_TREE))
+	  && !complete_type_or_maybe_complain (type1, NULL_TREE, complain))
 	/* We already issued an error.  */
 	return error_mark_node;
       if (!array_of_unknown_bound_p (type2)
 	  && TREE_CODE (type2) != VOID_TYPE
-	  && !complete_type_or_else (type2, NULL_TREE))
+	  && !complete_type_or_maybe_complain (type2, NULL_TREE, complain))
 	/* We already issued an error.  */
 	return error_mark_node;
       break;
@@ -14832,12 +15053,6 @@ cp_build_bit_cast (location_t loc, tree type, tree arg,
 	{
 	  error_at (loc, "%<__builtin_bit_cast%> destination type %qT "
 			 "is not trivially copyable", type);
-	  return error_mark_node;
-	}
-      if (consteval_only_p (type) || consteval_only_p (arg))
-	{
-	  error_at (loc, "%<__builtin_bit_cast%> cannot be used with "
-			 "consteval-only types");
 	  return error_mark_node;
 	}
     }

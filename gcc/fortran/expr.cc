@@ -1193,7 +1193,7 @@ is_CFI_desc (gfc_symbol *sym, gfc_expr *e)
       && e && e->expr_type == EXPR_VARIABLE)
     sym = e->symtree->n.sym;
 
-  if (sym && sym->attr.dummy
+  if (sym && sym->attr.dummy && sym->ns && sym->ns->proc_name
       && sym->ns->proc_name->attr.is_bind_c
       && (sym->attr.pointer
 	  || sym->attr.allocatable
@@ -1222,7 +1222,8 @@ is_subref_array (gfc_expr * e)
 
   sym = e->symtree->n.sym;
 
-  if (sym->attr.subref_array_pointer)
+  if (sym->attr.subref_array_pointer
+      || gfc_is_span_addressed_dummy (sym))
     return true;
 
   seen_array = false;
@@ -2162,16 +2163,26 @@ simplify_const_ref (gfc_expr *p)
       switch (p->ref->type)
 	{
 	case REF_ARRAY:
+	  /* <type/kind spec>, parameter :: x(<int>) = scalar_expr
+	     will generate this.  */
+	  if (p->expr_type != EXPR_ARRAY)
+	    {
+	      if (p->ref->u.ar.type == AR_ELEMENT)
+		{
+		  int dim;
+		  for (dim = 0; dim < p->ref->u.ar.dimen; dim++)
+		    if (!p->ref->u.ar.start[dim]
+			|| p->ref->u.ar.start[dim]->expr_type != EXPR_CONSTANT)
+		      return true;
+		}
+
+	      remove_subobject_ref (p, NULL);
+	      break;
+	    }
+
 	  switch (p->ref->u.ar.type)
 	    {
 	    case AR_ELEMENT:
-	      /* <type/kind spec>, parameter :: x(<int>) = scalar_expr
-		 will generate this.  */
-	      if (p->expr_type != EXPR_ARRAY)
-		{
-		  remove_subobject_ref (p, NULL);
-		  break;
-		}
 	      if (!find_array_element (p->value.constructor, &p->ref->u.ar, &cons))
 		return false;
 
@@ -2505,6 +2516,9 @@ gfc_simplify_expr (gfc_expr *p, int type)
 	      gfc_extract_hwi (p->ref->u.ss.start, &start);
 	      start--;  /* Convert from one-based to zero-based.  */
 	    }
+
+	  if (start < 0)
+	    return false;
 
 	  end = p->value.character.length;
 	  if (p->ref && p->ref->u.ss.end)
@@ -3400,7 +3414,7 @@ gfc_check_init_expr (gfc_expr *e)
       break;
 
     case EXPR_STRUCTURE:
-      t = e->ts.is_iso_c ? true : false;
+      t = e->ts.is_iso_c;
       if (t)
 	break;
 
@@ -4985,7 +4999,7 @@ gfc_check_assign_symbol (gfc_symbol *sym, gfc_component *comp, gfc_expr *rvalue)
       if (flag)
 	{
 	  gfc_error ("The component %qs at %L of derived type %qs has "
-		     "paramterized type or array length parameters, which is "
+		     "parameterized type or array length parameters, which is "
 		     "not compatible with a default initializer",
 		      comp->name, &comp->initializer->where, sym->name);
 	  return false;
@@ -6099,7 +6113,7 @@ gfc_expr_check_typed (gfc_expr* e, gfc_namespace* ns, bool strict)
   check_typed_ns = ns;
   error_found = gfc_traverse_expr (e, NULL, &expr_check_typed_help, 0);
 
-  return error_found ? false : true;
+  return !error_found;
 }
 
 
@@ -7112,10 +7126,16 @@ gfc_pdt_find_component_copy_initializer (gfc_symbol *sym, const char *name)
 bool has_parameterized_comps (gfc_symbol * der_type)
 {
   bool parameterized_comps = false;
+
+  if (!der_type->attr.pdt_type && !der_type->attr.pdt_comp)
+    return false;
+
   for (gfc_component *c = der_type->components; c; c = c->next)
     if (c->attr.pdt_array || c->attr.pdt_string)
       parameterized_comps = true;
-    else if (IS_PDT (c) && strcmp (der_type->name, c->ts.u.derived->name))
-      parameterized_comps = has_parameterized_comps (c->ts.u.derived);
+    else if (IS_PDT (c) && strcmp (der_type->name, c->ts.u.derived->name)
+	     && has_parameterized_comps (c->ts.u.derived))
+      parameterized_comps = true;
+
   return parameterized_comps;
 }

@@ -76,8 +76,6 @@
  */
 
 const char * cobol_filename();
-bool is_fixed_format();
-bool is_reference_format();
 
 struct line_t {
   char *p, *pend;
@@ -105,8 +103,8 @@ static void
 verify_bounds( size_t pos, size_t size, const char input[] ) {
   gcc_assert(pos < size );
   if( !( pos < size) ) {
-    cbl_internal_error( "REPLACING %zu characters exceeds system capacity"
-                        "'%s'", pos, input);
+    cbl_internal_error( "REPLACING %lu characters exceeds system capacity %qs",
+                        (unsigned long)pos, input);
   }
 }
 
@@ -123,14 +121,14 @@ verify_bounds( size_t pos, size_t size, const char input[] ) {
  * directive.
  */
 const char *
-esc( size_t len, const char input[] ) {
+esc( size_t len, const char input[], bool is_fixed_format ) {
   static const char space[]  = "([,;]?[[:space:]])+";
-  static const char spaceD[] = "(\n {6}D" "|" "[,;]?[[:space:]])+";
+  static const char spaceD[] = "(\n {6}\x8D" "|" "[,;]?[[:space:]])+";
   static char buffer[64 * 1024];
   char *p = buffer;
   const char *eoinput = input + len;
 
-  const char *spacex = is_reference_format()? spaceD : space;
+  const char *spacex = is_fixed_format? spaceD : space;
 
   for( const char *s=input; *s && s < eoinput; s++ ) {
     *p = '\0';
@@ -287,21 +285,35 @@ copybook_elem_t::open_file( const char directory[], bool literally ) {
       error_msg(source.loc, "recursive copybook: '%s' includes itself", path);
       (void)! close(fd);
       fd = -1;
+    } else {
+      cbl_message(LexInputN, "opening %qs for input", source.name);
     }
     return fd;
   }
   gcc_assert( ! literally );
 
   free(copier);
+  
+  extern int yydebug;
+  if( yydebug ) {
+    std::string pattern(path);
+    pattern += "{";
+    auto comma = "";
+    for( const auto suffix : suffixes ) {
+      pattern += comma;
+      pattern += suffix;
+      comma = ",";
+    }
+    pattern += "}";
+    dbgmsg("%s: trying %s", __func__, pattern.c_str());
+  }
 
   for( auto suffix : suffixes ) {
     std::string pattern(path);
     pattern += suffix;
-    dbgmsg("%s: trying %s", __func__, pattern.c_str());
-
     auto filename = pattern.c_str();
+    
     if( (this->fd = open(filename, O_RDONLY)) != -1 ) {
-      dbgmsg("found copybook file %s", filename);
       this->source.name = xstrdup(filename);
       if( ! cobol_filename(this->source.name, inode_of(fd)) ) {
         error_msg(source.loc, "recursive copybook: '%s' includes itself",

@@ -63,7 +63,6 @@ along with GCC; see the file COPYING3.  If not see
 #include "rtx-vector-builder.h"
 #include "gimple.h"
 #include "gimple-ssa.h"
-#include "gimplify.h"
 #include "bbitmap.h"
 
 struct target_rtl default_target_rtl;
@@ -2607,7 +2606,7 @@ address_reload_context::emit_autoinc (rtx value, poly_int64 inc_amount)
 {
   /* Since we're going to call recog, and might be called within recog,
      we need to ensure we save and restore recog_data.  */
-  recog_data_saver recog_save;
+  recog_state_saver recog_save;
 
   /* REG or MEM to be copied and incremented.  */
   rtx incloc = XEXP (value, 0);
@@ -4037,6 +4036,9 @@ try_split (rtx pat, rtx_insn *trial, int last)
 	      p = &XEXP (*p, 1);
 	    *p = CALL_INSN_FUNCTION_USAGE (trial);
 
+	    /* Preserve the ABI information from the original call.  */
+	    CALL_INSN_ABI_ID (insn) = CALL_INSN_ABI_ID (trial);
+
 	    /* If the old call was a sibling call, the new one must
 	       be too.  */
 	    SIBLING_CALL_P (insn) = SIBLING_CALL_P (trial);
@@ -4226,6 +4228,7 @@ make_call_insn_raw (rtx pattern)
   INSN_CODE (insn) = -1;
   REG_NOTES (insn) = NULL;
   CALL_INSN_FUNCTION_USAGE (insn) = NULL;
+  CALL_INSN_ABI_ID (insn) = 0;
   INSN_LOCATION (insn) = curr_insn_location ();
   BLOCK_FOR_INSN (insn) = NULL;
 
@@ -6627,6 +6630,7 @@ emit_copy_of_insn_after (rtx_insn *insn, rtx_insn *after)
       if (CALL_INSN_FUNCTION_USAGE (insn))
 	CALL_INSN_FUNCTION_USAGE (new_rtx)
 	  = copy_insn (CALL_INSN_FUNCTION_USAGE (insn));
+      CALL_INSN_ABI_ID (new_rtx) = CALL_INSN_ABI_ID (insn);
       SIBLING_CALL_P (new_rtx) = SIBLING_CALL_P (insn);
       RTL_CONST_CALL_P (new_rtx) = RTL_CONST_CALL_P (insn);
       RTL_PURE_CALL_P (new_rtx) = RTL_PURE_CALL_P (insn);
@@ -7086,6 +7090,18 @@ complete_seq (const uint8_t *seq, rtx *operands)
 {
   rtx_expander (seq, operands).expand_seq ();
   return end_sequence ();
+}
+
+/* Note in the dump file that WHAT, which names a define_split or a
+   define_peephole2 and where it came from, is being applied.  genemit.cc
+   emits a call to this rather than the test and the fprintf, so that the
+   dump is written out once instead of once per pattern.  */
+
+void
+note_split (const char *what)
+{
+  if (dump_file)
+    fprintf (dump_file, "Splitting with %s\n", what);
 }
 
 /* Initialize fields of rtl_data related to stack alignment.  */

@@ -607,8 +607,7 @@ private:
 					   tree *evolution_of_loop, int limit);
   t_bool follow_ssa_edge_inner_loop_phi (gphi *loop_phi_node,
 					 tree *evolution_of_loop, int limit);
-  tree add_to_evolution (tree chrec_before, enum tree_code code,
-			 tree to_add, gimple *at_stmt);
+  tree add_to_evolution (tree chrec_before, tree to_add, gimple *at_stmt);
   tree add_to_evolution_1 (tree chrec_before, tree to_add, gimple *at_stmt);
 
   class loop *loop;
@@ -706,7 +705,7 @@ scev_dfs::add_to_evolution_1 (tree chrec_before, tree to_add, gimple *at_stmt)
       /* When we add the first evolution we need to replace the symbolic
 	 evolution we've put in when the DFS reached the loop PHI node
 	 with the initial value.  There's only a limited cases of
-	 extra operations ontop of that symbol allowed, namely
+	 extra operations on top of that symbol allowed, namely
 	 sign-conversions we can look through.  For other cases we leave
 	 the symbolic initial condition which causes build_polynomial_chrec
 	 to return chrec_dont_know.  See PR42512, PR66375 and PR107176 for
@@ -853,10 +852,8 @@ scev_dfs::add_to_evolution_1 (tree chrec_before, tree to_add, gimple *at_stmt)
 */
 
 tree
-scev_dfs::add_to_evolution (tree chrec_before, enum tree_code code,
-			    tree to_add, gimple *at_stmt)
+scev_dfs::add_to_evolution (tree chrec_before, tree to_add, gimple *at_stmt)
 {
-  tree type = chrec_type (to_add);
   tree res = NULL_TREE;
 
   if (to_add == NULL_TREE)
@@ -877,25 +874,6 @@ scev_dfs::add_to_evolution (tree chrec_before, enum tree_code code,
       fprintf (dump_file, ")\n  (to_add = ");
       print_generic_expr (dump_file, to_add);
       fprintf (dump_file, ")\n");
-    }
-
-  if (code == MINUS_EXPR)
-    {
-      if (INTEGRAL_TYPE_P (type)
-	  && TYPE_OVERFLOW_UNDEFINED (type)
-	  && !expr_not_equal_to (to_add,
-				 wi::to_wide (TYPE_MIN_VALUE (type))))
-	{
-	  tree utype = unsigned_type_for (type);
-	  to_add = chrec_convert_rhs (utype, to_add);
-	  to_add = chrec_fold_multiply (utype, to_add,
-					build_int_cst_type (utype, -1));
-	  to_add = chrec_convert_rhs (type, to_add);
-	}
-      else
-	to_add = chrec_fold_multiply (type, to_add, SCALAR_FLOAT_TYPE_P (type)
-				      ? build_real (type, dconstm1)
-				      : build_int_cst_type (type, -1));
     }
 
   res = add_to_evolution_1 (chrec_before, to_add, at_stmt);
@@ -942,7 +920,7 @@ scev_dfs::follow_ssa_edge_binary (gimple *at_stmt, tree type, tree rhs0,
 	      res = follow_ssa_edge_expr (at_stmt, rhs0, &evol, limit);
 	      if (res == t_true)
 		*evolution_of_loop = add_to_evolution
-		    (chrec_convert (type, evol, at_stmt), code, rhs1, at_stmt);
+		    (chrec_convert (type, evol, at_stmt), rhs1, at_stmt);
 	      else if (res == t_false)
 		{
 		  res = follow_ssa_edge_expr
@@ -950,7 +928,7 @@ scev_dfs::follow_ssa_edge_binary (gimple *at_stmt, tree type, tree rhs0,
 		  if (res == t_true)
 		    *evolution_of_loop = add_to_evolution
 			(chrec_convert (type, *evolution_of_loop, at_stmt),
-			 code, rhs0, at_stmt);
+			 rhs0, at_stmt);
 		}
 	    }
 
@@ -966,23 +944,12 @@ scev_dfs::follow_ssa_edge_binary (gimple *at_stmt, tree type, tree rhs0,
 	  if (res == t_true)
 	    *evolution_of_loop = add_to_evolution
 		(chrec_convert (type, *evolution_of_loop, at_stmt),
-		 code, rhs0, at_stmt);
+		 rhs0, at_stmt);
 	}
 
       else
 	/* Otherwise, match an assignment under the form:
 	   "a = ... + ...".  */
-	/* And there is nothing to do.  */
-	res = t_false;
-      break;
-
-    case MINUS_EXPR:
-      /* This case is under the form "opnd0 = rhs0 - rhs1".  */
-      if (TREE_CODE (rhs0) == SSA_NAME)
-	gcc_unreachable (); /* Handled in caller.  */
-      else
-	/* Otherwise, match an assignment under the form:
-	   "a = ... - ...".  */
 	/* And there is nothing to do.  */
 	res = t_false;
       break;
@@ -1283,10 +1250,8 @@ scev_dfs::follow_ssa_edge_expr (gimple *at_stmt, tree expr,
       /* Fallthru.  */
     case POINTER_PLUS_EXPR:
     case PLUS_EXPR:
-    case MINUS_EXPR:
       /* This case is under the form "rhs0 +- rhs1".  */
-      if (TREE_CODE (rhs0) == SSA_NAME
-	  && (TREE_CODE (rhs1) != SSA_NAME || code == MINUS_EXPR))
+      if (TREE_CODE (rhs0) == SSA_NAME && TREE_CODE (rhs1) != SSA_NAME)
 	{
 	  /* Match an assignment under the form:
 	     "a = b +- ...".  */
@@ -1295,12 +1260,55 @@ scev_dfs::follow_ssa_edge_expr (gimple *at_stmt, tree expr,
 	  if (res == t_true)
 	    *evolution_of_loop = add_to_evolution
 		(chrec_convert (type, *evolution_of_loop, at_stmt),
-		 code, rhs1, at_stmt);
+		 rhs1, at_stmt);
 	  return res;
 	}
       /* Else search for the SCC in both rhs0 and rhs1.  */
       return follow_ssa_edge_binary (at_stmt, type, rhs0, code, rhs1,
 				     evolution_of_loop, limit);
+
+
+    case MINUS_EXPR:
+      /* This case is under the form "rhs0 - rhs1".  */
+      if (TREE_CODE (rhs0) == SSA_NAME)
+	{
+	  /* Match an assignment under the form:
+	     "a = b +- ...".  */
+	  t_bool res = follow_ssa_edge_expr (at_stmt, rhs0,
+					     evolution_of_loop, limit);
+	  if (res != t_true)
+	    return res;
+	  /* We have to avoid negating INT_MIN given that a) invokes UB,
+	     b) results in a wrong scev_direction.  See PR126171.  */
+	  if (INTEGRAL_TYPE_P (type)
+	      && TYPE_OVERFLOW_UNDEFINED (type)
+	      && !expr_not_equal_to (rhs1,
+				     wi::to_wide (TYPE_MIN_VALUE (type))))
+	    {
+	      tree utype = unsigned_type_for (type);
+	      tree to_add = chrec_convert_rhs (utype, rhs1);
+	      to_add = chrec_fold_multiply (utype, to_add,
+					    build_int_cst_type (utype, -1));
+	      *evolution_of_loop
+		= chrec_convert (utype, *evolution_of_loop, at_stmt);
+	      *evolution_of_loop = add_to_evolution (*evolution_of_loop,
+						     to_add, at_stmt);
+	      *evolution_of_loop
+		= chrec_convert (type, *evolution_of_loop, at_stmt);
+	    }
+	  else
+	    {
+	      tree to_add = chrec_fold_multiply (type, rhs1,
+						 build_minus_one_cst (type));
+	      *evolution_of_loop
+		= add_to_evolution (chrec_convert (type, *evolution_of_loop,
+						   at_stmt),
+				    to_add, at_stmt);
+	    }
+	  return res;
+	}
+      /* There is nothing to do.  */
+      return t_false;
 
     default:
       return t_false;
@@ -1391,10 +1399,19 @@ simplify_peeled_chrec (class loop *loop, tree arg, tree init_cond)
 	  && wi::to_widest (init_cond) == wi::to_widest (left_before)
 	  && !scev_probably_wraps_p (NULL_TREE, left_before, right, NULL,
 				     loop, false))
-	return build_polynomial_chrec (loop->num, init_cond,
-				       chrec_convert (TREE_TYPE (ev),
-						      right, NULL,
-						      false, NULL_TREE));
+	{
+	  tree tp = TREE_TYPE (right);
+
+	  /* We need a sign-extension to make things like
+	     u8(6, 4, 2) => i32(6, 4, 2), instead of i32(6, 260, 514).  */
+	  if (TYPE_UNSIGNED (tp))
+	    right = fold_convert (signed_type_for (tp), right);
+
+	  return build_polynomial_chrec (loop->num, init_cond,
+					 chrec_convert (TREE_TYPE (ev),
+							right, NULL,
+							false, NULL_TREE));
+	}
       return chrec_dont_know;
     }
 
@@ -1408,7 +1425,13 @@ simplify_peeled_chrec (class loop *loop, tree arg, tree init_cond)
 
   /* Transform (init, {left, right}_LOOP)_LOOP to {init, right}_LOOP
      if "left" equals to "init + right".  */
-  if (operand_equal_p (left, step_val, 0))
+  if (operand_equal_p (left, step_val, 0)
+      && ((!POINTER_TYPE_P (type) && !INTEGRAL_TYPE_P (type))
+	  || TYPE_OVERFLOW_WRAPS (type)
+	  /* When overflow in the type doesn't wrap, make sure the
+	     resulting CHREC does not either.  */
+	  || !scev_probably_wraps_p (NULL_TREE, init_cond, right, NULL,
+				     loop, false)))
     {
       if (dump_file && (dump_flags & TDF_SCEV))
 	fprintf (dump_file, "Simplify PEELED_CHREC into POLYNOMIAL_CHREC.\n");
@@ -1430,7 +1453,13 @@ simplify_peeled_chrec (class loop *loop, tree arg, tree init_cond)
 
   /* Transform (init, {left, right}_LOOP)_LOOP to {init, right}_LOOP
      if "left" equals to "init + right".  */
-  if (aff_combination_zero_p (&aff1))
+  if (aff_combination_zero_p (&aff1)
+      && ((!POINTER_TYPE_P (type) && !INTEGRAL_TYPE_P (type))
+	  || TYPE_OVERFLOW_WRAPS (type)
+	  /* When overflow in the type doesn't wrap, make sure the
+	     resulting CHREC does not either.  */
+	  || !scev_probably_wraps_p (NULL_TREE, init_cond, right, NULL,
+				     loop, false)))
     {
       if (dump_file && (dump_flags & TDF_SCEV))
 	fprintf (dump_file, "Simplify PEELED_CHREC into POLYNOMIAL_CHREC.\n");
@@ -1897,8 +1926,8 @@ interpret_rhs_expr (class loop *loop, gimple *at_stmt,
 	 the operation done in an unsigned type of the same precision
 	 as the final truncation.  We cannot derive a scalar evolution
 	 for the widened operation but for the truncated result.  */
-      if (TREE_CODE (type) == INTEGER_TYPE
-	  && TREE_CODE (TREE_TYPE (rhs1)) == INTEGER_TYPE
+      if (INTEGRAL_NB_TYPE_P (type)
+	  && INTEGRAL_NB_TYPE_P (TREE_TYPE (rhs1))
 	  && TYPE_PRECISION (type) < TYPE_PRECISION (TREE_TYPE (rhs1))
 	  && TYPE_OVERFLOW_UNDEFINED (type)
 	  && TREE_CODE (rhs1) == SSA_NAME
@@ -3119,7 +3148,7 @@ scev_reset (void)
 
    We do not use information whether TYPE can overflow so it is safe to
    use this test even for derived IVs not computed every iteration or
-   hypotetical IVs to be inserted into code.  */
+   hypothetical IVs to be inserted into code.  */
 
 bool
 iv_can_overflow_p (class loop *loop, tree type, tree base, tree step)
@@ -3629,7 +3658,7 @@ expression_expensive_p (tree expr, bool *cond_overflow_p)
 	  /* ???  Both the explicit unsharing and gimplification of expr will
 	     expand shared trees to multiple copies.
 	     Guard against exponential growth by counting the visits and
-	     comparing againt the number of original nodes.  Allow a tiny
+	     comparing against the number of original nodes.  Allow a tiny
 	     bit of duplication to catch some additional optimizations.  */
 	  || expanded_size > (cache.elements () + 1));
 }
@@ -3833,16 +3862,83 @@ analyze_and_compute_bitop_with_inv_effect (class loop* loop, tree phidef,
 
   if (code1 == BIT_XOR_EXPR)
     {
-       if (!tree_fits_uhwi_p (niter))
-	return NULL_TREE;
-       unsigned HOST_WIDE_INT niter_num;
-       niter_num = tree_to_uhwi (niter);
-       if (niter_num % 2 != 0)
-	match_op[0] =  build_zero_cst (type);
+      tree niter_type = TREE_TYPE (niter);
+      tree one = build_one_cst (niter_type);
+      tree contributes = fold_build2 (BIT_XOR_EXPR, niter_type,
+				      fold_build2 (BIT_AND_EXPR, niter_type,
+						   niter, one),
+				      one);
+      /* mask is all-ones when the invariant contributes, zero otherwise.  */
+      tree mask = fold_build1 (NEGATE_EXPR, type,
+			       fold_convert (type, contributes));
+      match_op[0] = fold_build2 (BIT_AND_EXPR, type, match_op[0], mask);
     }
 
   inv = PHI_ARG_DEF_FROM_EDGE (header_phi, loop_preheader_edge (loop));
   return fold_build2 (code1, type, inv, match_op[0]);
+}
+
+/* Try to compute the final value of PHIDEF when PHIDEF is the result of a
+   loop-header PHI.
+
+   This handles the nonzero-latch-count delayed-value form:
+
+     y_phi = PHI <latch_arg (latch), init (preheader)>
+
+   If the latch count is known to be nonzero, the final value is:
+
+     latch_arg evaluated at iteration niter - 1
+
+   Return NULL_TREE if the pattern does not apply.  */
+static tree
+compute_final_value_from_loop_phi_latch (class loop *loop,
+	class loop *ex_loop, gphi *header_phi, tree niter, bool* folded_casts)
+{
+  if (gimple_bb (header_phi) != loop->header
+      || gimple_phi_num_args (header_phi) != 2)
+    return NULL_TREE;
+
+  /* If niter is a symbolic value make sure it can never be zero, otherwise we
+     do a bad replacement.  */
+  if (!tree_expr_nonzero_p (niter))
+    return NULL_TREE;
+
+  tree latch_arg = PHI_ARG_DEF_FROM_EDGE (header_phi,
+					  loop_latch_edge (loop));
+
+  tree ev = analyze_scalar_evolution_in_loop (ex_loop,
+					      loop,
+					      latch_arg,
+					      folded_casts);
+  if (ev == chrec_dont_know)
+    return NULL_TREE;
+
+  bool invariant_p;
+  if (no_evolution_in_loop_p (ev, ex_loop->num, &invariant_p) && invariant_p)
+    return ev;
+  else if (TREE_CODE (ev) == POLYNOMIAL_CHREC
+	   && get_chrec_loop (ev) == ex_loop)
+  {
+    tree niter_type = TREE_TYPE (niter);
+    tree prev_iter = fold_build2 (MINUS_EXPR,
+				  niter_type,
+				  niter,
+				  build_one_cst (niter_type));
+
+    tree res = chrec_apply (ex_loop->num, ev, prev_iter);
+    if (res == chrec_dont_know)
+      return NULL_TREE;
+
+    if (chrec_contains_symbols_defined_in_loop (res, ex_loop->num))
+    {
+      res = instantiate_parameters (ex_loop, res);
+      if (res == chrec_dont_know)
+	return NULL_TREE;
+    }
+
+    return res;
+  }
+  return NULL_TREE;
 }
 
 /* Do final value replacement for LOOP, return true if we did anything.  */
@@ -3856,7 +3952,11 @@ final_value_replacement_loop (class loop *loop)
   if (!exit)
     return false;
 
-  tree niter = number_of_latch_executions (loop);
+  class tree_niter_desc niter_desc;
+  if (!number_of_iterations_exit (loop, exit, &niter_desc, false))
+    return false;
+
+  tree niter = niter_desc.niter;
   if (niter == chrec_dont_know)
     return false;
 
@@ -3895,8 +3995,12 @@ final_value_replacement_loop (class loop *loop)
       def = analyze_scalar_evolution_in_loop (ex_loop, loop, def,
 					      &folded_casts);
 
-      tree bitinv_def, bit_def;
+      tree bitinv_def, bit_def, phi_latch_final_value;
       unsigned HOST_WIDE_INT niter_num;
+
+      gphi *header_phi = TREE_CODE (phidef) == SSA_NAME
+			 ? dyn_cast<gphi*> (SSA_NAME_DEF_STMT (phidef))
+			 : NULL;
 
       if (def != chrec_dont_know)
 	def = compute_overall_effect_of_inner_loop (ex_loop, def);
@@ -3908,9 +4012,11 @@ final_value_replacement_loop (class loop *loop)
 	  tmp &= bit2;
 	if bit2 is an invariant in loop which could simple to
 	tmp &= bit2.  */
-      else if ((bitinv_def
-		= analyze_and_compute_bitop_with_inv_effect (loop,
-							     phidef, niter)))
+      else if (integer_zerop (niter_desc.may_be_zero)
+	       && (bitinv_def
+		   = analyze_and_compute_bitop_with_inv_effect (loop,
+								phidef,
+								niter)))
 	def = bitinv_def;
 
       /* Handle bitwise induction expression.
@@ -3931,6 +4037,16 @@ final_value_replacement_loop (class loop *loop)
 								   phidef,
 								   niter_num)))
 	def = bit_def;
+
+      else if (header_phi
+	       && integer_zerop (niter_desc.may_be_zero)
+	       && (phi_latch_final_value
+		   = compute_final_value_from_loop_phi_latch (loop,
+							      ex_loop,
+							      header_phi,
+							      niter,
+							      &folded_casts)))
+	def = phi_latch_final_value;
 
       bool cond_overflow_p;
       if (!tree_does_not_contain_chrecs (def)

@@ -1131,7 +1131,7 @@ static void
 expand_ubsan_result_store (tree lhs, rtx target, scalar_int_mode mode,
 			   rtx res, rtx_code_label *do_error)
 {
-  if (TREE_CODE (TREE_TYPE (lhs)) == BITINT_TYPE
+  if (BITINT_TYPE_P (TREE_TYPE (lhs))
       && TYPE_PRECISION (TREE_TYPE (lhs)) < GET_MODE_PRECISION (mode))
     {
       int uns = TYPE_UNSIGNED (TREE_TYPE (lhs));
@@ -3229,6 +3229,74 @@ expand_vec_cond_mask_optab_fn (internal_fn, gcall *stmt, convert_optab optab)
 
   gcc_assert (icode != CODE_FOR_nothing);
 
+  /* Find the comparison generating the mask OP0.  */
+  tree cmp_op0 = NULL_TREE;
+  tree cmp_op1 = NULL_TREE;
+  enum tree_code cmp_code = TREE_CODE (op0);
+  if (TREE_CODE_CLASS (cmp_code) == tcc_comparison)
+    {
+      cmp_op0 = TREE_OPERAND (op0, 0);
+      cmp_op1 = TREE_OPERAND (op0, 1);
+    }
+  else if (cmp_code == SSA_NAME)
+    {
+      gimple *def_stmt = get_gimple_for_ssa_name (op0);
+      if (def_stmt && is_gimple_assign (def_stmt))
+	{
+	  cmp_code = gimple_assign_rhs_code (def_stmt);
+	  if (TREE_CODE_CLASS (cmp_code) == tcc_comparison)
+	    {
+	      cmp_op0 = gimple_assign_rhs1 (def_stmt);
+	      cmp_op1 = gimple_assign_rhs2 (def_stmt);
+	    }
+	}
+    }
+
+  /* Decide whether to invert comparison based on rtx_cost.  */
+  if (cmp_op0)
+    {
+      enum tree_code rev_code;
+      tree op_type = TREE_TYPE (cmp_op0);
+      int unsignedp = TYPE_UNSIGNED (op_type);
+      rev_code = invert_tree_comparison (cmp_code, HONOR_NANS (op_type));
+
+      if (rev_code != ERROR_MARK)
+	{
+	  tree cmp_type = TREE_TYPE (op0);
+	  machine_mode cmp_mode = TYPE_MODE (cmp_type);
+	  machine_mode op_mode = TYPE_MODE (op_type);
+	  bool speed_p = optimize_insn_for_speed_p ();
+	  rtx reg = gen_raw_REG (op_mode, LAST_VIRTUAL_REGISTER + 1);
+	  enum rtx_code cmp_rtx_code = convert_tree_comp_to_rtx (cmp_code,
+								 unsignedp);
+	  rtx veccmp = gen_rtx_fmt_ee (cmp_rtx_code, cmp_mode, reg, reg);
+	  int old_cost = rtx_cost (veccmp, cmp_mode, SET, 0, speed_p);
+	  enum rtx_code rev_rtx_code = convert_tree_comp_to_rtx (rev_code,
+								 unsignedp);
+	  PUT_CODE (veccmp, rev_rtx_code);
+	  int new_cost = rtx_cost (veccmp, cmp_mode, SET, 0, speed_p);
+	  if (new_cost < old_cost)
+	    {
+	      op0 = fold_build2_loc (EXPR_LOCATION (op0), rev_code,
+				     cmp_type, cmp_op0, cmp_op1);
+	      std::swap (op1, op2);
+	    }
+
+	  if (dump_file && (dump_flags & TDF_DETAILS))
+	    {
+	      fprintf (dump_file,
+		       ";; %sswapping operands of .VCOND_MASK\n",
+		       new_cost >= old_cost ? "not " : "");
+	      fprintf (dump_file,
+		       ";; cost of original %s: %d\n",
+		       GET_RTX_NAME (cmp_rtx_code), old_cost);
+	      fprintf (dump_file,
+		       ";; cost of replacement %s: %d\n",
+		       GET_RTX_NAME (rev_rtx_code), new_cost);
+	    }
+	}
+    }
+
   mask = expand_normal (op0);
   rtx_op1 = expand_normal (op1);
   rtx_op2 = expand_normal (op2);
@@ -4148,8 +4216,7 @@ expand_crc_optab_fn (internal_fn fn, gcall *stmt, convert_optab optab)
       else
 	/* If it's IFN_CRC_REV generate bit-reversed CRC.  */
 	expand_reversed_crc_table_based (dest, crc, data, polynomial,
-					 TYPE_MODE (data_type),
-					 generate_reflecting_code_standard);
+					 TYPE_MODE (data_type));
 
       /* Now get the return value where it needs to be, taking care to
 	 ensure it's promoted appropriately if the ABI demands it.
@@ -4698,6 +4765,7 @@ set_edom_supported_p (void)
     expand_##TYPE##_optab_fn (fn, stmt, OPTAB##_optab);	\
   }
 #define DEF_INTERNAL_INT_EXT_FN(CODE, FLAGS, OPTAB, TYPE)
+#define DEF_INTERNAL_INTSZ_EXT_FN(CODE, FLAGS, OPTAB, TYPE)
 #define DEF_INTERNAL_SIGNED_OPTAB_FN(CODE, FLAGS, SELECTOR, SIGNED_OPTAB, \
 				     UNSIGNED_OPTAB, TYPE)		\
   static void								\
@@ -5619,6 +5687,13 @@ expand_MASK_CALL (internal_fn, gcall *)
 }
 
 void
+expand_VARYING (internal_fn, gcall *)
+{
+  /* This IFN should reach expand.  */
+  gcc_unreachable ();
+}
+
+void
 expand_MULBITINT (internal_fn, gcall *stmt)
 {
   rtx_mode_t args[6];
@@ -5647,32 +5722,7 @@ expand_FLOATTOBITINT (internal_fn, gcall *stmt)
   rtx arg0 = expand_normal (gimple_call_arg (stmt, 0));
   rtx arg1 = expand_normal (gimple_call_arg (stmt, 1));
   rtx arg2 = expand_normal (gimple_call_arg (stmt, 2));
-  const char *mname = GET_MODE_NAME (mode);
-  unsigned mname_len = strlen (mname);
-  int len = 12 + mname_len;
-  if (DECIMAL_FLOAT_MODE_P (mode))
-    len += 4;
-  char *libfunc_name = XALLOCAVEC (char, len);
-  char *p = libfunc_name;
-  const char *q;
-  if (DECIMAL_FLOAT_MODE_P (mode))
-    {
-#if ENABLE_DECIMAL_BID_FORMAT
-      memcpy (p, "__bid_fix", 9);
-#else
-      memcpy (p, "__dpd_fix", 9);
-#endif
-      p += 9;
-    }
-  else
-    {
-      memcpy (p, "__fix", 5);
-      p += 5;
-    }
-  for (q = mname; *q; q++)
-    *p++ = TOLOWER (*q);
-  memcpy (p, "bitint", 7);
-  rtx fun = init_one_libfunc (libfunc_name);
+  rtx fun = optab_libfunc (bitintfromfp_optab, mode);
   emit_library_call (fun, LCT_NORMAL, VOIDmode, arg0, ptr_mode, arg1,
 		     SImode, arg2, mode);
 }
@@ -5686,32 +5736,7 @@ expand_BITINTTOFLOAT (internal_fn, gcall *stmt)
   machine_mode mode = TYPE_MODE (TREE_TYPE (lhs));
   rtx arg0 = expand_normal (gimple_call_arg (stmt, 0));
   rtx arg1 = expand_normal (gimple_call_arg (stmt, 1));
-  const char *mname = GET_MODE_NAME (mode);
-  unsigned mname_len = strlen (mname);
-  int len = 14 + mname_len;
-  if (DECIMAL_FLOAT_MODE_P (mode))
-    len += 4;
-  char *libfunc_name = XALLOCAVEC (char, len);
-  char *p = libfunc_name;
-  const char *q;
-  if (DECIMAL_FLOAT_MODE_P (mode))
-    {
-#if ENABLE_DECIMAL_BID_FORMAT
-      memcpy (p, "__bid_floatbitint", 17);
-#else
-      memcpy (p, "__dpd_floatbitint", 17);
-#endif
-      p += 17;
-    }
-  else
-    {
-      memcpy (p, "__floatbitint", 13);
-      p += 13;
-    }
-  for (q = mname; *q; q++)
-    *p++ = TOLOWER (*q);
-  *p = '\0';
-  rtx fun = init_one_libfunc (libfunc_name);
+  rtx fun = optab_libfunc (bitinttofp_optab, mode);
   rtx target = expand_expr (lhs, NULL_RTX, VOIDmode, EXPAND_WRITE);
   rtx val = emit_library_call_value (fun, target, LCT_PURE, mode,
 				     arg0, ptr_mode, arg1, SImode);
@@ -5862,4 +5887,18 @@ expand_POPCOUNT (internal_fn fn, gcall *stmt)
       rtx_insn *all_insns = end_sequence ();
       emit_insn (all_insns);
     }
+}
+
+void
+expand_BSWAP (internal_fn fn, gcall *stmt)
+{
+  if (expand_bitquery (fn, stmt))
+    expand_unary_optab_fn (fn, stmt, bswap_optab);
+}
+
+void
+expand_BITREVERSE (internal_fn fn, gcall *stmt)
+{
+  if (expand_bitquery (fn, stmt))
+    expand_unary_optab_fn (fn, stmt, bitreverse_optab);
 }

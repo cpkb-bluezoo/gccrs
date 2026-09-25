@@ -68,15 +68,18 @@ selftest::run_tests ()
   hash_set_tests_cc_tests ();
   vec_cc_tests ();
   pretty_print_cc_tests ();
+  pretty_print_token_buffer_cc_tests ();
   wide_int_cc_tests ();
   ggc_tests_cc_tests ();
   sreal_cc_tests ();
+  profile_count_cc_tests ();
   fibonacci_heap_cc_tests ();
   typed_splay_tree_cc_tests ();
   opt_suggestions_cc_tests ();
   opts_cc_tests ();
   json_cc_tests ();
   json_parser_cc_tests ();
+  json_pointer_parsing_cc_tests ();
   cgraph_cc_tests ();
   optinfo_emit_json_cc_tests ();
   ordered_hash_map_tests_cc_tests ();
@@ -112,6 +115,7 @@ selftest::run_tests ()
 
   /* This one relies on most of the above.  */
   function_tests_cc_tests ();
+  sched_deps_cc_tests ();
 
   /* Run any target-specific selftests.  */
   if (targetm.run_target_selftests)

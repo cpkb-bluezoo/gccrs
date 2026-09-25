@@ -209,12 +209,6 @@ DefaultASTVisitor::visit (AST::AttrInputLiteral &attr_input)
 }
 
 void
-DefaultASTVisitor::visit (AST::AttrInputMacro &attr_input)
-{
-  visit (attr_input.get_macro ());
-}
-
-void
 DefaultASTVisitor::visit (AST::AttrInputExpr &attr_input)
 {
   visit (attr_input.get_expr ());
@@ -765,6 +759,8 @@ DefaultASTVisitor::visit (AST::InlineAsm &expr)
 void
 DefaultASTVisitor::visit (AST::LlvmInlineAsm &expr)
 {
+  visit_outer_attrs (expr);
+
   for (auto &output : expr.get_outputs ())
     visit (output.expr);
 
@@ -1352,25 +1348,10 @@ DefaultASTVisitor::visit (AST::GroupedPattern &pattern)
 }
 
 void
-DefaultASTVisitor::visit (AST::SlicePatternItemsNoRest &items)
-{
-  for (auto &item : items.get_patterns ())
-    visit (item);
-}
-
-void
-DefaultASTVisitor::visit (AST::SlicePatternItemsHasRest &items)
-{
-  for (auto &item : items.get_lower_patterns ())
-    visit (item);
-  for (auto &item : items.get_upper_patterns ())
-    visit (item);
-}
-
-void
 DefaultASTVisitor::visit (AST::SlicePattern &pattern)
 {
-  visit (pattern.get_items ());
+  for (auto &pat : pattern.get_patterns ())
+    visit (pat);
 }
 
 void
@@ -1552,6 +1533,14 @@ ContextualASTVisitor::visit (AST::Trait &trait)
 {
   ctx.enter (Kind::TRAIT);
   DefaultASTVisitor::visit (trait);
+  ctx.exit ();
+}
+
+void
+ContextualASTVisitor::visit (AST::Function &function)
+{
+  ctx.enter (Kind::FUNCTION);
+  DefaultASTVisitor::visit (function);
   ctx.exit ();
 }
 

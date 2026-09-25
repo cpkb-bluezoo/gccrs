@@ -63,10 +63,19 @@ public:
 // A binding of an identifier to a type used in generic arguments in paths
 class GenericArgsBinding
 {
+public:
+  enum class Kind
+  {
+    Equality,
+    Constraint
+  };
+
+private:
   Identifier identifier;
   std::unique_ptr<Type> type;
 
   location_t locus;
+  Kind kind;
 
 public:
   // Returns whether binding is in an error state.
@@ -84,7 +93,8 @@ public:
 
   // Pointer type for type in constructor to enable polymorphism
   GenericArgsBinding (Identifier ident, std::unique_ptr<Type> type_ptr,
-		      location_t locus = UNDEF_LOCATION);
+		      location_t locus = UNDEF_LOCATION,
+		      Kind kind = Kind::Equality);
 
   // Copy constructor has to deep copy the type as it is a unique pointer
   GenericArgsBinding (GenericArgsBinding const &other);
@@ -116,6 +126,7 @@ public:
   }
 
   location_t get_locus () const { return locus; }
+  Kind get_kind () const { return kind; }
 };
 
 class ConstGenericArg
@@ -258,6 +269,12 @@ protected:
   PathPattern (LangItem::Kind lang_item)
     : segments ({}), lang_item (lang_item), kind (Kind::LangItem)
   {}
+  bool is_refutable (const TyTy::BaseType &scrutinee) const override;
+  bool is_refutable () const override
+  {
+    // Needs to be called with the other overload
+    rust_unreachable ();
+  }
 
   // Returns whether path has segments.
   bool has_segments () const

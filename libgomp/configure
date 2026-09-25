@@ -649,8 +649,6 @@ OMP_NEST_LOCK_SIZE
 OMP_LOCK_ALIGN
 OMP_LOCK_SIZE
 INTPTR_T_KIND
-USE_FORTRAN_FALSE
-USE_FORTRAN_TRUE
 link_gomp
 tmake_file
 XLDFLAGS
@@ -677,6 +675,8 @@ offload_targets
 offload_plugins
 DL_LIBS
 libtool_VERSION
+USE_FORTRAN_FALSE
+USE_FORTRAN_TRUE
 ac_ct_FC
 FCFLAGS
 FC
@@ -12265,17 +12265,7 @@ FCFLAGS="$FCFLAGS -L."
 # We need gfortran to compile parts of the library
 # We can't use AC_PROG_FC because it expects a fully working gfortran.
 #AC_PROG_FC(gfortran)
-case `echo $GFORTRAN` in
-  -* | no* )
-    FC=no ;;
-  *)
-    set dummy $GFORTRAN; ac_word=$2
-    if test -x "$ac_word"; then
-      FC="$GFORTRAN"
-    else
-      FC=no
-    fi ;;
-esac
+FC="$GFORTRAN"
 ac_ext=${ac_fc_srcext-f}
 ac_compile='$FC -c $FCFLAGS $ac_fcflags_srcext conftest.$ac_ext >&5'
 ac_link='$FC -o conftest$ac_exeext $FCFLAGS $LDFLAGS $ac_fcflags_srcext conftest.$ac_ext $LIBS >&5'
@@ -15241,6 +15231,23 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 FCFLAGS="$FCFLAGS -Wall -L../libgfortran"
 
+case ,${enable_languages}, in
+  *,fortran,* )
+   use_fortran=true
+   ;;
+  * )
+   use_fortran=false
+   ;;
+esac
+ if "$use_fortran"; then
+  USE_FORTRAN_TRUE=
+  USE_FORTRAN_FALSE='#'
+else
+  USE_FORTRAN_TRUE='#'
+  USE_FORTRAN_FALSE=
+fi
+
+
 # For libtool versioning info, format is CURRENT:REVISION:AGE
 libtool_VERSION=1:0:0
 
@@ -15782,6 +15789,12 @@ fi
 
 
 
+if test x"$offload_plugins" != x; then
+
+$as_echo "#define LIBGOMP_OFFLOAD_HOST 1" >>confdefs.h
+
+fi
+
 # Check for functions needed.
 for ac_func in getloadavg clock_gettime strtoull
 do :
@@ -16319,7 +16332,7 @@ $as_echo "#define USE_EMUTLS 1" >>confdefs.h
 
   { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether the target supports hidden visibility" >&5
 $as_echo_n "checking whether the target supports hidden visibility... " >&6; }
-if ${libgomp_cv_have_attribute_visibility+:} false; then :
+if ${gcc_cv_have_attribute_visibility+:} false; then :
   $as_echo_n "(cached) " >&6
 else
 
@@ -16337,16 +16350,16 @@ main ()
 }
 _ACEOF
 if ac_fn_c_try_compile "$LINENO"; then :
-  libgomp_cv_have_attribute_visibility=yes
+  gcc_cv_have_attribute_visibility=yes
 else
-  libgomp_cv_have_attribute_visibility=no
+  gcc_cv_have_attribute_visibility=no
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
   CFLAGS="$save_CFLAGS"
 fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $libgomp_cv_have_attribute_visibility" >&5
-$as_echo "$libgomp_cv_have_attribute_visibility" >&6; }
-  if test $libgomp_cv_have_attribute_visibility = yes; then
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $gcc_cv_have_attribute_visibility" >&5
+$as_echo "$gcc_cv_have_attribute_visibility" >&6; }
+  if test $gcc_cv_have_attribute_visibility = yes; then
 
 $as_echo "#define HAVE_ATTRIBUTE_VISIBILITY 1" >>confdefs.h
 
@@ -16687,8 +16700,8 @@ if test x$enable_symvers = xsun ; then
       # Unlikely to work.
       { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: === You have requested Sun symbol versioning, but" >&5
 $as_echo "$as_me: WARNING: === You have requested Sun symbol versioning, but" >&2;}
-      { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: === you are not targetting Solaris 2." >&5
-$as_echo "$as_me: WARNING: === you are not targetting Solaris 2." >&2;}
+      { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: === you are not targeting Solaris 2." >&5
+$as_echo "$as_me: WARNING: === you are not targeting Solaris 2." >&2;}
       { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: === Symbol versioning will be disabled." >&5
 $as_echo "$as_me: WARNING: === Symbol versioning will be disabled." >&2;}
       enable_symvers=no
@@ -17120,6 +17133,19 @@ $as_echo "#define HAVE_SYNC_BUILTINS 1" >>confdefs.h
 
   fi
 
+# If offloading is enabled, both offload hosts and accelerators are required to support
+# __sync_* builtins, to simplify architectural assumptions between both sides
+if test x$libgomp_cv_have_sync_builtins = xno; then
+  # We require accelerator targets to support __sync_* builtins.
+  if test x$libgomp_offloaded_only = xyes; then
+    as_fn_error $? "accelerator targets require __sync_val_compare_and_swap to build libgomp." "$LINENO" 5
+  fi
+  # Same for offload hosts.
+  if test x"$offload_plugins" != x; then
+    as_fn_error $? "offload hosts require __sync_val_compare_and_swap to build libgomp." "$LINENO" 5
+  fi
+fi
+
 XCFLAGS="$XCFLAGS$XPCFLAGS"
 
 # Add CET specific flags if CET is enabled
@@ -17332,15 +17358,6 @@ else
 fi
 
 
- if test "$ac_cv_fc_compiler_gnu" = yes; then
-  USE_FORTRAN_TRUE=
-  USE_FORTRAN_FALSE='#'
-else
-  USE_FORTRAN_TRUE='#'
-  USE_FORTRAN_FALSE=
-fi
-
-
 # ??? 2006-01-24: Paulo committed to asking autoconf folk to document
 # and export AC_COMPUTE_INT.  If that happens, then we'll need to remove
 # the underscore here and update the PREREQ.  If it doesn't, then we'll
@@ -17357,13 +17374,11 @@ if ac_fn_c_compute_int "$LINENO" "sizeof (__INTPTR_TYPE__)" "INTPTR_T_KIND"     
 
 fi
 
-
 if ac_fn_c_compute_int "$LINENO" "sizeof (__int128)" "OMP_INT128_SIZE"        ""; then :
 
 else
   OMP_INT128_SIZE=0
 fi
-
 
 if ac_fn_c_compute_int "$LINENO" "2*sizeof (__INTPTR_TYPE__)" "OMP_DEPEND_KIND"        ""; then :
 
@@ -17371,28 +17386,23 @@ else
   OMP_DEPEND_KIND=0
 fi
 
-
 if ac_fn_c_compute_int "$LINENO" "sizeof (omp_lock_t)" "OMP_LOCK_SIZE"        ""; then :
 
 else
   as_fn_error $? "unsupported system, cannot find sizeof (omp_lock_t)" "$LINENO" 5
 fi
 
-
 if ac_fn_c_compute_int "$LINENO" "__alignof (omp_lock_t)" "OMP_LOCK_ALIGN"        ""; then :
 
 fi
-
 
 if ac_fn_c_compute_int "$LINENO" "sizeof (omp_nest_lock_t)" "OMP_NEST_LOCK_SIZE"        ""; then :
 
 fi
 
-
 if ac_fn_c_compute_int "$LINENO" "__alignof (omp_nest_lock_t)" "OMP_NEST_LOCK_ALIGN"        ""; then :
 
 fi
-
 
 if ac_fn_c_compute_int "$LINENO" "sizeof (omp_lock_25_t)" "OMP_LOCK_25_SIZE"        ""; then :
 
@@ -17400,21 +17410,17 @@ else
   as_fn_error $? "unsupported system, cannot find sizeof (omp_lock_25_t)" "$LINENO" 5
 fi
 
-
 if ac_fn_c_compute_int "$LINENO" "__alignof (omp_lock_25_t)" "OMP_LOCK_25_ALIGN"        ""; then :
 
 fi
-
 
 if ac_fn_c_compute_int "$LINENO" "sizeof (omp_nest_lock_25_t)" "OMP_NEST_LOCK_25_SIZE"        ""; then :
 
 fi
 
-
 if ac_fn_c_compute_int "$LINENO" "__alignof (omp_nest_lock_25_t)" "OMP_NEST_LOCK_25_ALIGN"        ""; then :
 
 fi
-
 
 
 # If the lock fits in an integer, then arrange for Fortran to use that
@@ -17638,6 +17644,10 @@ if test -z "${MAINTAINER_MODE_TRUE}" && test -z "${MAINTAINER_MODE_FALSE}"; then
   as_fn_error $? "conditional \"MAINTAINER_MODE\" was never defined.
 Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
+if test -z "${USE_FORTRAN_TRUE}" && test -z "${USE_FORTRAN_FALSE}"; then
+  as_fn_error $? "conditional \"USE_FORTRAN\" was never defined.
+Usually this means the macro was only invoked conditionally." "$LINENO" 5
+fi
 if test -z "${PLUGIN_NVPTX_TRUE}" && test -z "${PLUGIN_NVPTX_FALSE}"; then
   as_fn_error $? "conditional \"PLUGIN_NVPTX\" was never defined.
 Usually this means the macro was only invoked conditionally." "$LINENO" 5
@@ -17656,10 +17666,6 @@ Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
 if test -z "${LIBGOMP_BUILD_VERSIONED_SHLIB_SUN_TRUE}" && test -z "${LIBGOMP_BUILD_VERSIONED_SHLIB_SUN_FALSE}"; then
   as_fn_error $? "conditional \"LIBGOMP_BUILD_VERSIONED_SHLIB_SUN\" was never defined.
-Usually this means the macro was only invoked conditionally." "$LINENO" 5
-fi
-if test -z "${USE_FORTRAN_TRUE}" && test -z "${USE_FORTRAN_FALSE}"; then
-  as_fn_error $? "conditional \"USE_FORTRAN\" was never defined.
 Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
 

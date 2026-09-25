@@ -103,6 +103,25 @@ check_charlen_present (gfc_expr *source)
     }
 }
 
+static gfc_intrinsic_sym *
+copy_intrinsic_sym (const gfc_intrinsic_sym *src)
+{
+  gfc_intrinsic_sym *copy = XCNEW (gfc_intrinsic_sym);
+  gfc_intrinsic_arg *head = NULL;
+  gfc_intrinsic_arg **tail = &head;
+
+  *copy = *src;
+  for (const gfc_intrinsic_arg *arg = src->formal; arg; arg = arg->next)
+    {
+      *tail = XCNEW (gfc_intrinsic_arg);
+      **tail = *arg;
+      (*tail)->next = NULL;
+      tail = &(*tail)->next;
+    }
+  copy->formal = head;
+  return copy;
+}
+
 /* Helper function for resolving the "mask" argument.  */
 
 static void
@@ -2958,7 +2977,11 @@ gfc_resolve_spread (gfc_expr *f, gfc_expr *source, gfc_expr *dim,
     gfc_resolve_substring_charlen (source);
 
   if (source->ts.type == BT_CHARACTER)
-    check_charlen_present (source);
+    {
+      check_charlen_present (source);
+      f->value.function.isym = copy_intrinsic_sym (f->value.function.isym);
+      f->value.function.isym->formal->ts = source->ts;
+    }
 
   f->ts = source->ts;
   f->rank = source->rank + 1;
@@ -3247,7 +3270,8 @@ gfc_resolve_get_team (gfc_expr *f, gfc_expr *level ATTRIBUTE_UNUSED)
 void
 gfc_resolve_image_index (gfc_expr *f, gfc_expr *array ATTRIBUTE_UNUSED,
 			 gfc_expr *sub ATTRIBUTE_UNUSED,
-			 gfc_expr *team_or_team_number ATTRIBUTE_UNUSED)
+			 gfc_expr *team ATTRIBUTE_UNUSED,
+			 gfc_expr *team_number ATTRIBUTE_UNUSED)
 {
   static char image_index[] = "__image_index";
   f->ts.type = BT_INTEGER;
@@ -3454,25 +3478,40 @@ gfc_resolve_trim (gfc_expr *f, gfc_expr *string)
 
 /* Resolve the trigonometric functions.  This amounts to setting
    the function return type-spec from its argument and building a
-   library function names of the form _gfortran_sind_r4.  */
+   library function names of the form _gfortran_specific__sind_r4.
+   Strip leading "d" from names of GNU extensions (dcosd, dsind, dtand,
+   and their inverses).  */
 
 void
 gfc_resolve_trig (gfc_expr *f, gfc_expr *x)
 {
+  const char *name;
   f->ts = x->ts;
+
+  name = f->value.function.isym->name;
+  if (name[0] == 'd')
+    name = &f->value.function.isym->name[1];
+
   f->value.function.name
-    = gfc_get_string (PREFIX ("%s_%c%d"), f->value.function.isym->name,
+    = gfc_get_string ("__%s_%c%d", name,
 		      gfc_type_letter (x->ts.type),
 		      gfc_type_abi_kind (&x->ts));
 }
 
 void
-gfc_resolve_trig2 (gfc_expr *f, gfc_expr *y, gfc_expr *x)
+gfc_resolve_trig2 (gfc_expr *f, gfc_expr *y, gfc_expr *x ATTRIBUTE_UNUSED)
 {
+  const char *name;
   f->ts = y->ts;
+
+  name = f->value.function.isym->name;
+  if (name[0] == 'd')
+    name = &f->value.function.isym->name[1];
+
   f->value.function.name
-    = gfc_get_string (PREFIX ("%s_%d"), f->value.function.isym->name,
-		      x->ts.kind);
+    = gfc_get_string ("__%s_%c%d", name,
+		      gfc_type_letter (y->ts.type),
+		      gfc_type_abi_kind (&y->ts));
 }
 
 

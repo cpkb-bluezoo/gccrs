@@ -400,6 +400,7 @@ unsigned const char omp_clause_num_ops[] =
   1, /* OMP_CLAUSE_NOCONTEXT */
   1, /* OMP_CLAUSE_DYN_GROUPPRIVATE  */
   3, /* OMP_CLAUSE_USES_ALLOCATORS */
+  2, /* OMP_CLAUSE_MESSAGE */
 };
 
 const char * const omp_clause_code_name[] =
@@ -505,6 +506,7 @@ const char * const omp_clause_code_name[] =
   "nocontext",
   "dyn_groupprivate",
   "uses_allocators",
+  "message"
 };
 
 /* Unless specific to OpenACC, we tend to internally maintain OpenMP-centric
@@ -1858,6 +1860,8 @@ wide_int_to_tree_1 (tree type, const wide_int_ref &pcst)
 
       switch (code)
 	{
+	/* This could represent the C++ std::meta::info type.  */
+	case LANG_TYPE:
 	case NULLPTR_TYPE:
 	  gcc_assert (hwi == 0);
 	  /* Fallthru.  */
@@ -2033,6 +2037,8 @@ cache_integer_cst (tree t, bool might_duplicate ATTRIBUTE_UNUSED)
      wide_int_to_type_1.  */
   switch (TREE_CODE (type))
     {
+    /* This could represent the C++ std::meta::info type.  */
+    case LANG_TYPE:
     case NULLPTR_TYPE:
       gcc_checking_assert (integer_zerop (t));
       /* Fallthru.  */
@@ -2201,23 +2207,20 @@ build_vector_from_ctor (tree type, const vec<constructor_elt, va_gc> *v)
   if (vec_safe_length (v) == 0)
     return build_zero_cst (type);
 
-  unsigned HOST_WIDE_INT idx, nelts, step = 1;
+  unsigned HOST_WIDE_INT idx, npatterns, nelts_per_pattern;
   tree value;
 
   /* If the vector is a VLA, build a VLA constant vector.  */
-  if (!TYPE_VECTOR_SUBPARTS (type).is_constant (&nelts))
-    {
-      nelts = constant_lower_bound (TYPE_VECTOR_SUBPARTS (type));
-      gcc_assert (vec_safe_length (v) <= nelts);
-      step = 2;
-    }
+  npatterns = constant_lower_bound (TYPE_VECTOR_SUBPARTS (type));
+  nelts_per_pattern = TYPE_VECTOR_SUBPARTS (type).is_constant () ? 1 : 2;
+  gcc_assert (vec_safe_length (v) <= npatterns);
 
-  tree_vector_builder vec (type, nelts, step);
+  tree_vector_builder vec (type, npatterns, nelts_per_pattern);
   FOR_EACH_CONSTRUCTOR_VALUE (v, idx, value)
     {
       if (TREE_CODE (value) == VECTOR_CST)
 	{
-	  /* If NELTS is constant then this must be too.  */
+	  /* If NPATTERNS is constant then this must be too.  */
 	  unsigned int sub_nelts = VECTOR_CST_NELTS (value).to_constant ();
 	  for (unsigned i = 0; i < sub_nelts; ++i)
 	    vec.quick_push (VECTOR_CST_ELT (value, i));
@@ -2225,7 +2228,7 @@ build_vector_from_ctor (tree type, const vec<constructor_elt, va_gc> *v)
       else
 	vec.quick_push (value);
     }
-  while (vec.length () < nelts * step)
+  while (vec.length () < npatterns * nelts_per_pattern)
     vec.quick_push (build_zero_cst (TREE_TYPE (type)));
 
   return vec.build ();
@@ -3325,6 +3328,29 @@ real_zerop (const_tree expr)
     default:
       return false;
     }
+}
+
+/* Return true if EXPR is the real constant negative zero.  */
+
+bool
+real_negzerop (const_tree expr)
+{
+  STRIP_ANY_LOCATION_WRAPPER (expr);
+
+  if (TREE_CODE (expr) == VECTOR_CST)
+    {
+      expr = uniform_vector_p (expr);
+      if (!expr)
+	return false;
+    }
+
+  if (TREE_CODE (expr) == COMPLEX_CST)
+    return real_negzerop (TREE_REALPART (expr))
+	   && real_negzerop (TREE_IMAGPART (expr));
+
+  return TREE_CODE (expr) == REAL_CST
+	  && REAL_VALUE_MINUS_ZERO (TREE_REAL_CST (expr))
+	  && !(DECIMAL_FLOAT_MODE_P (TYPE_MODE (TREE_TYPE (expr))));
 }
 
 /* Return true if EXPR is the real constant one in real or complex form.
@@ -5455,7 +5481,7 @@ build5 (enum tree_code code, tree tt, tree arg0, tree arg1,
   return t;
 }
 
-/* Build a simple MEM_REF tree with the sematics of a plain INDIRECT_REF
+/* Build a simple MEM_REF tree with the semantics of a plain INDIRECT_REF
    on the pointer PTR.  */
 
 tree
@@ -7421,7 +7447,7 @@ build_bitint_type (unsigned HOST_WIDE_INT precision, int unsignedp)
 {
   tree itype, ret;
 
-  gcc_checking_assert (precision >= 1 + !unsignedp);
+  gcc_checking_assert (precision >= 1);
 
   if (unsignedp)
     unsignedp = MAX_INT_CACHED_PREC + 1;
@@ -9123,7 +9149,7 @@ get_file_function_name (const char *type)
   /* If the target is handling the constructors/destructors, they
      will be local to this file and the name is only necessary for
      debugging purposes.
-     We also assign sub_I and sub_D sufixes to constructors called from
+     We also assign sub_I and sub_D suffixes to constructors called from
      the global static constructors.  These are always local.
      OpenMP "declare target" offloaded constructors/destructors use "off_I" and
      "off_D" for the same purpose.  */
@@ -9618,6 +9644,46 @@ build_atomic_base (tree type, unsigned int align)
   return t;
 }
 
+/* Return unsigned integer tree node for TYPE.  */
+
+tree
+unsigned_integer_tree_node_for_type (const char *type)
+{
+  tree type_node;
+
+  if (strcmp (type, "unsigned int") == 0)
+    type_node = unsigned_type_node;
+  else if (strcmp (type, "long unsigned int") == 0)
+    type_node = long_unsigned_type_node;
+  else if (strcmp (type, "long long unsigned int") == 0)
+    type_node = long_long_unsigned_type_node;
+  else if (strcmp (type, "short unsigned int") == 0)
+    type_node = short_unsigned_type_node;
+  else
+    {
+      int i;
+
+      type_node = nullptr;
+      for (i = 0; i < NUM_INT_N_ENTS; i++)
+	if (int_n_enabled_p[i])
+	  {
+	    char name[50], altname[50];
+	    sprintf (name, "__int%d unsigned", int_n_data[i].bitsize);
+	    sprintf (altname, "__int%d__ unsigned", int_n_data[i].bitsize);
+
+	    if (strcmp (name, type) == 0
+		|| strcmp (altname, type) == 0)
+	      {
+		type_node = int_n_trees[i].unsigned_type;
+	      }
+	  }
+      if (type_node == nullptr)
+	gcc_unreachable ();
+    }
+
+  return type_node;
+}
+
 /* Information about the _FloatN and _FloatNx types.  This must be in
    the same order as the corresponding TI_* enum values.  */
 const floatn_type_info floatn_nx_types[NUM_FLOATN_NX_TYPES] =
@@ -9688,35 +9754,7 @@ build_common_tree_nodes (bool signed_char)
   TYPE_MAX_VALUE (boolean_type_node) = build_int_cst (boolean_type_node, 1);
 
   /* Define what type to use for size_t.  */
-  if (strcmp (SIZE_TYPE, "unsigned int") == 0)
-    size_type_node = unsigned_type_node;
-  else if (strcmp (SIZE_TYPE, "long unsigned int") == 0)
-    size_type_node = long_unsigned_type_node;
-  else if (strcmp (SIZE_TYPE, "long long unsigned int") == 0)
-    size_type_node = long_long_unsigned_type_node;
-  else if (strcmp (SIZE_TYPE, "short unsigned int") == 0)
-    size_type_node = short_unsigned_type_node;
-  else
-    {
-      int i;
-
-      size_type_node = NULL_TREE;
-      for (i = 0; i < NUM_INT_N_ENTS; i++)
-	if (int_n_enabled_p[i])
-	  {
-	    char name[50], altname[50];
-	    sprintf (name, "__int%d unsigned", int_n_data[i].bitsize);
-	    sprintf (altname, "__int%d__ unsigned", int_n_data[i].bitsize);
-
-	    if (strcmp (name, SIZE_TYPE) == 0
-		|| strcmp (altname, SIZE_TYPE) == 0)
-	      {
-		size_type_node = int_n_trees[i].unsigned_type;
-	      }
-	  }
-      if (size_type_node == NULL_TREE)
-	gcc_unreachable ();
-    }
+  size_type_node = unsigned_integer_tree_node_for_type (SIZE_TYPE);
 
   /* Define what type to use for ptrdiff_t.  */
   if (strcmp (PTRDIFF_TYPE, "int") == 0)
@@ -10559,7 +10597,7 @@ build_opaque_vector_type (tree innertype, poly_int64 nunits)
       && TYPE_VECTOR_OPAQUE (cand)
       && check_qualified_type (cand, t, TYPE_QUALS (t)))
     return cand;
-  /* Othewise build a variant type and make sure to queue it after
+  /* Otherwise build a variant type and make sure to queue it after
      the non-opaque type.  */
   cand = build_distinct_type_copy (t);
   TYPE_VECTOR_OPAQUE (cand) = true;
@@ -10867,6 +10905,11 @@ ssa_uniform_vector_p (tree op)
       gimple *def_stmt = SSA_NAME_DEF_STMT (op);
       if (gimple_assign_single_p (def_stmt))
 	return uniform_vector_p (gimple_assign_rhs1 (def_stmt));
+      /* A VEC_DUPLICATE_EXPR is a unary assignment, so it is not covered
+	 by the gimple_assign_single_p case above.  */
+      if (is_gimple_assign (def_stmt)
+	  && gimple_assign_rhs_code (def_stmt) == VEC_DUPLICATE_EXPR)
+	return gimple_assign_rhs1 (def_stmt);
     }
   return NULL_TREE;
 }
@@ -10892,6 +10935,89 @@ uniform_integer_cst_p (tree t)
     }
 
   return NULL_TREE;
+}
+
+/* Return true if ELT1 and ELT2 are INTEGER_CSTs and if ELT1 - ELT2 is
+   consistent with the uniform difference recorded in DIFF.  */
+
+static bool
+record_uniform_integer_difference (const_tree elt1, const_tree elt2,
+				   widest_int *diff, bool *diff_p)
+{
+  STRIP_ANY_LOCATION_WRAPPER (elt1);
+  STRIP_ANY_LOCATION_WRAPPER (elt2);
+
+  if (TREE_CODE (elt1) != INTEGER_CST
+      || TREE_CODE (elt2) != INTEGER_CST)
+    return false;
+
+  widest_int elt_diff = wi::to_widest (elt1) - wi::to_widest (elt2);
+  if (!*diff_p)
+    {
+      *diff = elt_diff;
+      *diff_p = true;
+      return true;
+    }
+
+  return *diff == elt_diff;
+}
+
+/* Return the uniform difference between two INTEGER_CSTs or corresponding
+   elements of two VECTOR_CSTs or NULL_TREE if no such difference exists.  */
+
+tree
+uniform_vector_difference_p (const_tree t1, const_tree t2)
+{
+  STRIP_ANY_LOCATION_WRAPPER (t1);
+  STRIP_ANY_LOCATION_WRAPPER (t2);
+
+  if (TREE_CODE (t1) == INTEGER_CST
+      && TREE_CODE (t2) == INTEGER_CST)
+    {
+      widest_int diff = wi::to_widest (t1) - wi::to_widest (t2);
+      if (!wi::fits_shwi_p (diff))
+	return NULL_TREE;
+      return build_int_cst (long_long_integer_type_node, diff.to_shwi ());
+    }
+
+  if (TREE_CODE (t1) != VECTOR_CST
+      || TREE_CODE (t2) != VECTOR_CST
+      || !known_eq (VECTOR_CST_NELTS (t1), VECTOR_CST_NELTS (t2)))
+    return NULL_TREE;
+
+  widest_int diff;
+  bool diff_p = false;
+
+  if (VECTOR_CST_LOG2_NPATTERNS (t1) == VECTOR_CST_LOG2_NPATTERNS (t2)
+      && (VECTOR_CST_NELTS_PER_PATTERN (t1)
+	  == VECTOR_CST_NELTS_PER_PATTERN (t2)))
+    {
+      unsigned int encoded_nelts = vector_cst_encoded_nelts (t1);
+      gcc_assert (encoded_nelts == vector_cst_encoded_nelts (t2));
+
+      for (unsigned int i = 0; i < encoded_nelts; ++i)
+	if (!record_uniform_integer_difference (VECTOR_CST_ENCODED_ELT (t1, i),
+						VECTOR_CST_ENCODED_ELT (t2, i),
+						&diff, &diff_p))
+	  return NULL_TREE;
+    }
+  else
+    {
+      unsigned HOST_WIDE_INT nelts;
+      if (!VECTOR_CST_NELTS (t1).is_constant (&nelts))
+	return NULL_TREE;
+
+      for (unsigned HOST_WIDE_INT i = 0; i < nelts; ++i)
+	if (!record_uniform_integer_difference (vector_cst_elt (t1, i),
+						vector_cst_elt (t2, i),
+						&diff, &diff_p))
+	  return NULL_TREE;
+    }
+
+  if (!diff_p || !wi::fits_shwi_p (diff))
+    return NULL_TREE;
+
+  return build_int_cst (long_long_integer_type_node, diff.to_shwi ());
 }
 
 /* Checks to see if T is a constant or a constant vector and if each element E
@@ -11440,7 +11566,7 @@ signed_or_unsigned_type_for (int unsignedp, tree type)
   else
     return NULL_TREE;
 
-  if (TREE_CODE (type) == BITINT_TYPE && (unsignedp || bits > 1))
+  if (TREE_CODE (type) == BITINT_TYPE)
     return build_bitint_type (bits, unsignedp);
   return build_nonstandard_integer_type (bits, unsignedp);
 }
@@ -12363,9 +12489,37 @@ tree_nop_conversion_p (const_tree outer_type, const_tree inner_type)
 	  || TREE_CODE (inner_type) == OFFSET_TYPE))
     return TYPE_PRECISION (outer_type) == TYPE_PRECISION (inner_type);
 
+  if (TYPE_MODE (outer_type) == BLKmode
+      && TYPE_MODE (inner_type) == BLKmode)
+    {
+      if (VECTOR_TYPE_P (outer_type)
+	  && VECTOR_TYPE_P (inner_type)
+	  && known_eq (TYPE_VECTOR_SUBPARTS (outer_type),
+		       TYPE_VECTOR_SUBPARTS (inner_type))
+	  && (TYPE_MODE (TREE_TYPE (outer_type))
+	      == TYPE_MODE (TREE_TYPE (inner_type))))
+	return true;
+      return false;
+    }
+
   /* Otherwise fall back on comparing machine modes (e.g. for
      aggregate types, floats).  */
   return TYPE_MODE (outer_type) == TYPE_MODE (inner_type);
+}
+
+/* Return true iff a view conversion from vector type INNER_TYPE to vector
+   type OUTER_TYPE has the same number of elements and does not change the
+   representation of an element.  */
+
+bool
+vector_nop_conversion_p (const_tree outer_type, const_tree inner_type)
+{
+  return (VECTOR_TYPE_P (outer_type)
+	  && VECTOR_TYPE_P (inner_type)
+	  && known_eq (TYPE_VECTOR_SUBPARTS (outer_type),
+		       TYPE_VECTOR_SUBPARTS (inner_type))
+	  && tree_nop_conversion_p (TREE_TYPE (outer_type),
+				    TREE_TYPE (inner_type)));
 }
 
 /* Return true iff conversion in EXP generates no instruction.  Mark
@@ -13231,7 +13385,7 @@ array_ref_up_bound (tree exp)
 bool
 array_ref_flexible_size_p (tree ref, bool *is_trailing_array /* = NULL */)
 {
-  /* The TYPE for this array referece.  */
+  /* The TYPE for this array reference.  */
   tree atype = NULL_TREE;
   /* The FIELD_DECL for the array field in the containing structure.  */
   tree afield_decl = NULL_TREE;
@@ -13795,7 +13949,7 @@ verify_type_variant (const_tree t, tree tv)
      - main variant may be TYPE_COMPLETE_P and variant types !TYPE_COMPLETE_P
        in this case some values may not be set in the variant types
        (see TYPE_COMPLETE_P checks).
-     - it is possible to have TYPE_ARTIFICIAL variant of non-artifical type
+     - it is possible to have TYPE_ARTIFICIAL variant of non-artificial type
      - by TYPE_NAME and attributes (i.e. when variant originate by typedef)
      - TYPE_CANONICAL (TYPE_ALIAS_SET is the same among variants)
      - by the alignment: TYPE_ALIGN and TYPE_USER_ALIGN
@@ -13873,7 +14027,7 @@ verify_type_variant (const_tree t, tree tv)
     verify_variant_match (TYPE_TRANSPARENT_AGGR);
   else if (TREE_CODE (t) == ARRAY_TYPE)
     verify_variant_match (TYPE_NONALIASED_COMPONENT);
-  /* During LTO we merge variant lists from diferent translation units
+  /* During LTO we merge variant lists from different translation units
      that may differ BY TYPE_CONTEXT that in turn may point
      to TRANSLATION_UNIT_DECL.
      Ada also builds variants of types with different TYPE_CONTEXT.   */
@@ -14084,7 +14238,7 @@ gimple_canonical_types_compatible_p (const_tree t1, const_tree t2,
      need to ensure that we are never called on it.
 
      FIXME: For more correctness the function probably should have three modes
-	1) mode assuming that types are complete mathcing their structure
+	1) mode assuming that types are complete matching their structure
 	2) mode allowing incomplete types but producing equivalence classes
 	   and thus ignoring all info from complete types
 	3) mode allowing incomplete types to match complete but checking
@@ -15128,6 +15282,22 @@ default_is_empty_record (const_tree type)
   return is_empty_type (TYPE_MAIN_VARIANT (type));
 }
 
+
+/* Determine whether TYPE is an ISO C99 flexible array member type "[]".  */
+
+bool
+flexible_array_member_type_p (const_tree type)
+{
+  if (TREE_CODE (type) == ARRAY_TYPE
+      && TYPE_SIZE (type) == NULL_TREE
+      && TYPE_DOMAIN (type) != NULL_TREE
+      && TYPE_MAX_VALUE (TYPE_DOMAIN (type)) == NULL_TREE)
+    return true;
+
+  return false;
+}
+
+
 /* Determine whether TYPE is a structure with a flexible array member,
    or a union containing such a structure (possibly recursively).  */
 
@@ -15144,12 +15314,7 @@ flexible_array_type_p (const_tree type)
 	  last = x;
       if (last == NULL_TREE)
 	return false;
-      if (TREE_CODE (TREE_TYPE (last)) == ARRAY_TYPE
-	  && TYPE_SIZE (TREE_TYPE (last)) == NULL_TREE
-	  && TYPE_DOMAIN (TREE_TYPE (last)) != NULL_TREE
-	  && TYPE_MAX_VALUE (TYPE_DOMAIN (TREE_TYPE (last))) == NULL_TREE)
-	return true;
-      return false;
+       return flexible_array_member_type_p (TREE_TYPE (last));
     case UNION_TYPE:
       for (x = TYPE_FIELDS (type); x != NULL_TREE; x = DECL_CHAIN (x))
 	{
@@ -15296,6 +15461,26 @@ verify_type_context (location_t loc, type_context_kind context,
   gcc_assert (TYPE_P (type));
   return (!targetm.verify_type_context
 	  || targetm.verify_type_context (loc, context, type, silent_p));
+}
+
+/* Callback of walk_tree telling whether the current tree pointed by TP is the
+   one provided as DATA.  */
+
+static tree
+find_tree_1 (tree *tp, int *walk_subtrees ATTRIBUTE_UNUSED, void *data)
+{
+  if (*tp == data)
+    return (tree) data;
+  else
+    return NULL;
+}
+
+/* Return whether SEARCH is a subtree of TOP.  */
+
+bool
+find_tree (tree top, tree search)
+{
+  return walk_tree_without_duplicates (&top, find_tree_1, search) != 0;
 }
 
 /* Return true if NEW_ASM and DELETE_ASM name a valid pair of new and
@@ -15825,6 +16010,165 @@ diagnose_versioned_decls (tree old_decl, tree new_decl)
   /* The only remaining case is two target_version annotated decls.  */
   return !targetm.target_option.same_function_versions
 	    (old_target_attr, old_decl, new_target_attr, new_decl);
+}
+
+
+/* This page contains routines to unshare tree nodes, i.e. to duplicate tree
+   nodes that are referenced more than once in GENERIC functions.  This is
+   necessary because gimplification (translation into GIMPLE) is performed
+   by modifying tree nodes in-place, so gimplification of a shared node in a
+   first context could generate an invalid GIMPLE form in a second context.
+
+   This is achieved with a simple mark/copy/unmark algorithm that walks the
+   GENERIC representation top-down, marks nodes with TREE_VISITED the first
+   time it encounters them, duplicates them if they already have TREE_VISITED
+   set, and finally removes the TREE_VISITED marks it has set.
+
+   The algorithm works only at the function level, i.e. it generates a GENERIC
+   representation of a function with no nodes shared within the function when
+   passed a GENERIC function (except for nodes that are allowed to be shared).
+
+   At the global level, it is also necessary to unshare tree nodes that are
+   referenced in more than one function, for the same aforementioned reason.
+   This requires some cooperation from the front-end.  There are 2 strategies:
+
+     1. Manual unsharing.  The front-end needs to call unshare_expr on every
+        expression that might end up being shared across functions.
+
+     2. Deep unsharing.  This is an extension of regular unsharing.  Instead
+        of calling unshare_expr on expressions that might be shared across
+        functions, the front-end pre-marks them with TREE_VISITED.  This will
+        ensure that they are unshared on the first reference within functions
+        when the regular unsharing algorithm runs.  The counterpart is that
+        this algorithm must look deeper than for manual unsharing, which is
+        specified by LANG_HOOKS_DEEP_UNSHARING.
+
+  If there are only few specific cases of node sharing across functions, it is
+  probably easier for a front-end to unshare the expressions manually.  On the
+  contrary, if the expressions generated at the global level are as widespread
+  as expressions generated within functions, deep unsharing is very likely the
+  way to go.  */
+
+/* Similar to copy_tree_r but do not copy SAVE_EXPR or TARGET_EXPR nodes.
+   These nodes model computations that must be done once.  If we were to
+   unshare something like SAVE_EXPR(i++), the gimplification process would
+   create wrong code.  However, if DATA is non-null, it must hold a pointer
+   set that is used to unshare the subtrees of these nodes.  */
+
+static tree
+mostly_copy_tree_r (tree *tp, int *walk_subtrees, void *data)
+{
+  tree t = *tp;
+  enum tree_code code = TREE_CODE (t);
+
+  /* Do not copy SAVE_EXPR, TARGET_EXPR or BIND_EXPR nodes themselves, but
+     copy their subtrees if we can make sure to do it only once.  */
+  if (code == SAVE_EXPR || code == TARGET_EXPR || code == BIND_EXPR)
+    {
+      if (data && !((hash_set<tree> *)data)->add (t))
+	;
+      else
+	*walk_subtrees = 0;
+    }
+
+  /* Stop at types, decls, constants like copy_tree_r.  */
+  else if (TREE_CODE_CLASS (code) == tcc_type
+	   || TREE_CODE_CLASS (code) == tcc_declaration
+	   || TREE_CODE_CLASS (code) == tcc_constant)
+    *walk_subtrees = 0;
+
+  /* Cope with the statement expression extension.  */
+  else if (code == STATEMENT_LIST)
+    ;
+
+  /* Leave the bulk of the work to copy_tree_r itself.  */
+  else
+    copy_tree_r (tp, walk_subtrees, NULL);
+
+  return NULL_TREE;
+}
+
+/* Callback for walk_tree to unshare most of the shared trees rooted at *TP.
+   If *TP has been visited already, then *TP is deeply copied by calling
+   mostly_copy_tree_r.  DATA is passed to mostly_copy_tree_r unmodified.  */
+
+static tree
+copy_if_shared_r (tree *tp, int *walk_subtrees, void *data)
+{
+  tree t = *tp;
+  enum tree_code code = TREE_CODE (t);
+
+  /* Skip types, decls, and constants.  But we do want to look at their
+     types and the bounds of types.  Mark them as visited so we properly
+     unmark their subtrees on the unmark pass.  If we've already seen them,
+     don't look down further.  */
+  if (TREE_CODE_CLASS (code) == tcc_type
+      || TREE_CODE_CLASS (code) == tcc_declaration
+      || TREE_CODE_CLASS (code) == tcc_constant)
+    {
+      if (TREE_VISITED (t))
+	*walk_subtrees = 0;
+      else
+	TREE_VISITED (t) = 1;
+    }
+
+  /* If this node has been visited already, unshare it and don't look
+     any deeper.  */
+  else if (TREE_VISITED (t))
+    {
+      walk_tree (tp, mostly_copy_tree_r, data, NULL);
+      *walk_subtrees = 0;
+    }
+
+  /* Otherwise, mark the node as visited and keep looking.  */
+  else
+    TREE_VISITED (t) = 1;
+
+  return NULL_TREE;
+}
+
+/* Unshare most of the shared trees rooted at *TP.  DATA is passed to the
+   copy_if_shared_r callback unmodified.  */
+
+void
+copy_if_shared (tree *tp, void *data)
+{
+  walk_tree (tp, copy_if_shared_r, data, NULL);
+}
+
+/* Unconditionally make an unshared copy of EXPR.  This is used when using
+   stored expressions which span multiple functions, such as BINFO_VTABLE,
+   as the normal unsharing process can't tell that they're shared.  */
+
+tree
+unshare_expr (tree expr)
+{
+  walk_tree (&expr, mostly_copy_tree_r, NULL, NULL);
+  return expr;
+}
+
+/* Worker for unshare_expr_without_location.  */
+
+static tree
+prune_expr_location (tree *tp, int *walk_subtrees, void *)
+{
+  if (EXPR_P (*tp))
+    SET_EXPR_LOCATION (*tp, UNKNOWN_LOCATION);
+  else
+    *walk_subtrees = 0;
+  return NULL_TREE;
+}
+
+/* Similar to unshare_expr but also prune all expression locations
+   from EXPR.  */
+
+tree
+unshare_expr_without_location (tree expr)
+{
+  walk_tree (&expr, mostly_copy_tree_r, NULL, NULL);
+  if (EXPR_P (expr))
+    walk_tree (&expr, prune_expr_location, NULL, NULL);
+  return expr;
 }
 
 void

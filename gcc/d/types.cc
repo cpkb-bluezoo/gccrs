@@ -593,7 +593,12 @@ finish_aggregate_mode (tree type)
 	return;
     }
 
-  compute_record_mode (type);
+  /* Force mode of non-trivially copyable structs to be BLKmode, preventing it
+     from being returned in a register.  */
+  if (TREE_ADDRESSABLE (type))
+    SET_TYPE_MODE (type, BLKmode);
+  else
+    compute_record_mode (type);
 
   /* Propagate computed mode to all variants of this aggregate type.  */
   for (tree t = TYPE_MAIN_VARIANT (type); t; t = TYPE_NEXT_VARIANT (t))
@@ -715,13 +720,14 @@ finish_aggregate_type (unsigned structsize, unsigned alignsize, tree type)
       TYPE_PACKED (t) = TYPE_PACKED (type);
       SET_TYPE_ALIGN (t, TYPE_ALIGN (type));
       TYPE_USER_ALIGN (t) = TYPE_USER_ALIGN (type);
+      TREE_ADDRESSABLE (t) = TREE_ADDRESSABLE (type);
     }
 
   /* Complete any other forward-referenced fields of this aggregate type.  */
   finish_incomplete_fields (type);
 }
 
-/* Returns true if the class or struct type TYPE has already been layed out by
+/* Returns true if the class or struct type TYPE has already been laid out by
    the lowering of another front-end AST type.  In which case, there will either
    be a reuse of the back-end type, or a multiple definition error.
    DECO is the uniquely mangled decoration for the type.  */
@@ -1181,33 +1187,35 @@ public:
     /* Finish the enumeration type.  */
     if (TREE_CODE (t->ctype) == ENUMERAL_TYPE)
       {
-	TYPE_MIN_VALUE (t->ctype) = TYPE_MIN_VALUE (basetype);
-	TYPE_MAX_VALUE (t->ctype) = TYPE_MAX_VALUE (basetype);
-	TYPE_UNSIGNED (t->ctype) = TYPE_UNSIGNED (basetype);
-	SET_TYPE_ALIGN (t->ctype, TYPE_ALIGN (basetype));
-	TYPE_SIZE (t->ctype) = NULL_TREE;
-	TYPE_PRECISION (t->ctype) = dmd::size (t, t->sym->loc) * 8;
+	tree type = TYPE_MAIN_VARIANT (t->ctype);
 
-	layout_type (t->ctype);
+	if (type == t->ctype)
+	  {
+	    TYPE_MIN_VALUE (type) = TYPE_MIN_VALUE (basetype);
+	    TYPE_MAX_VALUE (type) = TYPE_MAX_VALUE (basetype);
+	    TYPE_UNSIGNED (type) = TYPE_UNSIGNED (basetype);
+	    SET_TYPE_ALIGN (type, TYPE_ALIGN (basetype));
+	    TYPE_SIZE (type) = NULL_TREE;
+	    TYPE_PRECISION (type) = dmd::size (t, t->sym->loc) * 8;
+
+	    layout_type (type);
+	  }
 
 	/* Fix up all forward-referenced variants of this enum type.  */
-	for (tree v = TYPE_MAIN_VARIANT (t->ctype); v;
-	     v = TYPE_NEXT_VARIANT (v))
+	for (tree variant = TYPE_NEXT_VARIANT (type); variant;
+	     variant = TYPE_NEXT_VARIANT (variant))
 	  {
-	    if (v == t->ctype)
-	      continue;
-
-	    TYPE_VALUES (v) = TYPE_VALUES (t->ctype);
-	    TYPE_LANG_SPECIFIC (v) = TYPE_LANG_SPECIFIC (t->ctype);
-	    TYPE_MIN_VALUE (v) = TYPE_MIN_VALUE (t->ctype);
-	    TYPE_MAX_VALUE (v) = TYPE_MAX_VALUE (t->ctype);
-	    TYPE_UNSIGNED (v) = TYPE_UNSIGNED (t->ctype);
-	    TYPE_SIZE (v) = TYPE_SIZE (t->ctype);
-	    TYPE_SIZE_UNIT (v) = TYPE_SIZE_UNIT (t->ctype);
-	    SET_TYPE_MODE (v, TYPE_MODE (t->ctype));
-	    TYPE_PRECISION (v) = TYPE_PRECISION (t->ctype);
-	    SET_TYPE_ALIGN (v, TYPE_ALIGN (t->ctype));
-	    TYPE_USER_ALIGN (v) = TYPE_USER_ALIGN (t->ctype);
+	    TYPE_VALUES (variant) = TYPE_VALUES (type);
+	    TYPE_LANG_SPECIFIC (variant) = TYPE_LANG_SPECIFIC (type);
+	    TYPE_MIN_VALUE (variant) = TYPE_MIN_VALUE (type);
+	    TYPE_MAX_VALUE (variant) = TYPE_MAX_VALUE (type);
+	    TYPE_UNSIGNED (variant) = TYPE_UNSIGNED (type);
+	    TYPE_SIZE (variant) = TYPE_SIZE (type);
+	    TYPE_SIZE_UNIT (variant) = TYPE_SIZE_UNIT (type);
+	    SET_TYPE_MODE (variant, TYPE_MODE (type));
+	    TYPE_PRECISION (variant) = TYPE_PRECISION (type);
+	    SET_TYPE_ALIGN (variant, TYPE_ALIGN (type));
+	    TYPE_USER_ALIGN (variant) = TYPE_USER_ALIGN (type);
 	  }
 
 	/* Complete forward-referenced fields of this enum type.  */
@@ -1234,6 +1242,12 @@ public:
     TYPE_LANG_SPECIFIC (t->ctype) = build_lang_type (t);
     TYPE_CXX_ODR_P (t->ctype) = 1;
 
+    /* For structs with a user defined postblit, copy constructor, or a
+       destructor, also set TREE_ADDRESSABLE on the type and all variants.
+       This will make the struct be passed around by reference.  */
+    if (!dmd::isPOD (t->sym))
+      TREE_ADDRESSABLE (t->ctype) = 1;
+
     if (t->sym->members)
       {
 	/* Must set up the overall size and alignment before determining
@@ -1254,18 +1268,6 @@ public:
       {
 	build_type_decl (t->ctype, t->sym);
 	apply_user_attributes (t->sym, t->ctype);
-      }
-
-    /* For structs with a user defined postblit, copy constructor, or a
-       destructor, also set TREE_ADDRESSABLE on the type and all variants.
-       This will make the struct be passed around by reference.  */
-    if (!dmd::isPOD (t->sym))
-      {
-	for (tree tv = t->ctype; tv != NULL_TREE; tv = TYPE_NEXT_VARIANT (tv))
-	  {
-	    TREE_ADDRESSABLE (tv) = 1;
-	    SET_TYPE_MODE (tv, BLKmode);
-	  }
       }
   }
 

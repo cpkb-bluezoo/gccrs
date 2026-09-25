@@ -53,9 +53,6 @@ vec<sel_region_bb_info_def> sel_region_bb_info;
 /* A pool for allocating all lists.  */
 object_allocator<_list_node> sched_lists_pool ("sel-sched-lists");
 
-/* This contains information about successors for compute_av_set.  */
-struct succs_info current_succs;
-
 /* Data structure to describe interaction with the generic scheduler utils.  */
 static struct common_sched_info_def sel_common_sched_info;
 
@@ -70,7 +67,7 @@ static vec<loop_p> loop_nests;
 static sbitmap bbs_in_loop_rgns = NULL;
 
 /* CFG hooks that are saved before changing create_basic_block hook.  */
-static struct cfg_hooks orig_cfg_hooks;
+static const struct cfg_hooks *orig_cfg_hooks;
 
 
 /* Array containing reverse topological index of function basic blocks,
@@ -344,7 +341,7 @@ alloc_target_context (void)
 
 /* Init target context TC.
    If CLEAN_P is true, then make TC as it is beginning of the scheduler.
-   Overwise, copy current backend context to TC.  */
+   Otherwise, copy current backend context to TC.  */
 static void
 init_target_context (tc_t tc, bool clean_p)
 {
@@ -2249,7 +2246,7 @@ av_set_union_and_live (av_set_t *top, av_set_t *fromp, regset to_lv_set,
   av_set_iterator i;
   av_set_t *to_tailp, in_both_set = NULL;
 
-  /* Delete from TOP all expres, that present in FROMP.  */
+  /* Delete from TOP all exprs, that present in FROMP.  */
   FOR_EACH_EXPR_1 (expr1, i, top)
     {
       expr_t expr2 = av_set_lookup_and_remove (fromp, EXPR_VINSN (expr1));
@@ -3396,6 +3393,10 @@ has_dependence_p (expr_t expr, insn_t pred, ds_t **has_dep_pp)
 
   dc = &INSN_DEPS_CONTEXT (pred);
 
+  /* Selective scheduling keeps the eager barrier form, so the reg_last entries
+     the callbacks below read are always materialised.  */
+  gcc_checking_assert (!dc->pending_barriers);
+
   /* We init this field lazily.  */
   if (dc->reg_last == NULL)
     init_deps_reg_last (dc);
@@ -4464,27 +4465,6 @@ exchange_data_sets (basic_block to, basic_block from)
   std::swap (BB_AV_LEVEL (from), BB_AV_LEVEL (to));
 }
 
-/* Copy data sets of FROM to TO.  */
-void
-copy_data_sets (basic_block to, basic_block from)
-{
-  gcc_assert (!BB_LV_SET_VALID_P (to) && !BB_AV_SET_VALID_P (to));
-  gcc_assert (BB_AV_SET (to) == NULL);
-
-  BB_AV_LEVEL (to) = BB_AV_LEVEL (from);
-  BB_LV_SET_VALID_P (to) = BB_LV_SET_VALID_P (from);
-
-  if (BB_AV_SET_VALID_P (from))
-    {
-      BB_AV_SET (to) = av_set_copy (BB_AV_SET (from));
-    }
-  if (BB_LV_SET_VALID_P (from))
-    {
-      gcc_assert (BB_LV_SET (to) != NULL);
-      COPY_REG_SET (BB_LV_SET (to), BB_LV_SET (from));
-    }
-}
-
 /* Return an av set for INSN, if any.  */
 av_set_t
 get_av_set (insn_t insn)
@@ -5359,7 +5339,7 @@ sel_create_basic_block (void *headp, void *endp, basic_block after)
   new_bb_note = get_bb_note_from_pool ();
 
   if (new_bb_note == NULL_RTX)
-    new_bb = orig_cfg_hooks.create_basic_block (headp, endp, after);
+    new_bb = orig_cfg_hooks->create_basic_block (headp, endp, after);
   else
     {
       new_bb = create_basic_block_structure ((rtx_insn *) headp,
@@ -5709,11 +5689,11 @@ sel_register_cfg_hooks (void)
   sched_split_block = sel_split_block;
 
   orig_cfg_hooks = get_cfg_hooks ();
-  sel_cfg_hooks = orig_cfg_hooks;
+  sel_cfg_hooks = *orig_cfg_hooks;
 
   sel_cfg_hooks.create_basic_block = sel_create_basic_block;
 
-  set_cfg_hooks (sel_cfg_hooks);
+  set_cfg_hooks (&sel_cfg_hooks);
 
   sched_init_only_bb = sel_init_only_bb;
   sched_split_block = sel_split_block;
@@ -6110,7 +6090,7 @@ make_regions_from_loop_nest (class loop *loop)
   return true;
 }
 
-/* Initalize data structures needed.  */
+/* Initialize data structures needed.  */
 void
 sel_init_pipelining (void)
 {

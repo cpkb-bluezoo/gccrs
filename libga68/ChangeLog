@@ -1,3 +1,54 @@
+2026-08-06  Trevor Woerner  <twoerner@gmail.com>
+
+	* configure: Regenerate.
+
+2026-08-05  Trevor Woerner  <twoerner@gmail.com>
+
+	* sppp.awk: Strip any directory prefix from FILENAME in the
+	generated header comment.
+
+2026-08-05  Trevor Woerner  <twoerner@gmail.com>
+
+	* m4/autoconf.m4 (AC_PROG_A68): Only default A68FLAGS when it
+	is unset.
+	* configure: Regenerate.
+
+2026-07-20  chris hermansen  <clhermansen@gmail.com>
+
+	* standard.a68.in (Integer): New mode.
+	(whole_max_entry): New variable.
+	(whole_p10): Likewise.
+	(whole_stop_after): Likewise.
+	(whole_powers_of_10): Likewise.
+	(WHOLEDIGITS): New operator.
+	(whole): Rewrite.
+	(subwhole): Likewise.
+
+2026-05-30  Dhruv Chawla  <dhruvc@nvidia.com>
+
+	* ga68-error.c: Fix typos.
+	* ga68-unistr.c (_libga68_u32_cmp): Likewise.
+	(_libga68_u8_uctomb): Likewise.
+	(_libga68_u32_to_u8): Likewise.
+
+2026-05-08  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	* Makefile.in: Regenerate.
+	* acinclude.m4: Delete LIBGA68_CHECK_ATTRIBUTE_VISIBILITY.
+	* aclocal.m4: Regenerate.
+	* configure: Regenerate.
+	* configure.ac: Use GCC_CHECK_ATTRIBUTE_VISIBILITY instead of
+	LIBGA68_CHECK_ATTRIBUTE_VISIBILITY.
+
+2026-03-21  Jose E. Marchesi  <jemarch@gnu.org>
+
+	* ga68-math.c: New file.
+	* floor.c: Imported from gnulib.
+	* configure.ac: Do not check for libm.
+	* Makefile.am (libga68_la_SOURCES): Add ga68-match.c.
+	* Makefile.in (am_libga68_la_OBJECTS): Regenerate.
+	* configure (ac_res): Likewise.
+
 2026-03-15  Jose E. Marchesi  <jemarch@gnu.org>
 
 	* ga68.map: Add public symbols from posix and standard preludes.

@@ -426,7 +426,7 @@ MAKEINFO = @MAKEINFO@
 EXPECT = @EXPECT@
 RUNTEST = @RUNTEST@
 
-AUTO_PROFILE = gcc-auto-profile --all -c 10000000
+AUTO_PROFILE = gcc-auto-profile --all --perf perf.data -c 10000000 --
 
 # This just becomes part of the MAKEINFO definition passed down to
 # sub-makes.  It lets flags be given on the command line while still
@@ -618,7 +618,7 @@ AR_FOR_TARGET=@AR_FOR_TARGET@ @AR_PLUGIN_OPTION_FOR_TARGET@
 AS_FOR_TARGET=@AS_FOR_TARGET@
 CC_FOR_TARGET=$(STAGE_CC_WRAPPER) @CC_FOR_TARGET@
 
-# If GCC_FOR_TARGET is not overriden on the command line, then this
+# If GCC_FOR_TARGET is not overridden on the command line, then this
 # variable is passed down to the gcc Makefile, where it is used to
 # build libgcc2.a.  We define it here so that it can itself be
 # overridden on the command line.
@@ -734,7 +734,7 @@ CXX_FOR_TARGET_FLAG_TO_PASS = \
 
 # Flags to pass down to all sub-makes. STAGE*FLAGS,
 # MAKEINFO and MAKEINFOFLAGS are explicitly passed here to make them
-# overrideable (for a bootstrap build stage1 also builds gcc.info).
+# overridable (for a bootstrap build stage1 also builds gcc.info).
 BASE_FLAGS_TO_PASS =[+ FOR flags_to_pass +][+ IF optional +] \
 	"`echo '[+flag+]=$([+flag+])' | sed -e s'/[^=][^=]*=$$/XFOO=/'`"[+ ELSE optional +] \
 	"[+flag+]=$([+flag+])"[+ ENDIF optional+][+ ENDFOR flags_to_pass +][+ FOR bootstrap-stage +] \
@@ -1054,6 +1054,7 @@ do-check:
 warning.log: build.log
 	$(srcdir)/contrib/warn_summary build.log > $@
 
+.PHONY: mail-report.log
 mail-report.log:
 	if test x'$(BOOT_CFLAGS)' != x''; then \
 	    BOOT_CFLAGS='$(BOOT_CFLAGS)'; export BOOT_CFLAGS; \
@@ -1062,6 +1063,7 @@ mail-report.log:
 	chmod +x $@
 	echo If you really want to send e-mail, run ./$@ now
 
+.PHONY: mail-report-with-warnings.log
 mail-report-with-warnings.log: warning.log
 	if test x'$(BOOT_CFLAGS)' != x''; then \
 	    BOOT_CFLAGS='$(BOOT_CFLAGS)'; export BOOT_CFLAGS; \
@@ -1821,6 +1823,15 @@ do-clean: clean-stage[+id+]
 # only possibility, but now it conflicts with no-bootstrap rules
 @if gcc-bootstrap
 [+ IF compare-target +]
+# Run the comparisons in parallel through a generated sub-makefile under
+# the jobserver.  Each failing recipe writes a separate result shard that
+# is collected after the sub-make finishes.  The comparison command is
+# written into that makefile, so double its '$' characters to survive the
+# expansion the sub-make performs when it reads them back, and name the
+# shell there, which a sub-make does not inherit.  The exit trap starts
+# with ':' because older bash does not preserve the exit status across an
+# exit trap that consists of a single command, which would report a
+# comparison failure as a success.
 [+compare-target+]:
 	@r=`${PWD_COMMAND}`; export r; \
 	s=`cd $(srcdir); ${PWD_COMMAND}`; export s; \
@@ -1829,29 +1840,54 @@ do-clean: clean-stage[+id+]
 	  exit 0; \
 	fi; \
 	: $(MAKE); $(stage); \
-	rm -f .bad_compare; \
+	compare_id=$$$$; \
+	bad_compare=.bad_compare.$$compare_id; export bad_compare; \
+	compare_makefile=[+compare-target+].$$compare_id.mk; \
+	trap ':; rm -f "$$compare_makefile" "$$bad_compare" \
+	  "$$bad_compare".*' 0; \
+	trap 'exit 1' 1 2 3 15; \
+	rm -f .bad_compare "$$bad_compare" "$$bad_compare".*; \
 	echo Comparing stages [+prev+] and [+id+]; \
         sed=`echo stage[+id+] | sed 's,^stage,,;s,.,.,g'`; \
 	files=`find stage[+id+]-* -name "*$(objext)" -print | \
 		 sed -n s,^stage$$sed-,,p`; \
-	for file in $${files} ${extra-compare}; do \
-	  f1=$$r/stage[+prev+]-$$file; f2=$$r/stage[+id+]-$$file; \
-	  if test ! -f $$f1; then continue; fi; \
-	  $(do-[+compare-target+]) > /dev/null 2>&1; \
-	  if test $$? -eq 1; then \
-	    case $$file in \
-	      @compare_exclusions@) \
-	        echo warning: $$file differs ;; \
-	      *) \
-	        echo $$file differs >> .bad_compare ;; \
-	    esac; \
-	  fi; \
-	done; \
-	if [ -f .bad_compare ]; then \
+	cmp_cmd='$(subst $$,$$$$,$(do-[+compare-target+]))'; \
+	{ \
+	  echo 'SHELL = $(SHELL)'; \
+	  echo 'all:'; \
+	  echo '.PHONY: all FORCE'; \
+	  echo 'FORCE:'; \
+	  printf '[+compare-target+]/%%: FORCE ; @'; \
+	  printf 'f1=$$$$r/stage[+prev+]-$$*; '; \
+	  printf 'f2=$$$$r/stage[+id+]-$$*; '; \
+	  printf '%s' "$$cmp_cmd"; \
+	  printf ' > /dev/null 2>&1; st=$$$$?; '; \
+	  printf 'if test $$$$st -eq 1; then '; \
+	  printf 'case $$* in '; \
+	  printf '@compare_exclusions@) echo warning: $$* differs ;; '; \
+	  printf '*) echo $$* differs >> "$$$$bad_compare.$$$$$$$$" ;; '; \
+	  printf 'esac; '; \
+	  printf 'elif test $$$$st -ne 0; then '; \
+	  printf 'echo "$$* compare: error status $$$$st" '; \
+	  printf '>> "$$$$bad_compare.$$$$$$$$"; fi\n'; \
+	  for file in $${files} ${extra-compare}; do \
+	    if test ! -f $$r/stage[+prev+]-$$file; then continue; fi; \
+	    echo "all: [+compare-target+]/$$file"; \
+	  done; \
+	} > "$$compare_makefile"; \
+	$(MAKE) -s -f "$$compare_makefile" all; compare_status=$$?; \
+	if test $$compare_status -ne 0; then \
+	  exit $$compare_status; \
+	fi; \
+	set -- "$$bad_compare".*; \
+	if test -f "$$1"; then \
 	  echo "Bootstrap comparison failure!"; \
-	  cat .bad_compare; \
+	  LC_ALL=C sort "$$bad_compare".* > "$$bad_compare" || exit 1; \
+	  cat "$$bad_compare"; \
+	  mv -f "$$bad_compare" .bad_compare; \
 	  exit 1; \
 	else \
+	  rm -f .bad_compare; \
 	  echo Comparison successful.; \
 	fi; \
 	$(STAMP) [+compare-target+][+ IF prev +]

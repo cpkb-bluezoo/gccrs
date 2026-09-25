@@ -221,10 +221,10 @@ struct GTY((chain_next ("%h.prev"))) c_binding {
   struct c_binding *prev;	/* the previous decl in this scope */
   struct c_binding *shadowed;	/* the innermost decl shadowed by this one */
   unsigned int depth : 28;      /* depth of this scope */
-  BOOL_BITFIELD invisible : 1;  /* normal lookup should ignore this binding */
-  BOOL_BITFIELD nested : 1;     /* do not set DECL_CONTEXT when popping */
-  BOOL_BITFIELD inner_comp : 1; /* incomplete array completed in inner scope */
-  BOOL_BITFIELD in_struct : 1;	/* currently defined as struct field */
+  bool invisible : 1;  /* normal lookup should ignore this binding */
+  bool nested : 1;     /* do not set DECL_CONTEXT when popping */
+  bool inner_comp : 1; /* incomplete array completed in inner scope */
+  bool in_struct : 1;	/* currently defined as struct field */
   location_t locus;		/* location for nested bindings */
 };
 #define B_IN_SCOPE(b1, b2) ((b1)->depth == (b2)->depth)
@@ -502,38 +502,38 @@ struct GTY((chain_next ("%h.outer"))) c_scope {
 
   /* True if we are currently filling this scope with parameter
      declarations.  */
-  BOOL_BITFIELD parm_flag : 1;
+  bool parm_flag : 1;
 
   /* True if we saw [*] in this scope.  Used to give an error messages
      if these appears in a function definition.  */
-  BOOL_BITFIELD had_vla_unspec : 1;
+  bool had_vla_unspec : 1;
 
   /* True if we parsed a list of forward parameter decls in this scope.  */
-  BOOL_BITFIELD had_forward_parm_decls : 1;
+  bool had_forward_parm_decls : 1;
 
   /* True if this is the outermost block scope of a function body.
      This scope contains the parameters, the local variables declared
      in the outermost block, and all the labels (except those in
      nested functions, or declared at block scope with __label__).  */
-  BOOL_BITFIELD function_body : 1;
+  bool function_body : 1;
 
   /* True means make a BLOCK for this scope no matter what.  */
-  BOOL_BITFIELD keep : 1;
+  bool keep : 1;
 
   /* True means that an unsuffixed float constant is _Decimal64.  */
-  BOOL_BITFIELD float_const_decimal64 : 1;
+  bool float_const_decimal64 : 1;
 
   /* True if this scope has any label bindings.  This is used to speed
      up searching for labels when popping scopes, particularly since
      labels are normally only found at function scope.  */
-  BOOL_BITFIELD has_label_bindings : 1;
+  bool has_label_bindings : 1;
 
   /* True if we should issue a warning if a goto statement crosses any
      of the bindings.  We still need to check the list of bindings to
      find the specific ones we need to warn about.  This is true if
      decl_jump_unsafe would return true for any of the bindings.  This
      is used to avoid looping over all the bindings unnecessarily.  */
-  BOOL_BITFIELD has_jump_unsafe_decl : 1;
+  bool has_jump_unsafe_decl : 1;
 };
 
 /* The scope currently in effect.  */
@@ -1495,6 +1495,15 @@ push_file_scope (void)
   if (file_scope)
     return;
 
+  /* Call the target stack_protect_guard hook if the stack protection
+     guard is declared as a global symbol.  */
+  if (targetm.stack_protect_guard_symbol_p ())
+    {
+      tree decl = targetm.stack_protect_guard ();
+      DECL_CHAIN (decl) = visible_builtins;
+      visible_builtins = decl;
+    }
+
   push_scope ();
   file_scope = current_scope;
 
@@ -1537,7 +1546,7 @@ pop_file_scope (void)
   maybe_apply_pending_pragma_weaks ();
 }
 
-/* Whether we are curently inside the initializer for an
+/* Whether we are currently inside the initializer for an
    underspecified object definition (C23 auto or constexpr).  */
 static bool in_underspecified_init;
 
@@ -1709,7 +1718,8 @@ pushtag (location_t loc, tree name, tree type)
      NULL-named TYPE_DECL node helps dwarfout.c to know when it needs
      to output a representation of a tagged type, and it also gives
      us a convenient place to record the "scope start" address for the
-     tagged type.  */
+     tagged type, and it is used to track whether the type is used
+     in a non-local context via mark_decl_used.  */
 
   TYPE_STUB_DECL (type) = pushdecl (build_decl (loc,
 						TYPE_DECL, NULL_TREE, type));
@@ -2202,8 +2212,8 @@ diagnose_mismatched_decls (tree newdecl, tree olddecl,
   bool enum_and_int_p = false;
   auto_diagnostic_group d;
 
-  int comptypes_result = comptypes_check_enum_int (oldtype, newtype,
-						   &enum_and_int_p);
+  bool comptypes_result = comptypes_check_enum_int (oldtype, newtype,
+						    &enum_and_int_p);
   if (!comptypes_result)
     {
       if (TREE_CODE (olddecl) == FUNCTION_DECL
@@ -2358,7 +2368,7 @@ diagnose_mismatched_decls (tree newdecl, tree olddecl,
 		      if (comptypes (oldtype, trytype))
 			{
 			  *newtypep = newtype = trytype;
-			  comptypes_result = 1;
+			  comptypes_result = true;
 			}
 		    }
 		}
@@ -2398,12 +2408,7 @@ diagnose_mismatched_decls (tree newdecl, tree olddecl,
      compatible.  */
   if (TREE_CODE (newdecl) == TYPE_DECL)
     {
-      bool types_different = false;
-
-      comptypes_result
-	= comptypes_check_different_types (oldtype, newtype, &types_different);
-
-      if (comptypes_result != 1 || types_different)
+      if (!comptypes_same_p (oldtype, newtype))
 	{
 	  error ("redefinition of typedef %q+D with different type", newdecl);
 	  locate_old_decl (olddecl);
@@ -2572,7 +2577,7 @@ diagnose_mismatched_decls (tree newdecl, tree olddecl,
 			"but not here");
 	    }
 	}
-      /* Check if these are unmergable overlapping FMV declarations.  */
+      /* Check if these are unmergeable overlapping FMV declarations.  */
       if (!TARGET_HAS_FMV_TARGET_ATTRIBUTE
 	  && diagnose_versioned_decls (olddecl, newdecl))
 	return false;
@@ -3456,7 +3461,7 @@ pushdecl (tree x)
 	  && TREE_CODE (x) == FUNCTION_DECL && DECL_FILE_SCOPE_P (b_use->decl)
 	  && DECL_FILE_SCOPE_P (x)
 	  && disjoint_version_decls (x, b_use->decl)
-	  && comptypes (vistype, type) != 0)
+	  && comptypes (vistype, type))
 	{
 	  maybe_mark_function_versioned (b_use->decl);
 	  maybe_mark_function_versioned (b->decl);
@@ -4952,7 +4957,8 @@ c_init_decl_processing (void)
   truthvalue_false_node = integer_zero_node;
 
   /* Even in C99, which has a real boolean type.  */
-  pushdecl (build_decl (UNKNOWN_LOCATION, TYPE_DECL, get_identifier ("_Bool"),
+  pushdecl (build_decl (UNKNOWN_LOCATION, TYPE_DECL,
+			get_identifier (flag_isoc23 ? "bool" : "_Bool"),
 			boolean_type_node));
 
   /* C-specific nullptr initialization.  */
@@ -5531,15 +5537,15 @@ one_element_array_type_p (const_tree type)
 }
 
 /* Determine whether TYPE is a zero-length array type "[0]".  */
-static bool
+bool
 zero_length_array_type_p (const_tree type)
 {
-  if (TREE_CODE (type) == ARRAY_TYPE)
-    if (tree type_size = TYPE_SIZE_UNIT (type))
-      if ((integer_zerop (type_size))
-	   && TYPE_DOMAIN (type) != NULL_TREE
-	   && TYPE_MAX_VALUE (TYPE_DOMAIN (type)) == NULL_TREE)
-	return true;
+  if (TREE_CODE (type) == ARRAY_TYPE
+      && COMPLETE_TYPE_P (type)
+      && TYPE_DOMAIN (type) != NULL_TREE
+      && (TYPE_MAX_VALUE (TYPE_DOMAIN (type)) == NULL_TREE
+	  || integer_all_onesp (TYPE_MAX_VALUE (TYPE_DOMAIN (type)))))
+    return true;
   return false;
 }
 
@@ -5558,7 +5564,7 @@ add_flexible_array_elts_to_size (tree decl, tree init)
 
   elt = CONSTRUCTOR_ELTS (init)->last ().value;
   type = TREE_TYPE (elt);
-  if (c_flexible_array_member_type_p (type))
+  if (flexible_array_member_type_p (type))
     {
       complete_array_type (&type, elt, false);
       /* For a structure, add the size of the initializer to the DECL's
@@ -7309,6 +7315,8 @@ grokdeclarator (const struct c_declarator *declarator,
 
 	    declarator = declarator->declarator;
 
+	    bool flexible_array_member = false;
+
 	    /* Check for some types that there cannot be arrays of.  */
 
 	    if (VOID_TYPE_P (type))
@@ -7465,7 +7473,7 @@ grokdeclarator (const struct c_declarator *declarator,
 		       an unsigned index type, which is what we'll
 		       get with build_index_type.  Create an
 		       open-ended range instead.  */
-		    itype = build_range_type (sizetype, size, NULL_TREE);
+		    itype = build_index_type (NULL_TREE);
 		  }
 		else
 		  {
@@ -7521,7 +7529,6 @@ grokdeclarator (const struct c_declarator *declarator,
 	      }
 	    else if (decl_context == FIELD)
 	      {
-		bool flexible_array_member = false;
 		if (array_parm_vla_unspec_p)
 		  /* Field names can in fact have function prototype
 		     scope so [*] is disallowed here through making
@@ -7581,8 +7588,16 @@ grokdeclarator (const struct c_declarator *declarator,
 						 ENCODE_QUAL_ADDR_SPACE (as));
 		if (array_parm_vla_unspec_p)
 		  type = c_build_array_type_unspecified (type);
+		/* The GCC extension for zero-length arrays differs from
+		   ISO flexible array members in that sizeof yields
+		   zero.  */
+		else if (size && integer_zerop (size))
+		  type = c_build_array_type_zero_size (type);
 		else
 		  type = c_build_array_type (type, itype);
+
+		if (!valid_array_size_p (loc, type, name))
+		  type = error_mark_node;
 	      }
 
 	    if (array_parm_vla_unspec_p)
@@ -7601,23 +7616,10 @@ grokdeclarator (const struct c_declarator *declarator,
 		size_varies = true;
 	      }
 
-	    if (type != error_mark_node)
-	      {
-		/* The GCC extension for zero-length arrays differs from
-		   ISO flexible array members in that sizeof yields
-		   zero.  */
-		if (size && integer_zerop (size))
-		  {
-		    gcc_assert (itype);
-		    type = build_distinct_type_copy (TYPE_MAIN_VARIANT (type));
-		    TYPE_SIZE (type) = bitsize_zero_node;
-		    TYPE_SIZE_UNIT (type) = size_zero_node;
-		    SET_TYPE_STRUCTURAL_EQUALITY (type);
-		  }
 
-		if (!valid_array_size_p (loc, type, name))
-		  type = error_mark_node;
-	      }
+	    gcc_assert (type == error_mark_node
+			|| flexible_array_member
+			   == flexible_array_member_type_p (type));
 
 	    if (decl_context != PARM
 		&& (array_ptr_quals != TYPE_UNQUALIFIED
@@ -8149,8 +8151,7 @@ grokdeclarator (const struct c_declarator *declarator,
 	      pedwarn_c90 (loc, OPT_Wpedantic, "ISO C90 does not "
 			   "support flexible array members");
 	    type = build_distinct_type_copy (TYPE_MAIN_VARIANT (type));
-	    TYPE_DOMAIN (type) = build_range_type (sizetype, size_zero_node,
-						   NULL_TREE);
+	    TYPE_DOMAIN (type) = build_index_type (NULL_TREE);
 	    if (orig_qual_indirect == 0)
 	      orig_qual_type = NULL_TREE;
 	  }
@@ -8821,7 +8822,7 @@ parser_xref_tag (location_t loc, enum tree_code code, tree name,
 
   ref = lookup_tag (code, name, has_enum_type_specifier, &refloc);
 
-  /* If the visble type is still being defined, see if there is
+  /* If the visible type is still being defined, see if there is
      an earlier definition (which may be complete).  We do not
      have to loop because nested redefinitions are not allowed.  */
   if (flag_isoc23 && ref && C_TYPE_BEING_DEFINED (ref))
@@ -9408,7 +9409,7 @@ is_flexible_array_member_p (bool is_last_field,
 
   bool is_zero_length_array = zero_length_array_type_p (TREE_TYPE (x));
   bool is_one_element_array = one_element_array_type_p (TREE_TYPE (x));
-  bool is_flexible_array = c_flexible_array_member_type_p (TREE_TYPE (x));
+  bool is_flexible_array = flexible_array_member_type_p (TREE_TYPE (x));
 
   unsigned int strict_flex_array_level = c_strict_flex_array_level_of (x);
 
@@ -9502,6 +9503,26 @@ c_update_type_canonical (tree t)
     }
 }
 
+
+/* We set C_TYPE_VARIABLY_MODIFIED for derived types.  We will not update
+   array types, pointers to array types, function types and other derived
+   types created while the type was still incomplete.  We need to update
+   at least all types for which TYPE_CANONICAL will bet set, because for
+   those we later assume (in c_variably_modified_p) that the bit is
+   up-to-date.  */
+
+static void
+c_update_variably_modified (tree t)
+{
+  for (tree x = t; x; x = TYPE_NEXT_VARIANT (x))
+    {
+      C_TYPE_VARIABLY_MODIFIED (x) = 1;
+      for (tree p = TYPE_POINTER_TO (x); p; p = TYPE_NEXT_PTR_TO (p))
+	c_update_variably_modified (p);
+    }
+}
+
+
 /* Verify the argument of the counted_by attribute of each field of
    the containing structure, OUTMOST_STRUCT_TYPE, including its inner
    anonymous struct/union, Report error and remove the corresponding
@@ -9514,7 +9535,7 @@ verify_counted_by_attribute (tree outmost_struct_type,
   for (tree field = TYPE_FIELDS (cur_struct_type); field;
        field = TREE_CHAIN (field))
     {
-      if (c_flexible_array_member_type_p (TREE_TYPE (field))
+      if (flexible_array_member_type_p (TREE_TYPE (field))
 	   || TREE_CODE (TREE_TYPE (field)) == POINTER_TYPE)
 	{
 	  tree attr_counted_by = lookup_attribute ("counted_by",
@@ -9528,7 +9549,7 @@ verify_counted_by_attribute (tree outmost_struct_type,
 
 	  tree fieldname = TREE_VALUE (TREE_VALUE (attr_counted_by));
 
-	  /* Verify the argument of the attrbute is a valid field of the
+	  /* Verify the argument of the attribute is a valid field of the
 	     containing structure.  */
 
 	  tree counted_by_field = lookup_field (outmost_struct_type,
@@ -9701,7 +9722,7 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
 	C_TYPE_VARIABLE_SIZE (t) = 1;
 
       /* If any field is variably modified, record this fact. */
-      if (C_TYPE_VARIABLY_MODIFIED (TREE_TYPE (x)))
+      if (c_type_variably_modified_p (TREE_TYPE (x)))
 	C_TYPE_VARIABLY_MODIFIED (t) = 1;
 
       if (DECL_C_BIT_FIELD (x))
@@ -9717,7 +9738,7 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
 	DECL_PACKED (x) = 1;
 
       /* Detect flexible array member in an invalid context.  */
-      if (c_flexible_array_member_type_p (TREE_TYPE (x)))
+      if (flexible_array_member_type_p (TREE_TYPE (x)))
 	{
 	  if (TREE_CODE (t) == UNION_TYPE)
 	    pedwarn (DECL_SOURCE_LOCATION (x), OPT_Wpedantic,
@@ -9764,7 +9785,7 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
 	 the result for multiple last_fields.  */
       if (TREE_CODE (TREE_TYPE (x)) == ARRAY_TYPE)
 	TYPE_INCLUDES_FLEXARRAY (t)
-	  |= is_last_field && c_flexible_array_member_type_p (TREE_TYPE (x));
+	  |= is_last_field && flexible_array_member_type_p (TREE_TYPE (x));
       /* Recursively set TYPE_INCLUDES_FLEXARRAY for the context of x, t
 	 when x is an union or record and is the last field.  */
       else if (RECORD_OR_UNION_TYPE_P (TREE_TYPE (x)))
@@ -9826,8 +9847,8 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
 	    }
 	  if (width != TYPE_PRECISION (type))
 	    {
-	      if (TREE_CODE (type) == BITINT_TYPE
-		  && width >= (TYPE_UNSIGNED (type) ? 1 : 2))
+	      if (BITINT_TYPE_P (type)
+		  && width >= ((TYPE_UNSIGNED (type) || flag_isoc2y) ? 1 : 2))
 		TREE_TYPE (field)
 		  = build_bitint_type (width, TYPE_UNSIGNED (type));
 	      else
@@ -9950,6 +9971,23 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
       warning_at (loc, 0, "union cannot be made transparent");
     }
 
+  tree incomplete_vars = C_TYPE_INCOMPLETE_VARS (TYPE_MAIN_VARIANT (t));
+  for (x = TYPE_MAIN_VARIANT (t); x; x = TYPE_NEXT_VARIANT (x))
+    {
+      TYPE_FIELDS (x) = TYPE_FIELDS (t);
+      TYPE_LANG_SPECIFIC (x) = TYPE_LANG_SPECIFIC (t);
+      TYPE_TRANSPARENT_AGGR (x) = TYPE_TRANSPARENT_AGGR (t);
+      TYPE_TYPELESS_STORAGE (x) = TYPE_TYPELESS_STORAGE (t);
+      C_TYPE_FIELDS_READONLY (x) = C_TYPE_FIELDS_READONLY (t);
+      C_TYPE_FIELDS_VOLATILE (x) = C_TYPE_FIELDS_VOLATILE (t);
+      C_TYPE_FIELDS_NON_CONSTEXPR (x) = C_TYPE_FIELDS_NON_CONSTEXPR (t);
+      C_TYPE_FIELDS_HAS_COUNTED_BY (x) = C_TYPE_FIELDS_HAS_COUNTED_BY (t);
+      C_TYPE_VARIABLE_SIZE (x) = C_TYPE_VARIABLE_SIZE (t);
+      C_TYPE_VARIABLY_MODIFIED (x) = C_TYPE_VARIABLY_MODIFIED (t);
+      C_TYPE_INCOMPLETE_VARS (x) = NULL_TREE;
+      TYPE_INCLUDES_FLEXARRAY (x) = TYPE_INCLUDES_FLEXARRAY (t);
+    }
+
   /* Check for consistency with previous definition.  */
   if (flag_isoc23 && NULL != enclosing_struct_parse_info)
     {
@@ -10004,23 +10042,6 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
       c_update_type_canonical (t);
     }
 
-  tree incomplete_vars = C_TYPE_INCOMPLETE_VARS (TYPE_MAIN_VARIANT (t));
-  for (x = TYPE_MAIN_VARIANT (t); x; x = TYPE_NEXT_VARIANT (x))
-    {
-      TYPE_FIELDS (x) = TYPE_FIELDS (t);
-      TYPE_LANG_SPECIFIC (x) = TYPE_LANG_SPECIFIC (t);
-      TYPE_TRANSPARENT_AGGR (x) = TYPE_TRANSPARENT_AGGR (t);
-      TYPE_TYPELESS_STORAGE (x) = TYPE_TYPELESS_STORAGE (t);
-      C_TYPE_FIELDS_READONLY (x) = C_TYPE_FIELDS_READONLY (t);
-      C_TYPE_FIELDS_VOLATILE (x) = C_TYPE_FIELDS_VOLATILE (t);
-      C_TYPE_FIELDS_NON_CONSTEXPR (x) = C_TYPE_FIELDS_NON_CONSTEXPR (t);
-      C_TYPE_FIELDS_HAS_COUNTED_BY (x) = C_TYPE_FIELDS_HAS_COUNTED_BY (t);
-      C_TYPE_VARIABLE_SIZE (x) = C_TYPE_VARIABLE_SIZE (t);
-      C_TYPE_VARIABLY_MODIFIED (x) = C_TYPE_VARIABLY_MODIFIED (t);
-      C_TYPE_INCOMPLETE_VARS (x) = NULL_TREE;
-      TYPE_INCLUDES_FLEXARRAY (x) = TYPE_INCLUDES_FLEXARRAY (t);
-    }
-
   /* Update type location to the one of the definition, instead of e.g.
      a forward declaration.  */
   if (TYPE_STUB_DECL (t))
@@ -10031,12 +10052,16 @@ finish_struct (location_t loc, tree t, tree fieldlist, tree attributes,
 
   finish_incomplete_vars (incomplete_vars, toplevel);
 
-  /* Make sure a DECL_EXPR is created for structs with VLA members.
-     Because we do not know the context, we always pass expr
-     to force creation of a BIND_EXPR which is required in some
-     contexts.  */
+
   if (c_type_variably_modified_p (t))
-    add_decl_expr (loc, t, expr, false);
+    {
+      c_update_variably_modified (t);
+      /* Make sure a DECL_EXPR is created for structs with VLA members.
+	 Because we do not know the context, we always pass expr
+	 to force creation of a BIND_EXPR which is required in some
+	 contexts.  */
+      add_decl_expr (loc, t, expr, false);
+    }
 
   if (warn_cxx_compat)
     warn_cxx_compat_finish_struct (fieldlist, TREE_CODE (t), loc);
@@ -13110,13 +13135,19 @@ declspecs_add_type (location_t loc, struct c_declspecs *specs,
 	      specs->typedef_p = true;
 	      specs->locations[cdw_typedef] = loc;
 	    }
+
+	  if (TREE_CODE (type) == RECORD_TYPE || TREE_CODE (type) == UNION_TYPE
+	      || TREE_CODE (type) == ENUMERAL_TYPE)
+	    mark_decl_used (TYPE_STUB_DECL (type), false);
+
 	  if (spec.expr)
 	    {
+	      tree expr = save_expr (fold_convert (void_type_node, spec.expr));
 	      if (specs->expr)
-		specs->expr = build2 (COMPOUND_EXPR, TREE_TYPE (spec.expr),
-				      specs->expr, spec.expr);
+		specs->expr = build2 (COMPOUND_EXPR, TREE_TYPE (expr),
+				      specs->expr, expr);
 	      else
-		specs->expr = spec.expr;
+		specs->expr = expr;
 	      specs->expr_const_operands &= spec.expr_const_operands;
 	    }
 	}
@@ -13627,10 +13658,11 @@ finish_declspecs (struct c_declspecs *specs)
     case cts_bitint:
       gcc_assert (!specs->long_p && !specs->short_p
 		  && !specs->complex_p);
-      if (!specs->unsigned_p && specs->u.bitint_prec == 1)
+      if (!specs->unsigned_p && specs->u.bitint_prec == 1 && !flag_isoc2y)
 	{
 	  error_at (specs->locations[cdw_typespec],
-		    "%<signed _BitInt%> argument must be at least 2");
+		    "%<signed _BitInt%> argument must be at least 2 "
+		    "before C2Y");
 	  specs->type = integer_type_node;
 	  break;
 	}

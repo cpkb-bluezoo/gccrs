@@ -48,6 +48,12 @@ static tree handle_init_priority_attribute (tree *, tree, tree, int, bool *);
 static tree handle_abi_tag_attribute (tree *, tree, tree, int, bool *);
 static tree handle_no_dangling_attribute (tree *, tree, tree, int, bool *);
 static tree handle_annotation_attribute (tree *, tree, tree, int, bool *);
+static tree handle_trivial_abi_attribute (tree *, tree, tree, int, bool *);
+static tree handle_gnu_trivial_abi_attribute (tree *, tree, tree, int, bool *);
+static tree handle_no_specializations_attribute (tree *, tree, tree, int,
+						 bool *);
+static tree handle_gnu_no_specializations_attribute (tree *, tree, tree, int,
+						     bool *);
 
 /* If REF is an lvalue, returns the kind of lvalue that REF is.
    Otherwise, returns clk_none.  */
@@ -570,6 +576,10 @@ builtin_valid_in_constant_expr_p (const_tree decl)
 	  case CP_BUILT_IN_EH_PTR_ADJUST_REF:
 	  case CP_BUILT_IN_IS_STRING_LITERAL:
 	  case CP_BUILT_IN_CONSTEXPR_DIAG:
+	  case CP_BUILT_IN_CURRENT_EXCEPTION:
+	  case CP_BUILT_IN_UNCAUGHT_EXCEPTIONS:
+	  case CP_BUILT_IN_IS_WITHIN_LIFETIME:
+	  case CP_BUILT_IN_START_LIFETIME:
 	    return true;
 	  default:
 	    break;
@@ -851,7 +861,7 @@ build_cplus_new (tree type, tree init, tsubst_flags_t complain)
 }
 
 /* Subroutine of build_vec_init_expr: Build up a single element
-   intialization as a proxy for the full array initialization to get things
+   initialization as a proxy for the full array initialization to get things
    marked as used and any appropriate diagnostics.
 
    This used to be necessary because we were deferring building the actual
@@ -1720,7 +1730,7 @@ apply_identity_attributes (tree result, tree attribs, bool *remove_attributes)
    Because of several reasons:
     * If T is a type that needs structural equality
       its TYPE_CANONICAL (T) will be NULL.
-    * TYPE_CANONICAL (T) desn't carry type attributes
+    * TYPE_CANONICAL (T) doesn't carry type attributes
       and loses template parameter names.
 
    If REMOVE_ATTRIBUTES is non-null, also strip attributes that don't
@@ -2046,6 +2056,7 @@ strip_typedefs_expr (tree t, bool *remove_attributes, unsigned int flags)
     case OVERLOAD:
     case BASELINK:
     case ARGUMENT_PACK_SELECT:
+    case REQUIRES_EXPR:
       return t;
 
     case TRAIT_EXPR:
@@ -2151,6 +2162,8 @@ strip_typedefs_expr (tree t, bool *remove_attributes, unsigned int flags)
 
     case LAMBDA_EXPR:
     case STMT_EXPR:
+    /* ^^alias represents the alias itself, not the underlying type.  */
+    case REFLECT_EXPR:
       return t;
 
     default:
@@ -3849,6 +3862,15 @@ build_min_non_dep_op_overload (enum tree_code op,
 	  tree spaceship_non_dep = (TREE_CODE (non_dep) == CALL_EXPR
 				    ? CALL_EXPR_ARG (non_dep, reversed ? 1 : 0)
 				    : TREE_OPERAND (non_dep, reversed ? 1 : 0));
+
+	  tree int_promotion = NULL_TREE;
+	  if (TREE_CODE (spaceship_non_dep) == NOP_EXPR)
+	    {
+	      gcc_checking_assert (TREE_CODE (non_dep) != CALL_EXPR);
+	      int_promotion = TREE_TYPE (spaceship_non_dep);
+	      spaceship_non_dep = TREE_OPERAND (spaceship_non_dep, 0);
+	    }
+
 	  gcc_checking_assert (TREE_CODE (spaceship_non_dep) == CALL_EXPR);
 	  tree spaceship_op0 = va_arg (p, tree);
 	  tree spaceship_op1 = va_arg (p, tree);
@@ -3871,6 +3893,8 @@ build_min_non_dep_op_overload (enum tree_code op,
 	    {
 	      gcc_checking_assert (COMPARISON_CLASS_P (non_dep)
 				   || TREE_CODE (non_dep) == SPACESHIP_EXPR);
+	      if (int_promotion)
+		op0 = build_nop (int_promotion, op0);
 	      if (reversed)
 		std::swap (op0, op1);
 	      return build_min_non_dep (TREE_CODE (non_dep), non_dep, op0, op1);
@@ -4508,10 +4532,17 @@ cp_tree_equal (tree t1, tree t2)
       return true;
 
     case REFLECT_EXPR:
-      if (!cp_tree_equal (REFLECT_EXPR_HANDLE (t1), REFLECT_EXPR_HANDLE (t2))
-	  || REFLECT_EXPR_KIND (t1) != REFLECT_EXPR_KIND (t2))
-	return false;
-      return true;
+      return compare_reflections (t1, t2);
+
+    case REQUIRES_EXPR:
+      if (cp_tree_equal (REQUIRES_EXPR_PARMS (t1),
+			  REQUIRES_EXPR_PARMS (t2))
+	  && cp_tree_equal (REQUIRES_EXPR_REQS (t1),
+			    REQUIRES_EXPR_REQS (t2))
+	  && cp_tree_equal (REQUIRES_EXPR_EXTRA_ARGS (t1),
+			    REQUIRES_EXPR_EXTRA_ARGS (t2)))
+	return true;
+      return false;
 
     default:
       break;
@@ -4895,7 +4926,35 @@ trivial_type_p (const_tree t)
     return scalarish_type_p (t);
 }
 
-/* Returns 1 iff type T is an implicit-lifetime type, as defined in
+/* Returns true iff type T is a trivially copy constructible type.  */
+
+bool
+trivially_copy_constructible_p (tree t)
+{
+  tree arg = make_tree_vec (1);
+  TREE_VEC_ELT (arg, 0) = build_const_lref (t);
+  return is_trivially_xible (INIT_EXPR, t, arg);
+}
+
+/* Returns true iff FN (which is a special member function) is
+   an eligible special member function, as defined in [special]/6.
+   The "no special member function of the same kind whose associated
+   constraints, if any, are satisfied is more constrained" condition
+   is not checked, this is checked during add_method instead.  */
+
+static bool
+eligible_special_member_function_p (tree fn)
+{
+  /* The function is not deleted.  */
+  if (DECL_DELETED_FN (fn))
+    return false;
+  /* The associated constraints, if any, are satisfied.  */
+  if (!constraints_satisfied_p (fn))
+    return false;
+  return true;
+}
+
+/* Returns true iff type T is an implicit-lifetime type, as defined in
    [basic.types.general] and [class.prop].  */
 
 bool
@@ -4910,6 +4969,7 @@ implicit_lifetime_type_p (tree t)
   if (!CLASS_TYPE_P (t))
     return false;
   t = TYPE_MAIN_VARIANT (t);
+  /* It is an aggregate whose destructor is not user-provided.  */
   if (CP_AGGREGATE_TYPE_P (t)
       && (!CLASSTYPE_DESTRUCTOR (t)
 	  || !user_provided_p (CLASSTYPE_DESTRUCTOR (t))))
@@ -4922,6 +4982,8 @@ implicit_lifetime_type_p (tree t)
     return false;
   if (CLASSTYPE_LAZY_DESTRUCTOR (t))
     lazily_declare_fn (sfk_destructor, t);
+  /* It has at least one trivial eligible constructor and a trivial,
+     non-deleted destructor.  */
   tree fn = CLASSTYPE_DESTRUCTOR (t);
   if (!fn || DECL_DELETED_FN (fn))
     return false;
@@ -4931,7 +4993,7 @@ implicit_lifetime_type_p (tree t)
       fn = *iter;
       if ((default_ctor_p (fn) || copy_fn_p (fn) || move_fn_p (fn))
 	  && trivial_fn_p (fn)
-	  && !DECL_DELETED_FN (fn))
+	  && eligible_special_member_function_p (fn))
 	return true;
     }
   return false;
@@ -5113,6 +5175,16 @@ type_has_unique_obj_representations (const_tree t, bool explain/*=false*/)
 	inform (loc, "%<std::nullptr_t%> has padding bits and no value bits");
       return false;
 
+    case LANG_TYPE:
+      if (REFLECTION_TYPE_P (t))
+	{
+	  if (explain)
+	    inform (loc, "%<std::meta::info%> has an unspecified object "
+		    "representation");
+	  return false;
+	}
+      gcc_fallthrough ();
+
     default:
       gcc_unreachable ();
     }
@@ -5214,7 +5286,7 @@ record_has_unique_obj_representations (const_tree t, const_tree sz,
 	    inform (DECL_SOURCE_LOCATION (last_named_field),
 		    "padding occurs after %qD", last_named_field);
 	  else
-	    inform (DECL_SOURCE_LOCATION (t),
+	    inform (location_of (const_cast <tree> (t)),
 		    "%qT has padding and no data fields", t);
 	}
       return false;
@@ -5268,6 +5340,8 @@ zero_init_expr_p (tree t)
     return false;
   if (TYPE_PTRMEM_P (type))
     return null_member_pointer_value_p (t);
+  if (REFLECTION_TYPE_P (type))
+    return null_reflection_p (t);
   if (TREE_CODE (t) == CONSTRUCTOR)
     {
       if (COMPOUND_LITERAL_P (t)
@@ -5553,6 +5627,7 @@ handle_indeterminate_attribute (tree *node, tree name, tree, int,
 }
 
 /* Table of valid C++ attributes.  */
+// clang-format off
 static const attribute_spec cxx_gnu_attributes[] =
 {
   /* { name, min_len, max_len, decl_req, type_req, fn_type_req,
@@ -5563,7 +5638,12 @@ static const attribute_spec cxx_gnu_attributes[] =
     handle_abi_tag_attribute, NULL },
   { "no_dangling", 0, 1, false, true, false, false,
     handle_no_dangling_attribute, NULL },
+  { "no_specializations", 0, 1, false, false, false, false,
+    handle_gnu_no_specializations_attribute, NULL },
+  { "trivial_abi", 0, 0, false, true, false, true,
+    handle_gnu_trivial_abi_attribute, NULL },
 };
+// clang-format on
 
 const scoped_attribute_specs cxx_gnu_attribute_table =
 {
@@ -5613,6 +5693,22 @@ const scoped_attribute_specs internal_attribute_table =
 {
   "internal ", { internal_attributes }
 };
+
+/* Table of C++ attributes also recognized in the clang:: namespace.  */
+// clang-format off
+static const attribute_spec cxx_clang_attributes[] =
+{
+  { "no_specializations", 0, 1, false, false, false, false,
+    handle_no_specializations_attribute, NULL },
+  { "trivial_abi", 0, 0, false, true, false, true,
+    handle_trivial_abi_attribute, NULL },
+};
+
+const scoped_attribute_specs cxx_clang_attribute_table =
+{
+  "clang", { cxx_clang_attributes }
+};
+// clang-format on
 
 /* Handle an "init_priority" attribute; arguments as in
    struct attribute_spec.handler.  */
@@ -5918,31 +6014,35 @@ handle_annotation_attribute (tree *node, tree ARG_UNUSED (name),
       *no_add_attrs = true;
       return NULL_TREE;
     }
-  if (!type_dependent_expression_p (TREE_VALUE (args)))
+
+  /* Annotations are treated as late attributes so we shouldn't see
+     anything type-dependent now.  */
+  gcc_assert (!type_dependent_expression_p (TREE_VALUE (args)));
+  /* FIXME We should be using convert_reflect_constant_arg here to
+     implement std::meta::reflect_constant(constant-expression)
+     properly, but that introduces new crashes.  */
+  TREE_VALUE (args) = decay_conversion (TREE_VALUE (args), tf_warning_or_error);
+
+  if (!structural_type_p (TREE_TYPE (TREE_VALUE (args))))
     {
-      if (!structural_type_p (TREE_TYPE (TREE_VALUE (args))))
+      auto_diagnostic_group d;
+      error ("annotation does not have structural type");
+      structural_type_p (TREE_TYPE (TREE_VALUE (args)), true);
+      *no_add_attrs = true;
+      return NULL_TREE;
+    }
+  if (CLASS_TYPE_P (TREE_TYPE (TREE_VALUE (args))))
+    {
+      tree arg = make_tree_vec (1);
+      tree type = TREE_TYPE (TREE_VALUE (args));
+      TREE_VEC_ELT (arg, 0) = build_const_lref (type);
+      if (!is_xible (INIT_EXPR, type, arg))
 	{
 	  auto_diagnostic_group d;
-	  error ("annotation does not have structural type");
-	  structural_type_p (TREE_TYPE (TREE_VALUE (args)), true);
+	  error ("annotation does not have copy constructible type");
+	  is_xible (INIT_EXPR, type, arg, /*explain=*/true);
 	  *no_add_attrs = true;
 	  return NULL_TREE;
-	}
-      if (CLASS_TYPE_P (TREE_TYPE (TREE_VALUE (args))))
-	{
-	  tree arg = make_tree_vec (1);
-	  tree type = TREE_TYPE (TREE_VALUE (args));
-	  TREE_VEC_ELT (arg, 0)
-	    = build_stub_type (type, cp_type_quals (type) | TYPE_QUAL_CONST,
-			       /*rvalue=*/false);
-	  if (!is_xible (INIT_EXPR, type, arg))
-	    {
-	      auto_diagnostic_group d;
-	      error ("annotation does not have copy constructible type");
-	      is_xible (INIT_EXPR, type, arg, /*explain=*/true);
-	      *no_add_attrs = true;
-	      return NULL_TREE;
-	    }
 	}
     }
   if (!processing_template_decl)
@@ -5959,6 +6059,228 @@ handle_annotation_attribute (tree *node, tree ARG_UNUSED (name),
   return NULL_TREE;
 }
 
+/* Handle a "trivial_abi" attribute applied via [[gnu::trivial_abi]].
+   We reject that spelling; suggest [[clang::trivial_abi]] or
+   __attribute__((trivial_abi)) instead.  */
+
+static tree
+handle_gnu_trivial_abi_attribute (tree *node, tree name, tree args, int flags,
+				  bool *no_add_attrs)
+{
+  if (flags & ATTR_FLAG_CXX11)
+    {
+      warning (OPT_Wattributes,
+	       "%<[[gnu::trivial_abi]]%> is not supported; use "
+	       "%<[[clang::trivial_abi]]%> or "
+	       "%<__attribute__((trivial_abi))%> instead");
+      *no_add_attrs = true;
+      return NULL_TREE;
+    }
+  return handle_trivial_abi_attribute (node, name, args, flags, no_add_attrs);
+}
+
+/* Handle a "trivial_abi" attribute.  */
+
+static tree
+handle_trivial_abi_attribute (tree *node, tree name, tree, int,
+			      bool *no_add_attrs)
+{
+  tree type = *node;
+
+  /* Only allow on class types (struct, class, union) */
+  if (TREE_CODE (type) != RECORD_TYPE && TREE_CODE (type) != UNION_TYPE)
+    {
+      warning (OPT_Wattributes, "%qE attribute only applies to classes", name);
+      *no_add_attrs = true;
+      return NULL_TREE;
+    }
+
+  return NULL_TREE;
+}
+
+/* Return true if TYPE has the trivial_abi attribute.  */
+
+bool
+has_trivial_abi_attribute (tree type)
+{
+  if (type == NULL_TREE || !TYPE_P (type))
+    return false;
+  return lookup_attribute ("trivial_abi", TYPE_ATTRIBUTES (type));
+}
+
+/* Handle a "no_specializations" attribute applied via
+   [[gnu::no_specializations]].
+   We reject that spelling; suggest [[clang::no_specializations]] or
+   __attribute__((no_specializations)) instead.  */
+
+static tree
+handle_gnu_no_specializations_attribute (tree *node, tree name, tree args,
+					 int flags, bool *no_add_attrs)
+{
+  if (flags & ATTR_FLAG_CXX11)
+    {
+      warning (OPT_Wattributes,
+	       "%<[[gnu::no_specializations]]%> is not supported; use "
+	       "%<[[clang::no_specializations]]%> or "
+	       "%<__attribute__((no_specializations))%> instead");
+      *no_add_attrs = true;
+      return NULL_TREE;
+    }
+  return handle_no_specializations_attribute (node, name, args, flags,
+					      no_add_attrs);
+}
+
+/* Handle a "no_specializations" attribute.  */
+
+static tree
+handle_no_specializations_attribute (tree *node, tree name, tree args, int,
+				     bool *no_add_attrs)
+{
+  if (args && TREE_CODE (TREE_VALUE (args)) != STRING_CST)
+    {
+      error ("%qE attribute argument must be a string constant", name);
+      *no_add_attrs = true;
+      return NULL_TREE;
+    }
+  /* Only allow on class templates, variable templates
+     and function templates.  */
+  if (!CLASS_TYPE_P (*node) && !VAR_OR_FUNCTION_DECL_P (*node))
+    {
+    invalid:
+      warning (OPT_Wattributes, "%qE attribute only applies to class, "
+				"function or variable templates", name);
+      *no_add_attrs = true;
+      return NULL_TREE;
+    }
+  tree ti = NULL_TREE;
+  if (TYPE_P (*node))
+    {
+      if (!TYPE_NAME (*node)
+	  || !DECL_IMPLICIT_TYPEDEF_P (TYPE_NAME (*node))
+	  || LAMBDA_TYPE_P (*node))
+	goto invalid;
+      if (TYPE_LANG_SPECIFIC (*node))
+	{
+	  if (CLASSTYPE_TEMPLATE_SPECIALIZATION (*node)
+	      || CLASSTYPE_EXPLICIT_INSTANTIATION (*node))
+	    goto invalid;
+	  ti = CLASSTYPE_TEMPLATE_INFO (*node);
+	}
+    }
+  else if (DECL_LANG_SPECIFIC (*node))
+    {
+      if (DECL_TEMPLATE_SPECIALIZATION (*node)
+	  || DECL_EXPLICIT_INSTANTIATION (*node))
+	goto invalid;
+      ti = DECL_TEMPLATE_INFO (*node);
+    }
+  if (ti)
+    {
+      if (!PRIMARY_TEMPLATE_P (TI_TEMPLATE (ti)))
+	goto invalid;
+      if (TYPE_P (*node) && DECL_ALIAS_TEMPLATE_P (TI_TEMPLATE (ti)))
+	goto invalid;
+    }
+  else if (!processing_template_decl || !template_parm_scope_p ())
+    goto invalid;
+
+  return NULL_TREE;
+}
+
+/* Validate the trivial_abi attribute on a completed class type.
+   Called from finish_struct after the class is complete.  */
+
+void
+validate_trivial_abi_attribute (tree type)
+{
+  if (!has_trivial_abi_attribute (type))
+    return;
+
+  gcc_assert (COMPLETE_TYPE_P (type));
+
+  auto remove_trivial_abi_attribute = [type] {
+    for (tree variant = TYPE_MAIN_VARIANT (type); variant;
+	 variant = TYPE_NEXT_VARIANT (variant))
+      TYPE_ATTRIBUTES (variant)
+	= remove_attribute ("trivial_abi", TYPE_ATTRIBUTES (variant));
+  };
+
+  /* Check for virtual bases.  */
+  if (CLASSTYPE_VBASECLASSES (type))
+    {
+      auto_diagnostic_group d;
+      if (warning (OPT_Wattributes, "%<trivial_abi%> cannot be applied to %qT",
+		   type))
+	inform (input_location, "has a virtual base");
+      remove_trivial_abi_attribute ();
+      return;
+    }
+
+  /* Check for virtual member functions.  */
+  if (TYPE_POLYMORPHIC_P (type))
+    {
+      auto_diagnostic_group d;
+      if (warning (OPT_Wattributes, "%<trivial_abi%> cannot be applied to %qT",
+		   type))
+	inform (input_location, "is polymorphic");
+      remove_trivial_abi_attribute ();
+      return;
+    }
+
+  /* Check for non-trivial base classes.  */
+  if (TYPE_BINFO (type))
+    {
+      unsigned int n_bases = BINFO_N_BASE_BINFOS (TYPE_BINFO (type));
+      for (unsigned int i = 0; i < n_bases; ++i)
+	{
+	  tree base_binfo = BINFO_BASE_BINFO (TYPE_BINFO (type), i);
+	  tree base_type = BINFO_TYPE (base_binfo);
+
+	  if (TREE_ADDRESSABLE (base_type))
+	    {
+	      auto_diagnostic_group d;
+	      if (warning (OPT_Wattributes,
+			   "%<trivial_abi%> cannot be applied to %qT", type))
+		inform (input_location, "has a non-trivial base class %qT",
+			base_type);
+	      remove_trivial_abi_attribute ();
+	      return;
+	    }
+	}
+    }
+
+  /* Check for non-trivial member types.  */
+  for (tree field = TYPE_FIELDS (type); field; field = DECL_CHAIN (field))
+    {
+      if (TREE_CODE (field) == FIELD_DECL && !DECL_ARTIFICIAL (field))
+	{
+	  tree field_type = strip_array_types (TREE_TYPE (field));
+
+	  if (CLASS_TYPE_P (field_type) && TREE_ADDRESSABLE (field_type))
+	    {
+	      auto_diagnostic_group d;
+	      if (warning (OPT_Wattributes,
+			   "%<trivial_abi%> cannot be applied to %qT", type))
+		inform (input_location, "has a non-static data member "
+			"of non-trivial type %qT", field_type);
+	      remove_trivial_abi_attribute ();
+	      return;
+	    }
+	}
+    }
+
+  /* Check that not all copy/move constructors are deleted.  */
+  if (!classtype_has_non_deleted_copy_or_move_ctor (type))
+    {
+      auto_diagnostic_group d;
+      if (warning (OPT_Wattributes, "%<trivial_abi%> cannot be applied to %qT",
+		   type))
+	inform (input_location,
+		"copy constructors and move constructors are all deleted");
+      remove_trivial_abi_attribute ();
+      return;
+    }
+}
 /* Return a new PTRMEM_CST of the indicated TYPE.  The MEMBER is the
    thing pointed to by the constant.  */
 
@@ -6228,6 +6550,10 @@ cp_walk_subtrees (tree *tp, int *walk_subtrees_p, walk_tree_fn func,
 	  WALK_SUBTREE (DECL_SIZE (decl));
 	  WALK_SUBTREE (DECL_SIZE_UNIT (decl));
 	}
+      if (is_typedef_decl (TREE_OPERAND (t, 0)))
+	/* We avoid walking into typedefs above, but we do want to walk
+	   into them if we're looking at the actual declaration.  */
+	WALK_SUBTREE (DECL_ORIGINAL_TYPE (TREE_OPERAND (t, 0)));
       break;
 
     case LAMBDA_EXPR:
@@ -6474,6 +6800,18 @@ decl_linkage (tree decl)
   if (cxx_dialect >= cxx11 && decl_internal_context_p (decl))
     return lk_internal;
 
+  /* Helper to decide if T is lk_module or lk_external.  */
+  auto external_or_module = [] (tree t)
+    {
+      if (t
+	  && DECL_LANG_SPECIFIC (t)
+	  && DECL_MODULE_ATTACH_P (t)
+	  && !DECL_MODULE_EXPORT_P (t))
+	return lk_module;
+
+      return lk_external;
+    };
+
   /* Templates don't properly propagate TREE_PUBLIC, consider the
      template result instead.  Any template that isn't a variable
      or function must be external linkage by this point.  */
@@ -6481,17 +6819,17 @@ decl_linkage (tree decl)
     {
       decl = DECL_TEMPLATE_RESULT (decl);
       if (!decl || !VAR_OR_FUNCTION_DECL_P (decl))
-	return lk_external;
+	return external_or_module (decl);
     }
 
   /* Things that are TREE_PUBLIC have external linkage.  */
   if (TREE_PUBLIC (decl))
-    return lk_external;
+    return external_or_module (decl);
 
   /* All types have external linkage in C++98, since anonymous namespaces
      didn't explicitly confer internal linkage.  */
   if (TREE_CODE (decl) == TYPE_DECL && cxx_dialect < cxx11)
-    return lk_external;
+    return external_or_module (decl);
 
   /* Variables or function decls not marked as TREE_PUBLIC might still
      be external linkage, such as for template instantiations on targets
@@ -6499,7 +6837,7 @@ decl_linkage (tree decl)
      or compiler-generated entities; in such cases, decls really meant to
      have internal linkage will have DECL_THIS_STATIC set.  */
   if (VAR_OR_FUNCTION_DECL_P (decl) && !DECL_THIS_STATIC (decl))
-    return lk_external;
+    return external_or_module (decl);
 
   /* Everything else has internal linkage.  */
   return lk_internal;
@@ -6893,6 +7231,14 @@ bool
 annotation_p (tree attr)
 {
   return is_attribute_p ("annotation ", get_attribute_name (attr));
+}
+
+/* Lookup the annotation in ATTR, if present.  */
+
+tree
+lookup_annotation (tree attr)
+{
+  return lookup_attribute ("internal ", "annotation ", attr);
 }
 
 

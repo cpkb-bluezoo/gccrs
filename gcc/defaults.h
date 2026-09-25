@@ -956,7 +956,7 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
    configuration using MD constraint definitions.  */
 #endif
 
-/* Determin whether the target runtime library is Bionic */
+/* Determine whether the target runtime library is Bionic */
 #ifndef TARGET_HAS_BIONIC
 #define TARGET_HAS_BIONIC 0
 #endif
@@ -1259,7 +1259,7 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
 #endif
 
 #ifndef FRAME_ADDR_RTX
-#define FRAME_ADDR_RTX(x) (x)
+#define FRAME_ADDR_RTX(count, x) (x)
 #endif
 
 #ifndef REVERSE_CONDITION
@@ -1461,6 +1461,12 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
 #error Unknown BITS_PER_UNIT
 #endif
 typedef TARGET_UNIT target_unit;
+#endif
+
+/* Maximum length of COLLECT_GCC_OPTIONS before the driver spills it
+   to a response file.  Hosts with tighter limits may override this.  */
+#ifndef COLLECT2_OPTIONS_MAX_LENGTH
+#define COLLECT2_OPTIONS_MAX_LENGTH 1024
 #endif
 
 #endif  /* ! GCC_DEFAULTS_H */

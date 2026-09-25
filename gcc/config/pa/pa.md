@@ -2701,6 +2701,9 @@
   [(set_attr "type" "multi")
    (set_attr "length" "16")])		; 12 or 16
 
+;; DLTIND relocs need to be converted to DPREL relocs when PIC code
+;; isn't used in a shared object.  Currently, GNU ld only supports
+;; converting addil instructions.
 (define_insn ""
   [(set (match_operand:SI 0 "register_operand" "=a")
 	(plus:SI (match_operand:SI 1 "register_operand" "r")
@@ -2713,16 +2716,18 @@
    (set_attr "length" "4")])
 
 (define_insn ""
-  [(set (match_operand:DI 0 "register_operand" "=a")
-	(plus:DI (match_operand:DI 1 "register_operand" "r")
+  [(set (match_operand:DI 0 "register_operand" "=a,!&r")
+	(plus:DI (match_operand:DI 1 "register_operand" "r,r")
 	         (high:DI (match_operand 2 "" ""))))]
   "symbolic_operand (operands[2], Pmode)
    && ! function_label_operand (operands[2], Pmode)
    && TARGET_64BIT
    && flag_pic"
-  "addil LT'%G2,%1"
-  [(set_attr "type" "binary")
-   (set_attr "length" "4")])
+  "@
+   addil LT'%G2,%1
+   ldil LT'%G2,%0\;add,l %0,%1,%0"
+  [(set_attr "type" "binary,binary")
+   (set_attr "length" "4,8")])
 
 (define_insn ""
  [(set (match_operand:SI 0 "register_operand" "=r")
@@ -2749,26 +2754,35 @@
 
 ;; Always use addil rather than ldil;add sequences.  This allows the
 ;; HP linker to eliminate the dp relocation if the symbolic operand
-;; lives in the TEXT space.
+;; lives in the TEXT space.  In order to avoid spill failures with
+;; LRA, we need ldil;add sequence with general register target.
 (define_insn ""
-  [(set (match_operand:SI 0 "register_operand" "=a")
+  [(set (match_operand:SI 0 "register_operand" "=a,!r")
 	(high:SI (match_operand 1 "" "")))]
-  "symbolic_operand (operands[1], Pmode)
+  "! TARGET_LONG_LOAD_STORE
+   && symbolic_operand (operands[1], Pmode)
    && ! function_label_operand (operands[1], Pmode)
    && ! read_only_operand (operands[1], Pmode)
    && ! flag_pic"
-  "*
-{
-  if (TARGET_LONG_LOAD_STORE)
-    return \"addil NLR'%H1,%%r27\;ldo N'%H1(%%r1),%%r1\";
-  else
-    return \"addil LR'%H1,%%r27\";
-}"
+  "@
+   addil LR'%H1,%%r27
+   ldil LR'%H1,%0\;{addl|add,l} %0,%%r27,%0"
+  [(set_attr "type" "binary,binary")
+   (set_attr "length" "4,8")])
+
+(define_insn ""
+  [(set (match_operand:SI 0 "register_operand" "=a,!r")
+	(high:SI (match_operand 1 "" "")))]
+  "TARGET_LONG_LOAD_STORE
+   && symbolic_operand (operands[1], Pmode)
+   && ! function_label_operand (operands[1], Pmode)
+   && ! read_only_operand (operands[1], Pmode)
+   && ! flag_pic"
+  "@
+   addil NLR'%H1,%%r27\;ldo N'%H1(%%r1),%%r1
+   ldil NLR'%H1,%0\;{addl|add,l} %0,%%r27,%0\;ldo N'%H1(%0),%0"
   [(set_attr "type" "binary")
-   (set (attr "length")
-      (if_then_else (not (match_test "TARGET_LONG_LOAD_STORE"))
-		    (const_int 4)
-		    (const_int 8)))])
+   (set_attr "length" "8,12")])
 
 
 ;; This is for use in the prologue/epilogue code.  We need it
@@ -2794,7 +2808,7 @@
   "reload_completed && TARGET_64BIT"
   "@
    addil L'%G2,%1
-   ldil L'%G2,%0\;{addl|add,l} %0,%1,%0"
+   ldil L'%G2,%0\;add,l %0,%1,%0"
   [(set_attr "type" "binary,binary")
    (set_attr "length" "4,8")])
 
@@ -9947,10 +9961,9 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
   [(set_attr "type" "fpalu")
    (set_attr "length" "4")])
 
-;; The following two patterns are used by the trampoline code for nested
+;; The following four patterns are used by the trampoline code for nested
 ;; functions.  They flush the I and D cache lines from the start address
-;; (operand0) to the end address (operand1).  No lines are flushed if the
-;; end address is less than the start address (unsigned).
+;; (operand0) to the end address (operand1).
 ;;
 ;; Because the range of memory flushed is variable and the size of a MEM
 ;; can only be a CONST_INT, the patterns specify that they perform an
@@ -9959,9 +9972,9 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
 ;; The address range for an icache flush must lie within a single
 ;; space on targets with non-equivalent space registers.
 ;;
-;; Operand 0 contains the start address.
+;; Operand 0 contains the line aligned start address.
 ;; Operand 1 contains the end address.
-;; Operand 2 contains the line length to use.
+;; Operand 2 contains the line size to use.
 (define_insn "dcacheflush<P:mode>"
   [(const_int 1)
    (unspec_volatile [(mem:BLK (scratch))] UNSPECV_DCACHE)
@@ -9970,11 +9983,11 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
    (use (match_operand 2 "pmode_register_operand" "r"))
    (clobber (match_scratch:P 3 "=&0"))]
   ""
-  "cmpb,<dwc><<=,n %3,%1,.\;fdc,m %2(%3)\;sync"
+  "{comb|cmpb},<dwc><<,n %3,%1,.\;fdc,m %2(%3)\;sync"
   [(set_attr "type" "multi")
    (set_attr "length" "12")])
 
-(define_insn "icacheflush<P:mode>"
+(define_insn "icacheflush1<P:mode>"
   [(const_int 2)
    (unspec_volatile [(mem:BLK (scratch))] UNSPECV_ICACHE)
    (use (match_operand 0 "pmode_register_operand" "r"))
@@ -9984,24 +9997,86 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
    (clobber (match_operand 4 "pmode_register_operand" "=&r"))
    (clobber (match_scratch:P 5 "=&0"))]
   ""
-  "mfsp %%sr0,%4\;ldsid (%5),%3\;mtsp %3,%%sr0\;cmpb,<dwc><<=,n %5,%1,.\;fic,m %2(%%sr0,%5)\;sync\;mtsp %4,%%sr0\;nop\;nop\;nop\;nop\;nop\;nop"
+  "mfsp %%sr1,%4\;ldsid (%5),%3\;mtsp %3,%%sr1\;{comb|cmpb},<dwc><<,n %5,%1,.\;fic,m %2(%%sr1,%5)\;sync\;mtsp %4,%%sr1\;nop\;nop\;nop\;nop\;nop\;nop"
   [(set_attr "type" "multi")
    (set_attr "length" "52")])
 
+(define_insn "icacheflush2<P:mode>"
+  [(const_int 2)
+   (unspec_volatile [(mem:BLK (scratch))] UNSPECV_ICACHE)
+   (use (match_operand 0 "pmode_register_operand" "r"))
+   (use (match_operand 1 "pmode_register_operand" "r"))
+   (use (match_operand 2 "pmode_register_operand" "r"))
+   (clobber (match_scratch:P 3 "=&0"))]
+  "TARGET_PA_20"
+  "cmpb,<dwc><<,n %3,%1,.\;fic,m %2(%3)\;sync\;nop\;nop\;nop\;nop\;nop\;nop\;nop"
+  [(set_attr "type" "multi")
+   (set_attr "length" "40")])
+
+(define_insn "icacheflush3<P:mode>"
+  [(const_int 3)
+   (unspec_volatile [(mem:BLK (scratch))] UNSPECV_ICACHE)
+   (use (match_operand 0 "pmode_register_operand" "r"))
+   (use (match_operand 1 "pmode_register_operand" "r"))
+   (use (match_operand 2 "pmode_register_operand" "r"))
+   (clobber (match_scratch:P 3 "=&0"))]
+  "!TARGET_PA_20 && TARGET_NO_SPACE_REGS"
+  "comb,<dwc><<,n %3,%1,.\;fic,m %2(%%sr4,%3)\;sync\;nop\;nop\;nop\;nop\;nop\;nop\;nop"
+  [(set_attr "type" "multi")
+   (set_attr "length" "40")])
+
+;; clear_cache
+;;
+;; Note the data and instruction cache flushes need to be separated
+;; by a sync instruction (see page 7-151 in PA 2.0 architecture manual).
+;; Thus, we can't combine the flush operations in a single loop.
+
+;; Operand 0 contains the start address (inclusive).
+;; Operand 1 contains the end address (exclusive).
 (define_expand "clear_cache"
   [(match_operand 0 "pmode_register_operand")
    (match_operand 1 "pmode_register_operand")]
   ""
 {
-  rtx line_length = gen_reg_rtx (Pmode);
+  rtx start = gen_reg_rtx (Pmode);
+  rtx line_size = gen_reg_rtx (Pmode);
+  rtx lab = gen_label_rtx ();
+  rtx op0 = operands[0];
+  rtx op1 = operands[1];
 
-  emit_move_insn (line_length, GEN_INT (MIN_CACHELINE_SIZE));
+  /* Skip flush if op0 is greater than or equal to op1.  */
+  emit_cmp_and_jump_insns (op0, op1, GEU, NULL_RTX, Pmode, 0, lab);
+
+  /* Load cache line size.  */
+  emit_move_insn (line_size, GEN_INT (MIN_CACHELINE_SIZE));
+
   if (TARGET_64BIT)
-    emit_insn (gen_icacheflushdi (operands[0], operands[1], line_length,
-				  gen_reg_rtx (Pmode), gen_reg_rtx (Pmode)));
+    {
+      /* Align the start address.  */
+      emit_insn (gen_anddi3 (start, op0, GEN_INT (-MIN_CACHELINE_SIZE)));
+
+      /* Flush the cache.  */
+      emit_insn (gen_dcacheflushdi (start, op1, line_size));
+      emit_insn (gen_icacheflush2di (start, op1, line_size));
+    }
   else
-    emit_insn (gen_icacheflushsi (operands[0], operands[1], line_length,
-				  gen_reg_rtx (Pmode), gen_reg_rtx (Pmode)));
+    {
+      /* Align the start address.  */
+      emit_insn (gen_andsi3 (start, op0, GEN_INT (-MIN_CACHELINE_SIZE)));
+
+      /* Flush the cache.  */
+      emit_insn (gen_dcacheflushsi (start, op1, line_size));
+      if (TARGET_PA_20)
+	emit_insn (gen_icacheflush2si (start, op1, line_size));
+      else if (TARGET_NO_SPACE_REGS)
+	emit_insn (gen_icacheflush3si (start, op1, line_size));
+      else
+	emit_insn (gen_icacheflush1si (start, op1, line_size,
+				       gen_reg_rtx (Pmode),
+				       gen_reg_rtx (Pmode)));
+    }
+
+  emit_label (lab);
   DONE;
 })
 

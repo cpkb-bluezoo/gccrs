@@ -1,3 +1,62 @@
+2026-09-04  Kyrylo Tkachov  <ktkachov@nvidia.com>
+
+	PR bootstrap/126875
+	* acx.m4 (ACX_PROG_CMP_IGNORE_INITIAL): Clean up from the exit trap
+	without resetting it or re-deriving the exit status, and end the
+	fallback subshell with a builtin so that the trap runs.
+
+2026-08-04  Kyrylo Tkachov  <ktkachov@nvidia.com>
+
+	* acx.m4 (ACX_PROG_CMP_IGNORE_INITIAL): Use process-specific temporary
+	files and clean them on exit.  Diagnose tail failures as errors.
+
+2026-07-31  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	PR bootstrap/103459
+	* clang-plugin.m4: Update AC_TRY_COMPILE to AC_COMPILE_IFELSE.
+	* gcc-plugin.m4: Likewise.
+
+2026-07-12  Manuel Jacob  <me@manueljacob.de>
+
+	* acx.m4 (ACX_CHECK_INSTALLED_TARGET_TOOL): Fix handling of
+	environment variables.
+
+2026-07-01  Rainer Orth  <ro@CeBiTec.Uni-Bielefeld.DE>
+
+	* ax_pthread.m4 (ax_pthread_check_macro) <solaris*>: Only require
+	_REENTRANT before Solaris 11.4
+
+2026-06-29  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	PR bootstrap/103459
+	* acx.m4: Remove uses of AC_CHECK_TOOL_PREFIX.  Replace AC_TRY_COMPILE
+	with AC_COMPILE_IFELSE.
+	* asmcfi.m4: Replace AC_TRY_COMPILE with AC_COMPILE_IFELSE.
+	* bitfields.m4: Likewise.
+	* cet.m4: Replace AC_TRY_LINK with AC_LINK_IFELSE.  Replace AC_TRY_RUN
+	with AC_RUN_IFELSE.
+	* codeset.m4: Replace AC_TRY_LINK with AC_LINK_IFELSE.
+	* enable.m4: Replace AC_HELP_STRING with AS_HELP_STRING.
+	* gcc-plugin.m4: Replace AC_TRY_LINK with AC_LINK_IFELSE.
+	* hwcaps.m4: Replace AC_TRY_COMPILE with AC_COMPILE_IFELSE.  Replace
+	AC_TRY_LINK with AC_LINK_IFELSE.
+	* isl.m4: Replace AC_TRY_LINK with AC_LINK_IFELSE.
+	* lcmessage.m4: Replace AC_TRY_LINK with AC_LINK_IFELSE.
+	* no-executables.m4: Replace AC_TRY_COMPILE with AC_COMPILE_IFELSE.
+	Replace AC_TRY_LINK with AC_LINK_IFELSE.
+	* po.m4: Replace AC_OUTPUT_COMMANDS with AC_CONFIG_COMMANDS.
+	* tls.m4: Add explicit 4th argument to AC_LINK_IFELSE.
+
+2026-05-05  Pietro Monteiro  <pietro@sociotechnical.xyz>
+
+	* visibility.m4: New file.
+
+2026-04-13  Torbjörn SVENSSON  <torbjorn.svensson@foss.st.com>
+
+	PR target/69639
+	* mh-cygwin: Increase to 64MB stack reserve.
+	* mh-mingw: Likewise.
+
 2026-02-04  Prachi Godbole  <pgodbole@nvidia.com>
 
 	* bootstrap-lto-locality.mk (STAGEprofile_CFLAGS): Remove

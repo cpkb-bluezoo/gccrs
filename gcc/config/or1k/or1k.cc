@@ -1032,7 +1032,7 @@ or1k_strict_argument_naming (cumulative_args_t /* ca */)
 
 /* Worker for TARGET_FUNCTION_ARG.
    Return the next register to be used to hold a function argument or NULL_RTX
-   if there's no more space.  Arugment CUM_V represents the current argument
+   if there's no more space.  Argument CUM_V represents the current argument
    offset, zero for the first function argument.  OpenRISC function arguments
    maybe be passed in registers r3 to r8.  */
 
@@ -1215,7 +1215,7 @@ or1k_print_operand_address (FILE *file, machine_mode, rtx addr)
 
 /* Worker for TARGET_PRINT_OPERAND.
    Print operand X, an RTX, to the file FILE.  The output is formed as expected
-   by the OpenRISC assember.  CODE is the letter following a '%' in an
+   by the OpenRISC assembler.  CODE is the letter following a '%' in an
    instrunction template used to control the RTX output.  Example(s):
 
      CODE   RTX                   OUTPUT     COMMENT
@@ -1389,8 +1389,9 @@ or1k_trampoline_init (rtx m_tramp, tree fndecl, rtx chain)
 static bool
 or1k_hard_regno_mode_ok (unsigned int regno, machine_mode mode)
 {
-  /* For OpenRISC, GENERAL_REGS can hold anything, while
-     FLAG_REGS are really single bits within SP[SR].  */
+  /* For OpenRISC, GENERAL_REGS can hold anything, while FLAG_REGS are
+     really single bits within SP[SR].  Also allow condition flag register
+     in SImode to match or1k_can_change_mode_class.  */
   if (REGNO_REG_CLASS (regno) == FLAG_REGS)
     return mode == BImode;
   return true;
@@ -1410,7 +1411,7 @@ or1k_can_change_mode_class (machine_mode from, machine_mode to,
 {
   /* Allow cnoverting special flags to SI mode subregs.  */
   if (rclass == FLAG_REGS)
-    return from == to || (from == BImode && to == SImode);
+    return from == to;
   return true;
 }
 
@@ -1696,15 +1697,17 @@ or1k_is_cmov_insn (rtx_insn *seq)
 }
 
 /* Implement TARGET_NOCE_CONVERSION_PROFITABLE_P.  We detect if the conversion
-   resulted in a l.cmov instruction and if so we consider it more profitable than
-   branch instructions.  */
+   resulted in a l.cmov like instruction and if so we consider it more
+   profitable than branch instructions.  Even if we do not support l.cmov this
+   allows the *cmov instruction sequnce to be expanded and then later lowered
+   with the *cmov split logic.  */
 
 static bool
 or1k_noce_conversion_profitable_p (rtx_insn *seq,
 				    struct noce_if_info *if_info)
 {
-  if (TARGET_CMOV)
-    return or1k_is_cmov_insn (seq);
+  if (or1k_is_cmov_insn (seq))
+    return true;
 
   return default_noce_conversion_profitable_p (seq, if_info);
 }

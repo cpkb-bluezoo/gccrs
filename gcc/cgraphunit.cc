@@ -739,7 +739,7 @@ process_symver_attribute (symtab_node *n)
 
   for (; value != NULL; value = TREE_CHAIN (value))
     {
-      /* Starting from bintuils 2.35 gas supports:
+      /* Starting from binutils 2.35 gas supports:
 	  # Assign foo to bar@V1 and baz@V2.
 	  .symver foo, bar@V1
 	  .symver foo, baz@V2
@@ -2683,7 +2683,12 @@ cgraph_node::create_wrapper (cgraph_node *target)
       arguments = TREE_CHAIN (arguments);
     }
 
+  /* Forced GIMPLE thunks are normally ignored because they are created
+     after early debug.  ICF wrappers retain the original function decl and
+     its early DIE, so preserve its original debug state.  */
+  bool ignored_p = DECL_IGNORED_P (decl);
   expand_thunk (this, false, true);
+  DECL_IGNORED_P (decl) = ignored_p;
   thunk_info::remove (this);
 
   /* Inline summary set-up.  */

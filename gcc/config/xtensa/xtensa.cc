@@ -48,6 +48,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "varasm.h"
 #include "alias.h"
 #include "explow.h"
+#include "expmed.h"
 #include "expr.h"
 #include "langhooks.h"
 #include "gimplify.h"
@@ -165,7 +166,6 @@ static reg_class_t xtensa_secondary_reload (bool, rtx, reg_class_t,
 					    machine_mode,
 					    struct secondary_reload_info *);
 
-static bool constantpool_address_p (const_rtx addr);
 static bool xtensa_legitimate_constant_p (machine_mode, rtx);
 static void xtensa_reorg (void);
 static bool xtensa_can_use_doloop_p (const widest_int &, const widest_int &,
@@ -202,6 +202,11 @@ static rtx_insn *xtensa_md_asm_adjust (vec<rtx> &, vec<rtx> &,
 				       vec<machine_mode> &, vec<const char *> &,
 				       vec<rtx> &, vec<rtx> &, HARD_REG_SET &,
 				       location_t);
+static bool xtensa_addr_space_subset_p (addr_space_t, addr_space_t);
+static rtx xtensa_addr_space_convert (rtx, tree, tree);
+static bool xtensa_addr_space_legitimate_address_p (machine_mode, rtx, bool,
+						    addr_space_t, code_helper);
+static tree xtensa_handle_force_l32_attribute (tree *, tree, tree, int, bool *);
 
 
 
@@ -293,7 +298,7 @@ static rtx_insn *xtensa_md_asm_adjust (vec<rtx> &, vec<rtx> &,
 #define TARGET_CANNOT_FORCE_CONST_MEM xtensa_cannot_force_const_mem
 
 #undef TARGET_LEGITIMATE_ADDRESS_P
-#define TARGET_LEGITIMATE_ADDRESS_P	xtensa_legitimate_address_p
+#define TARGET_LEGITIMATE_ADDRESS_P xtensa_legitimate_address_p
 
 #undef TARGET_FRAME_POINTER_REQUIRED
 #define TARGET_FRAME_POINTER_REQUIRED xtensa_frame_pointer_required
@@ -367,9 +372,6 @@ static rtx_insn *xtensa_md_asm_adjust (vec<rtx> &, vec<rtx> &,
 #undef TARGET_MAX_ANCHOR_OFFSET
 #define TARGET_MAX_ANCHOR_OFFSET 1020
 
-#undef TARGET_DIFFERENT_ADDR_DISPLACEMENT_P
-#define TARGET_DIFFERENT_ADDR_DISPLACEMENT_P hook_bool_void_true
-
 #undef TARGET_IRA_CHANGE_PSEUDO_ALLOCNO_CLASS
 #define TARGET_IRA_CHANGE_PSEUDO_ALLOCNO_CLASS xtensa_ira_change_pseudo_allocno_class
 
@@ -378,6 +380,27 @@ static rtx_insn *xtensa_md_asm_adjust (vec<rtx> &, vec<rtx> &,
 
 #undef TARGET_MD_ASM_ADJUST
 #define TARGET_MD_ASM_ADJUST xtensa_md_asm_adjust
+
+#undef TARGET_ADDR_SPACE_SUBSET_P
+#define TARGET_ADDR_SPACE_SUBSET_P xtensa_addr_space_subset_p
+
+#undef TARGET_ADDR_SPACE_CONVERT
+#define TARGET_ADDR_SPACE_CONVERT xtensa_addr_space_convert
+
+#undef TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P
+#define TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P	\
+	xtensa_addr_space_legitimate_address_p
+
+TARGET_GNU_ATTRIBUTES (xtensa_attribute_table,
+{
+ /* { name, min_len, max_len, decl_req, type_req, fn_type_req,
+      affects_type_identity, handler, exclude } */
+  { "force_l32", 0, 0, true, false, false,
+    false, xtensa_handle_force_l32_attribute, NULL }
+});
+
+#undef TARGET_ATTRIBUTE_TABLE
+#define TARGET_ATTRIBUTE_TABLE xtensa_attribute_table
 
 struct gcc_target targetm = TARGET_INITIALIZER;
 
@@ -495,6 +518,23 @@ xtensa_mask_immediate (HOST_WIDE_INT v)
 }
 
 
+int
+xtensa_fp_const (const REAL_VALUE_TYPE *rval)
+{
+  /* real_equal() treats non-negative and negative zeros as equal.  */
+  if (rval->cl == rvc_zero && rval->sign == 0)
+    return 0;
+  if (real_equal (rval, &dconst1))
+    return 1;
+  if (real_equal (rval, &dconst2))
+    return 2;
+  if (real_equal (rval, &dconsthalf))
+    return 3;
+
+  return -1;
+}
+
+
 /* This is just like the standard true_regnum() function except that it
    works even when reg_renumber is not initialized.  */
 
@@ -563,32 +603,31 @@ xtensa_valid_move (machine_mode mode, rtx *operands)
 }
 
 
-int
-smalloffset_mem_p (rtx op)
+bool
+smalloffset_address_p (const_rtx addr)
 {
-  if (MEM_P (op))
-    {
-      rtx addr = XEXP (op, 0);
-      if (REG_P (addr))
-	return BASE_REG_P (addr, 0);
-      if (GET_CODE (addr) == PLUS)
-	{
-	  rtx offset = XEXP (addr, 0);
-	  HOST_WIDE_INT val;
-	  if (! CONST_INT_P (offset))
-	    offset = XEXP (addr, 1);
-	  if (! CONST_INT_P (offset))
-	    return FALSE;
+  if (REG_P (addr))
+    return BASE_REG_P (addr, 0);
 
-	  val = INTVAL (offset);
-	  return (val & 3) == 0 && IN_RANGE (val, 0, 60);
-	}
+  if (GET_CODE (addr) == PLUS)
+    {
+      rtx offset = XEXP (addr, 0);
+      HOST_WIDE_INT val;
+
+      if (! CONST_INT_P (offset))
+	offset = XEXP (addr, 1);
+      if (! CONST_INT_P (offset))
+	return false;
+
+      val = INTVAL (offset);
+      return (val & 3) == 0 && IN_RANGE (val, 0, 60);
     }
-  return FALSE;
+
+  return false;
 }
 
 
-static bool
+bool
 constantpool_address_p (const_rtx addr)
 {
   const_rtx sym = addr;
@@ -734,7 +773,7 @@ gen_int_relational (enum rtx_code test_code, /* relational test (EQ, etc) */
     int unsignedp;		/* != 0 for unsigned comparisons.  */
   };
 
-  static struct cmp_info info[ (int)ITEST_MAX ] = {
+  static const struct cmp_info info[ (int)ITEST_MAX ] = {
 
     { EQ,	xtensa_b4const_or_zero,	0, 0, 0, 0, 0 },	/* EQ  */
     { NE,	xtensa_b4const_or_zero,	0, 0, 0, 0, 0 },	/* NE  */
@@ -752,7 +791,7 @@ gen_int_relational (enum rtx_code test_code, /* relational test (EQ, etc) */
 
   enum internal_test test;
   machine_mode mode;
-  struct cmp_info *p_info;
+  const struct cmp_info *p_info;
   int invert;
 
   test = map_test_to_internal_test (test_code);
@@ -2318,36 +2357,77 @@ xtensa_legitimize_address (rtx x,
 			   rtx oldx ATTRIBUTE_UNUSED,
 			   machine_mode mode)
 {
+  rtx reg, imm, temp0, temp1;
+  HOST_WIDE_INT offset;
+  int mode_size, ofs_mask, ofs_lo, ofs_hi, v0, v1, delta;
+
+  /* Redirect if TLS addresses.  */
   if (xtensa_tls_symbol_p (x))
     return xtensa_legitimize_tls_address (x);
 
-  if (GET_CODE (x) == PLUS)
+  /* Reject addresses that do not match '(PLUS (REG, IMM))'.  */
+  if (GET_CODE (x) != PLUS)
+    return x;
+  reg = XEXP (x, 0), imm = XEXP (x, 1);
+  if (! REG_P (reg) && REG_P (imm))
+    std::swap (reg, imm);
+  if (! REG_P (reg) || ! CONST_INT_P (imm))
+    return x;
+
+  /* Exclude if the offset amount can be encoded within the instruction
+     or fits into a signed 8-bits to defer to the default handling.  */
+  if (xtensa_mem_offset (offset = INTVAL (imm), mode)
+      || xtensa_simm8 (offset))
+    return x;
+
+  /* Divide the offset value into a part that can possibly be encoded
+     within the instruction and one that never can, and then exclude cases
+     where the former cannot be encoded (eg., due to offset misalignment
+     or the corner case involving double-word load/store).  */
+  mode_size = GET_MODE_SIZE (mode);
+  ofs_mask = 256 * MIN (mode_size, 4) - 1;
+  ofs_lo = offset & ofs_mask, ofs_hi = offset & ~ofs_mask;
+  if (! xtensa_mem_offset (ofs_lo, mode))
+    return x;
+
+  /* Attempt to compensate for the offset amount that exceeded the
+     encoding limit within the instruction, using one or two ADDMI
+     instructions.  */
+  if (xtensa_simm8x256 (v0 = ofs_hi))
+    v1 = 0;
+  else if (ofs_hi < -32768 && xtensa_simm8x256 (v0 = ofs_hi + 32768))
+    v1 = -32768;
+  else if (ofs_hi > 32512 && xtensa_simm8x256 (v0 = ofs_hi - 32512))
+    v1 = 32512;
+  else
+    return x;
+
+  /* If TARGET_DENSITY is configured, apply adjustments to make it easier
+     for the short-form of 4-byte load/store instructions (L32I.N/S32I.N)
+     to be adopted.  */
+  if (TARGET_DENSITY && ofs_mask == 1023
+      && xtensa_simm8x256 ((delta = ofs_lo & ~255) + v0))
+    v0 += delta, ofs_lo &= 255;
+
+  /* A trapdoor that catches calculation mistakes.  */
+  gcc_assert (offset == ofs_lo + v0 + v1);
+
+  /* Emit one or two ADDMI instructions, and then return an address RTX
+     with the remaining offset that could be encoded within the instruc-
+     tion.  */
+  temp0 = gen_reg_rtx (Pmode);
+  if (v1)
     {
-      rtx plus0 = XEXP (x, 0);
-      rtx plus1 = XEXP (x, 1);
-
-      if (! REG_P (plus0) && REG_P (plus1))
-	{
-	  plus0 = XEXP (x, 1);
-	  plus1 = XEXP (x, 0);
-	}
-
-      /* Try to split up the offset to use an ADDMI instruction.  */
-      if (REG_P (plus0) && CONST_INT_P (plus1)
-	  && !xtensa_mem_offset (INTVAL (plus1), mode)
-	  && !xtensa_simm8 (INTVAL (plus1))
-	  && xtensa_mem_offset (INTVAL (plus1) & 0xff, mode)
-	  && xtensa_simm8x256 (INTVAL (plus1) & ~0xff))
-	{
-	  rtx temp = gen_reg_rtx (Pmode);
-	  rtx addmi_offset = GEN_INT (INTVAL (plus1) & ~0xff);
-	  emit_insn (gen_rtx_SET (temp, gen_rtx_PLUS (Pmode, plus0,
-						      addmi_offset)));
-	  return gen_rtx_PLUS (Pmode, temp, GEN_INT (INTVAL (plus1) & 0xff));
-	}
+      /* By adding the offset with the largest absolute value first via
+	 a temporary pseudo, the likelihood of that pseudo being consoli-
+	 dated by the CSE increases.  */
+      emit_insn (gen_addsi3 (temp1 = gen_reg_rtx (Pmode),
+			     reg, GEN_INT (v1)));
+      emit_insn (gen_addsi3 (temp0, temp1, GEN_INT (v0)));
     }
-
-  return x;
+  else
+    emit_insn (gen_addsi3 (temp0, reg, GEN_INT (v0)));
+  return gen_rtx_PLUS (Pmode, temp0, GEN_INT (ofs_lo));
 }
 
 /* Worker function for TARGET_MODE_DEPENDENT_ADDRESS_P.
@@ -2589,6 +2669,135 @@ xtensa_emit_add_imm (rtx dst, rtx src, HOST_WIDE_INT imm, rtx scratch,
     }
 
   return retval;
+}
+
+
+/* Expand a 1- or 2-byte width memory load into an aligned 4-byte width
+   load with bit-extraction of the required bytes.  */
+
+static bool
+xtensa_expand_load_force_l32_1 (const_rtx mem)
+{
+  tree expr = MEM_EXPR (mem), type;
+
+  /* If the "force_l32" attribute is found in the tree associated with
+     mem RTX, return true.  */
+  return expr && (type = TREE_TYPE (expr))
+	 && TREE_CODE (type) == INTEGER_TYPE
+	 && lookup_attribute ("force_l32", TYPE_ATTRIBUTES (type));
+}
+
+static bool
+xtensa_expand_load_force_l32_2 (const_rtx reg)
+{
+  unsigned int regno;
+
+  /* These pseudos are unlikely to be passed during the RTL generation,
+     but just in case. */
+  switch (regno = REGNO (reg))
+    {
+    case STACK_POINTER_REGNUM:
+    case FRAME_POINTER_REGNUM:
+    case ARG_POINTER_REGNUM:
+      return true;
+    }
+
+  /* gccint explicitly states that these pseudos indicate the location of
+     the stack frame.  In addition, the static chain pointers also clearly
+     refer to the stack frame.  */
+  return IN_RANGE (regno, FIRST_VIRTUAL_REGISTER, LAST_VIRTUAL_REGISTER)
+	 || (cfun && cfun->static_chain_decl
+	     && cfun->static_chain_decl == REG_EXPR (regno_reg_rtx[regno]));
+}
+
+bool
+xtensa_expand_load_force_l32 (rtx *operands, machine_mode dest_mode,
+			      machine_mode src_mode, int unsignedp)
+{
+  rtx dest, src, addr, temp, x;
+
+  gcc_assert (src_mode == QImode || src_mode == HImode);
+
+  /* Reject sub-word store to memory with "force_l32".  */
+  if (mem_operand (dest = operands[0], dest_mode))
+    {
+      if (MEM_ADDR_SPACE (dest) == ADDR_SPACE_FORCE_L32)
+	{
+	  error ("Storing 1- and 2-byte quantities to memory within the "
+		 "%<__force_l32%> address space is not supported");
+	  return false;
+	}
+      if (xtensa_expand_load_force_l32_1 (dest))
+	warning (OPT_Wattributes,
+		 "Storing 1- and 2-byte quantities to memory with the "
+		 "%<force_l32%> attribute is not supported and the attribute "
+		 "ignored");
+    }
+
+  /* Exclude insns that do not load memory.  */
+  if (! register_operand (dest, dest_mode)
+      || ! mem_operand (src = operands[1], src_mode))
+    return false;
+
+  /* Exclude insns that do not perform memory loading with "force_l32".  */
+  if (MEM_ADDR_SPACE (src) != ADDR_SPACE_FORCE_L32
+      && ! xtensa_expand_load_force_l32_1 (src)
+      && (!TARGET_FORCE_L32 || MEM_ADDR_SPACE (src) != ADDR_SPACE_GENERIC))
+    return false;
+
+  /* As a preprocessing, handle cases where addr is (PLUS (REG, OFFSET))
+     form.  */
+  if (REG_P (addr = XEXP (src, 0)))
+    {
+      if (xtensa_expand_load_force_l32_2 (addr))
+	return false;
+    }
+  else if (GET_CODE (addr) == PLUS)
+    {
+      rtx op0 = XEXP (addr, 0), op1 = XEXP (addr, 1);
+      HOST_WIDE_INT v;
+
+      if (! CONST_INT_P (op1))
+	std::swap (op0, op1);
+      if (! REG_P (op0) || ! CONST_INT_P (op1)
+	  || xtensa_expand_load_force_l32_2 (op0))
+	return false;
+      if ((v = INTVAL (op1)) == 0)
+	addr = op0;
+      else
+	xtensa_emit_add_imm (addr = gen_reg_rtx (Pmode),
+			     op0, v, NULL_RTX, false);
+    }
+  else
+    return false;
+
+  /* First, Load the aligned SImode memory containing the desired [HQ]Imode
+     value.  */
+  emit_insn (gen_andsi3 (temp = gen_reg_rtx (Pmode),
+			 addr, force_reg (SImode, GEN_INT (-4))));
+  x = gen_rtx_MEM (SImode, temp);
+  MEM_VOLATILE_P (x) = MEM_VOLATILE_P (src);
+  emit_insn (gen_rtx_SET (temp, x));
+
+  /* Then, shift the bit-image of the desired [HQ]Imode value to bit-
+     position 0, ie., the least significant side for little-endian, the
+     most significant side for big-endian.
+     This process requires a shift of 8-times the amount, ie., a per-byte
+     shift instruction.  Therefore, with the implementation of this, the
+     instruction is modified to be usable regardless of whether optimization
+     and/or debugging is enabled or disabled (see "*shift_per_byte" insn
+     pattern in xtensa.md).  */
+  x = gen_rtx_ASHIFT (SImode, addr, GEN_INT (3));
+  x = BITS_BIG_ENDIAN ? gen_rtx_ASHIFT (SImode, temp, x)
+		      : gen_rtx_LSHIFTRT (SImode, temp, x);
+  emit_insn (gen_rtx_SET (temp, x));
+
+  /* Finally, extract the necessary part from the shifted result.  */
+  x = extract_bit_field (temp, GET_MODE_BITSIZE (src_mode), 0, unsignedp,
+			 NULL_RTX, dest_mode, dest_mode, false, NULL);
+  emit_insn (gen_rtx_SET (dest, x));
+
+  return true;
 }
 
 
@@ -2915,6 +3124,8 @@ xtensa_modes_tieable_p (machine_mode mode1, machine_mode mode2)
    'L'  CONST_INT, print ((32 - X) & 0x1f)
    'U', CONST_DOUBLE:SF, print (REAL_EXP (rval) - 1)
    'V', CONST_DOUBLE:SF, print (1 - REAL_EXP (rval))
+   'G', CONST_DOUBLE:SF, print 0~3 when rval is 0.0f, 1.0f, 2.0f, or 0.5f,
+	respectively.
    'D'  REG, print second register of double-word register operand
    'N'  MEM, print address of next word following a memory operand
    'v'  MEM, if memory reference is volatile, output a MEMW before it
@@ -3023,6 +3234,13 @@ print_operand (FILE *file, rtx x, int letter)
 	fprintf (file, "%d", 1 - REAL_EXP (CONST_DOUBLE_REAL_VALUE (x)));
       else
 	output_operand_lossage ("invalid %%V value");
+      break;
+
+    case 'G':
+      if (CONST_DOUBLE_P (x) && GET_MODE (x) == SFmode)
+	fprintf (file, "%d", xtensa_fp_const (CONST_DOUBLE_REAL_VALUE (x)));
+      else
+	output_operand_lossage ("invalid %%G value");
       break;
 
     case 'x':
@@ -3401,17 +3619,16 @@ xtensa_emit_adjust_stack_ptr (HOST_WIDE_INT offset, int flags)
 
 static bool
 xtensa_can_eliminate_callee_saved_reg_p (unsigned int regno,
-					 rtx_insn **p_insnS,
-					 rtx_insn **p_insnR)
+					 rtx_insn *&insnS, rtx_insn *&insnR)
 {
   df_ref ref;
-  rtx_insn *insn, *insnS = NULL, *insnR = NULL;
+  rtx_insn *insn;
   rtx pattern;
 
   if (!optimize || !df || call_used_or_fixed_reg_p (regno))
     return false;
 
-  for (ref = DF_REG_DEF_CHAIN (regno);
+  for (insnS = NULL, ref = DF_REG_DEF_CHAIN (regno);
        ref; ref = DF_REF_NEXT_REG (ref))
     if (DF_REF_CLASS (ref) != DF_REF_REGULAR
 	|| DEBUG_INSN_P (insn = DF_REF_INSN (ref)))
@@ -3431,7 +3648,7 @@ xtensa_can_eliminate_callee_saved_reg_p (unsigned int regno,
     else
       return false;
 
-  for (ref = DF_REG_USE_CHAIN (regno);
+  for (insnR = NULL, ref = DF_REG_USE_CHAIN (regno);
        ref; ref = DF_REF_NEXT_REG (ref))
     if (DF_REF_CLASS (ref) != DF_REF_REGULAR
 	|| DEBUG_INSN_P (insn = DF_REF_INSN (ref)))
@@ -3451,12 +3668,7 @@ xtensa_can_eliminate_callee_saved_reg_p (unsigned int regno,
     else
       return false;
 
-  if (!insnS || !insnR)
-    return false;
-
-  *p_insnS = insnS, *p_insnR = insnR;
-
-  return true;
+  return insnS && insnR;
 }
 
 /* minimum frame = reg save area (4 words) plus static chain (1 word)
@@ -3559,7 +3771,7 @@ xtensa_expand_prologue (void)
 
 	    if (!large_stack_needed
 		&& xtensa_can_eliminate_callee_saved_reg_p (regno,
-							    &insnS, &insnR))
+							    insnS, insnR))
 	      {
 		if (frame_pointer_needed)
 		  mem = replace_rtx (mem, stack_pointer_rtx,
@@ -3837,6 +4049,7 @@ xtensa_build_builtin_va_list (void)
   TYPE_FIELDS (record) = f_stk;
   DECL_CHAIN (f_stk) = f_reg;
   DECL_CHAIN (f_reg) = f_ndx;
+  TREE_PUBLIC (type_decl) = 1;
 
   layout_type (record);
   return record;
@@ -4905,6 +5118,13 @@ xtensa_legitimate_constant_p (machine_mode mode ATTRIBUTE_UNUSED, rtx x)
 	   || ! xtensa_postreload_completed_p ()
 	   || xtensa_simm12b (INTVAL (x));
 
+  if (CONST_DOUBLE_P (x) && GET_MODE (x) == SFmode)
+    {
+      int i = xtensa_fp_const (CONST_DOUBLE_REAL_VALUE (x));
+
+      return i == 0 || (TARGET_HARD_FLOAT_CONST_S && i > 0);
+    }
+
   return !xtensa_tls_referenced_p (x);
 }
 
@@ -5381,9 +5601,11 @@ xtensa_zero_call_used_regs (HARD_REG_SET selected_regs)
 	    zeroed_regno = regno;
 	  continue;
 	}
+      if (zeroed_regno < 0)
+	emit_move_insn (gen_rtx_REG (SImode, zeroed_regno = A9_REG),
+			const0_rtx);
       if (TARGET_BOOLEANS && BR_REG_P (regno))
 	{
-	  gcc_assert (zeroed_regno >= 0);
 	  argvec = rtvec_alloc (1);
 	  RTVEC_ELT (argvec, 0) = gen_rtx_REG (SImode, zeroed_regno);
 	  convec = rtvec_alloc (1);
@@ -5392,23 +5614,15 @@ xtensa_zero_call_used_regs (HARD_REG_SET selected_regs)
 					   "", 0, argvec, convec,
 					   rtvec_alloc (0),
 					   UNKNOWN_LOCATION));
-	  continue;
 	}
-      if (TARGET_HARD_FLOAT && FP_REG_P (regno))
-	{
-	  gcc_assert (zeroed_regno >= 0);
-	  emit_move_insn (gen_rtx_REG (SFmode, regno),
-			  gen_rtx_REG (SFmode, zeroed_regno));
-	  continue;
-	}
-      if (TARGET_MAC16 && ACC_REG_P (regno))
-	{
-	  gcc_assert (zeroed_regno >= 0);
-	  emit_move_insn (gen_rtx_REG (SImode, regno),
-			  gen_rtx_REG (SImode, zeroed_regno));
-	  continue;
-	}
-      CLEAR_HARD_REG_BIT (selected_regs, regno);
+      else if (TARGET_HARD_FLOAT && FP_REG_P (regno))
+	emit_move_insn (gen_rtx_REG (SFmode, regno),
+			gen_rtx_REG (SFmode, zeroed_regno));
+      else if (TARGET_MAC16 && ACC_REG_P (regno))
+	emit_move_insn (gen_rtx_REG (SImode, regno),
+			gen_rtx_REG (SImode, zeroed_regno));
+      else
+	CLEAR_HARD_REG_BIT (selected_regs, regno);
     }
 
   return selected_regs;
@@ -5471,6 +5685,138 @@ xtensa_md_asm_adjust (vec<rtx> &outputs ATTRIBUTE_UNUSED,
       }
 
   return NULL;
+}
+
+/* Implement TARGET_ADDR_SPACE_SUBSET_P.  */
+
+static bool
+xtensa_addr_space_subset_p (addr_space_t subset, addr_space_t superset)
+{
+  /* Just obvious.  */
+  if (subset == superset)
+     return true;
+
+  /* A __force_l32 pointer can point to any location in the generic
+     address space, though its efficiency is another matter.  */
+  if (superset == ADDR_SPACE_FORCE_L32 && subset == ADDR_SPACE_GENERIC)
+    return true;
+
+  return false;
+}
+
+/* Implement TARGET_ADDR_SPACE_CONVERT.  */
+
+static rtx
+xtensa_addr_space_convert (rtx op, tree from_type, tree to_type)
+{
+  addr_space_t from_as = TYPE_ADDR_SPACE (TREE_TYPE (from_type));
+  addr_space_t to_as = TYPE_ADDR_SPACE (TREE_TYPE (to_type));
+
+  /* A __force_l32 pointer can point to any location in the generic
+     address space, though its efficiency is another matter.  */
+  if (to_as == ADDR_SPACE_FORCE_L32 && from_as == ADDR_SPACE_GENERIC)
+    ;
+  /* However, the reverse conversion carries risks.  */
+  else if (to_as == ADDR_SPACE_GENERIC && from_as == ADDR_SPACE_FORCE_L32)
+    warning (0, "converting from the %<__force_l32%> address space to the "
+		"generic one is generally not safe");
+  /* Unimplemented conversions are of course not supported.  */
+  else
+    error ("conversion between those address spaces is not supported");
+
+  return op;
+}
+
+/* Implement TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P.  */
+
+static bool
+xtensa_addr_space_legitimate_address_p (machine_mode mode, rtx addr,
+					bool strict, addr_space_t as,
+					code_helper ch)
+{
+  switch (as)
+    {
+    case ADDR_SPACE_FORCE_L32:
+      /* The __force_l32 address space.  */
+
+      while (SUBREG_P (addr))
+	addr = SUBREG_REG (addr);
+
+      /* Only valid with a base register without offset.  */
+      return REG_P (addr) && BASE_REG_P (addr, strict);
+    }
+
+  return xtensa_legitimate_address_p (mode, addr, strict, ch);
+}
+
+/* Implement machine-specific attribute "force_l32" handler.  */
+
+static bool
+xtensa_handle_force_l32_attribute_1 (tree *type)
+{
+  /* If the type has definitions for fields, then recursively process each
+     of those types, and return true if any of the processes return true.  */
+  if (RECORD_OR_UNION_TYPE_P (*type))
+    {
+      bool f = false;
+
+      for (tree field = TYPE_FIELDS (*type);
+	   field; field = DECL_CHAIN (field))
+	f |= xtensa_handle_force_l32_attribute_1 (&TREE_TYPE (field));
+
+      return f;
+    }
+
+  /* If the type has an underlying type, it recursively processes that type
+     and returns the result.  */
+  if (TREE_TYPE (*type))
+    return xtensa_handle_force_l32_attribute_1 (&TREE_TYPE (*type));
+
+  /* If the type is INTEGER and its machine mode is [HQ]I, add the
+     "force_l32" attribute to that type and return true.  */
+  if (TREE_CODE (*type) == INTEGER_TYPE
+	   && (TYPE_MODE_RAW (*type) == QImode
+	       || TYPE_MODE_RAW (*type) == HImode))
+    {
+      tree attrs = tree_cons (get_identifier ("force_l32"),
+			      NULL, TYPE_ATTRIBUTES (*type));
+
+      *type = build_type_attribute_variant (*type, attrs);
+
+      return true;
+    }
+
+  /* If none of the above apply, simply return false.  */
+  return false;
+}
+
+static tree
+xtensa_handle_force_l32_attribute (tree *node, tree name,
+				   tree args ATTRIBUTE_UNUSED,
+				   int flags ATTRIBUTE_UNUSED,
+				   bool *no_add_attrs)
+{
+  if (DECL_P (*node))
+    {
+      if (TREE_CODE (*node) != TYPE_DECL && TREE_CODE (*node) != VAR_DECL
+	  && TREE_CODE (*node) != PARM_DECL)
+	{
+	  warning (OPT_Wattributes,
+		   "%qE attribute only applies to declarations of variables, "
+		   "function parameters, or types", name);
+	  *no_add_attrs = true;
+	}
+      /* Traverse all [HQ]Imode INTEGER types nested within the underlying
+	 type of that declaration and attempt to apply the "force_l32"
+	 attribute to them.  */
+      else if (! xtensa_handle_force_l32_attribute_1 (&TREE_TYPE (*node)))
+	{
+	  warning (OPT_Wattributes, "%qE attribute ignored", name);
+	  *no_add_attrs = true;
+	}
+    }
+
+  return NULL_TREE;
 }
 
 /* Machine-specific pass in order to replace all assignments of large
@@ -5570,6 +5916,7 @@ FPreg_neg_scaled_simm12b (rtx_insn *insn)
   int scale;
   rtx_insn *next, *last, *seq;
   REAL_VALUE_TYPE r;
+  bool success;
 
   /* It matches RTL expressions of the following format:
 	(set (reg:SF gpr) (const_double:SF cst))
@@ -5625,12 +5972,14 @@ FPreg_neg_scaled_simm12b (rtx_insn *insn)
 	      dump_insn_slim (dump_file, next);
 	    }
 	  remove_reg_equal_equiv_notes (insn);
-	  validate_change (insn, &PATTERN (insn),
-			   PATTERN (seq), 0);
+	  success = validate_change (insn, &PATTERN (insn),
+				     PATTERN (seq), 0);
+	  gcc_assert (success);
 	  remove_reg_equal_equiv_notes (next);
 	  remove_note (next, note);
-	  validate_change (next, &PATTERN (next),
-			   PATTERN (last), 0);
+	  success = validate_change (next, &PATTERN (next),
+				     PATTERN (last), 0);
+	  gcc_assert (success);
 	  add_reg_note (next, REG_EQUIV, src);
 	  add_reg_note (next, REG_DEAD, dest_2);
 	  if (dump_file)
@@ -5667,6 +6016,7 @@ static bool
 convert_SF_const (rtx_insn *insn)
 {
   rtx pat, dest, src, dest0, src0, src0c;
+  bool success;
 
   /* It is more efficient to assign SFmode literal constants using their
      bit-equivalent SImode ones, thus we convert them so.  */
@@ -5705,7 +6055,9 @@ convert_SF_const (rtx_insn *insn)
       && ! xtensa_simm12b (INTVAL (src0)))
     src0c = src0, src0 = force_const_mem (SImode, src0);
   remove_reg_equal_equiv_notes (insn);
-  validate_change (insn, &PATTERN (insn), gen_rtx_SET (dest0, src0), 0);
+  success = validate_change (insn, &PATTERN (insn),
+			     gen_rtx_SET (dest0, src0), 0);
+  gcc_assert (success);
   if (src0c)
     add_reg_note (insn, REG_EQUIV, copy_rtx (src0c));
   if (dump_file)
@@ -6018,6 +6370,7 @@ constantsynth_pass1 (rtx_insn *insn, constantsynth_info &info)
 {
   rtx pat, dest, src;
   int *pcount;
+  bool success;
 
   /* Check whether the insn is an assignment to a constant that is eligible
      for constantsynth.  If a large constant, record the insn and also the
@@ -6035,7 +6388,8 @@ constantsynth_pass1 (rtx_insn *insn, constantsynth_info &info)
       if (! rtx_equal_p (src, SET_SRC (pat)))
 	{
 	  remove_reg_equal_equiv_notes (insn);
-	  validate_change (insn, &SET_SRC (pat), src, 0);
+	  success = validate_change (insn, &SET_SRC (pat), src, 0);
+	  gcc_assert (success);
 	}
       if (dump_file)
 	{
@@ -6208,6 +6562,7 @@ litpool_set_src_1 (rtx_insn *insn, rtx set, bool in_group)
 {
   rtx dest, src;
   enum machine_mode mode;
+  bool success;
 
   if (REG_P (dest = SET_DEST (set)) && CONST_INT_P (src = SET_SRC (set))
       && ((((mode = GET_MODE (dest)) == SImode || mode == HImode)
@@ -6215,8 +6570,9 @@ litpool_set_src_1 (rtx_insn *insn, rtx set, bool in_group)
 	  || mode == DImode))
     {
       remove_reg_equal_equiv_notes (insn);
-      validate_change (insn, &SET_SRC (set),
-		       force_const_mem (mode, src), in_group);
+      success = validate_change (insn, &SET_SRC (set),
+				 force_const_mem (mode, src), in_group);
+      gcc_assert (success);
       add_reg_note (insn, REG_EQUIV, copy_rtx (src));
       return true;
     }
@@ -6229,7 +6585,7 @@ litpool_set_src (rtx_insn *insn)
 {
   rtx pat = PATTERN (insn);
   int i;
-  bool changed;
+  bool changed, success;
 
   switch (GET_CODE (pat))
     {
@@ -6245,7 +6601,11 @@ litpool_set_src (rtx_insn *insn)
 	    && litpool_set_src_1 (insn, XVECEXP (pat, 0, i), 1))
 	  changed = true;
       if (changed)
-	apply_change_group ();
+	{
+	  success = apply_change_group ();
+	  gcc_assert (success);
+	}
+
       return changed;
 
     default:

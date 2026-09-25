@@ -294,7 +294,7 @@ elif test "${with_sysroot+set}" = set; then
 fi
 
 AC_ARG_WITH(cpp_install_dir,
-[AC_HELP_STRING([--with-cpp-install-dir=DIR],
+[AS_HELP_STRING([--with-cpp-install-dir=DIR],
                 [install the user visible C preprocessor in DIR
                  (relative to PREFIX) as well as PREFIX/bin])],
 [if test x$withval = xyes; then
@@ -332,12 +332,6 @@ AC_SUBST(GENINSRC)
 # Find default linker
 # -------------------
 
-# With GNU ld
-AC_ARG_WITH(gnu-ld,
-[AS_HELP_STRING([--with-gnu-ld], [arrange to work with GNU ld])],
-gnu_ld_flag="$with_gnu_ld",
-gnu_ld_flag=)
-
 case $target in
     *darwin*)
 	ld64_flag=yes # Darwin can only use a ld64-compatible linker.
@@ -356,8 +350,6 @@ DEFAULT_LINKER="$with_ld")
 if test x"${DEFAULT_LINKER+set}" = x"set"; then
   if test ! -x "$DEFAULT_LINKER"; then
     AC_MSG_ERROR([cannot execute: $DEFAULT_LINKER: check --with-ld or env. var. DEFAULT_LINKER])
-  elif $DEFAULT_LINKER -v < /dev/null 2>&1 | grep GNU > /dev/null; then
-    gnu_ld_flag=yes
   elif $DEFAULT_LINKER -v < /dev/null 2>&1 | grep 'PROJECT:ld\(64\)*-' > /dev/null; then
     ld64_flag=yes
   fi
@@ -367,11 +359,7 @@ fi
 
 AC_MSG_CHECKING([whether a default linker was specified])
 if test x"${DEFAULT_LINKER+set}" = x"set"; then
-  if test x"$gnu_ld_flag" = x"no"; then
-    AC_MSG_RESULT([yes ($DEFAULT_LINKER)])
-  else
-    AC_MSG_RESULT([yes ($DEFAULT_LINKER - GNU ld)])
-  fi
+  AC_MSG_RESULT([yes ($DEFAULT_LINKER)])
 else
   AC_MSG_RESULT(no)
 fi
@@ -411,20 +399,12 @@ fi
 # Find default assembler
 # ----------------------
 
-# With GNU as
-AC_ARG_WITH(gnu-as,
-[AS_HELP_STRING([--with-gnu-as], [arrange to work with GNU as])],
-gas_flag="$with_gnu_as",
-gas_flag=)
-
 AC_ARG_WITH(as,
 [AS_HELP_STRING([--with-as], [arrange to use the specified as (full pathname)])],
 DEFAULT_ASSEMBLER="$with_as")
 if test x"${DEFAULT_ASSEMBLER+set}" = x"set"; then
   if test ! -x "$DEFAULT_ASSEMBLER"; then
     AC_MSG_ERROR([cannot execute: $DEFAULT_ASSEMBLER: check --with-as or env. var. DEFAULT_ASSEMBLER])
-  elif $DEFAULT_ASSEMBLER -v < /dev/null 2>&1 | grep GNU > /dev/null; then
-    gas_flag=yes
   fi
   AC_DEFINE_UNQUOTED(DEFAULT_ASSEMBLER,"$DEFAULT_ASSEMBLER",
 	[Define to enable the use of a default assembler.])
@@ -432,11 +412,7 @@ fi
 
 AC_MSG_CHECKING([whether a default assembler was specified])
 if test x"${DEFAULT_ASSEMBLER+set}" = x"set"; then
-  if test x"$gas_flag" != x"yes"; then
-    AC_MSG_RESULT([yes ($DEFAULT_ASSEMBLER)])
-  else
-    AC_MSG_RESULT([yes ($DEFAULT_ASSEMBLER - GNU as)])
-  fi
+  AC_MSG_RESULT([yes ($DEFAULT_ASSEMBLER)])
 else
   AC_MSG_RESULT(no)
 fi
@@ -896,7 +872,7 @@ stk_clash_min=12
 stk_clash_max=30
 
 # Keep the default value when the option is not used to 0, this allows us to
-# distinguish between the cases where the user specifially set a value via
+# distinguish between the cases where the user specifically set a value via
 # configure and when the normal default value is used.
 AC_ARG_WITH(stack-clash-protection-guard-size,
 [AS_HELP_STRING([--with-stack-clash-protection-guard-size=size],
@@ -2032,12 +2008,6 @@ if test x$use_long_long_for_widest_fast_int = xyes; then
 efficiently supported by the host hardware.])
 fi
 
-gnu_ld_bool=`if test x"$gnu_ld" = x"yes"; then echo 1; else echo 0; fi`
-AC_DEFINE_UNQUOTED(HAVE_GNU_LD, $gnu_ld_bool, [Define to 1 if using GNU ld.])
-
-gnu_as_bool=`if test x"$gas" = x"yes"; then echo 1; else echo 0; fi`
-AC_DEFINE_UNQUOTED(HAVE_GNU_AS, $gnu_as_bool, [Define to 1 if using GNU as.])
-
 count=a
 for f in $host_xm_file; do
 	count=${count}x
@@ -2693,7 +2663,7 @@ AC_DEFINE_UNQUOTED(LTOPLUGINSONAME,"${host_lto_plugin_soname}",
 # exec-tool will fail.
 
 m4_defun([_LT_CONFIG_COMMANDS], [])
-AC_PROG_LIBTOOL
+LT_INIT
 AC_SUBST(objdir)
 AC_SUBST(enable_fast_install)
 
@@ -2738,22 +2708,37 @@ else
         AC_PATH_PROG(gcc_cv_as, $AS_FOR_TARGET)
 fi])
 
-AC_MSG_CHECKING(Solaris assembler)
+AC_MSG_CHECKING(assembler flavor)
+as_flavor=gnu
 case $target in
-  *-*-solaris2*)
-    if $gcc_cv_as -V 2>&1 | grep 'Compiler Common.*SunOS' > /dev/null; then
-      solaris_as=yes
-      gas_flag=no
-    elif $gcc_cv_as --version 2>/dev/null | grep GNU > /dev/null; then
-      gas_flag=yes
+  *-*-aix*)
+    if $gcc_cv_as -v 2>&1 | grep '^as V' > /dev/null; then
+      as_flavor=aix
     fi
     ;;
-  *)
-    solaris_as=no
+  *-*-darwin*)
+    as_flavor=darwin
+    ;;
+  *-*-solaris2*)
+    if $gcc_cv_as -V 2>&1 | grep 'Compiler Common.*SunOS' > /dev/null; then
+      as_flavor=solaris
+    fi
+    ;;
+  hppa*64*-*-hpux11*)
+    if $gcc_cv_as -V 2>&1 | grep 'UX.11.*PA-RISC.*Assembler' > /dev/null; then
+      as_flavor=hpux
+    fi
+    ;;
+  nvptx-*-*)
+    as_flavor=nvptx
     ;;
 esac
-AC_MSG_RESULT($solaris_as)
-solaris_as_bool=`if test $solaris_as = yes; then echo 1; else echo 0; fi`
+AC_MSG_RESULT($as_flavor)
+dnl Don't define HAVE_GNU_AS, only HAVE_<FLAVOR>_AS when actually used.
+aix_as_bool=`if test $as_flavor = aix; then echo 1; else echo 0; fi`
+AC_DEFINE_UNQUOTED(HAVE_AIX_AS, $aix_as_bool,
+	[Define to 1 if using the AIX assembler.])
+solaris_as_bool=`if test $as_flavor = solaris; then echo 1; else echo 0; fi`
 AC_DEFINE_UNQUOTED(HAVE_SOLARIS_AS, $solaris_as_bool,
 	[Define to 1 if using the Solaris assembler.])
 
@@ -2763,15 +2748,6 @@ case "$ORIGINAL_AS_FOR_TARGET" in
   ./as | ./as$build_exeext) ;;
   *) AC_CONFIG_FILES(as:exec-tool.in, [chmod +x as]) ;;
 esac 
-
-# Check if we are using GNU as if not already set.
-if test -z "$gas_flag"; then
-  if $gcc_cv_as --version 2>/dev/null | grep GNU > /dev/null; then
-    gas_flag=yes
-  else
-    gas_flag=no
-  fi
-fi
 
 if $gcc_cv_as --help 2>&1 | grep -- --fatal-warnings > /dev/null; then
   fw_as_opt=--fatal-warnings
@@ -2839,22 +2815,34 @@ else
         AC_PATH_PROG(gcc_cv_ld, $LD_FOR_TARGET)
 fi])
 
-AC_MSG_CHECKING(Solaris linker)
+AC_MSG_CHECKING(linker flavor)
+ld_flavor=gnu
 case $target in
-  *-*-solaris2*)
-    if $gcc_cv_ld -V 2>/dev/null | grep 'Solaris Link Editors' > /dev/null; then
-      gnu_ld_flag=no
-      solaris_ld=yes
-    elif $gcc_cv_ld --version 2>/dev/null | grep GNU > /dev/null; then
-      gnu_ld_flag=yes
+  *-*-aix*)
+    if $gcc_cv_ld -V 2>&1 | grep 'ld: LD ' > /dev/null; then
+      ld_flavor=aix
     fi
     ;;
-  *)
-    solaris_ld=no
+  *-*-darwin*)
+    ld_flavor=darwin
+    ;;
+  *-*-solaris2*)
+    if $gcc_cv_ld -V 2>&1 | grep 'Solaris Link Editors' > /dev/null; then
+      ld_flavor=solaris
+    fi
+    ;;
+  hppa*64*-*-hpux11*)
+    if $gcc_cv_ld -V 2>&1 | grep 'linker command.*sgs.*ld PA64' > /dev/null; then
+      ld_flavor=hpux
+    fi
+    ;;
+  nvptx-*-*)
+    ld_flavor=nvptx
     ;;
 esac
-AC_MSG_RESULT($solaris_ld)
-solaris_ld_bool=`if test $solaris_ld = yes; then echo 1; else echo 0; fi`
+AC_MSG_RESULT($ld_flavor)
+dnl Don't define HAVE_GNU_LD, only HAVE_<FLAVOR>_LD when actually used.
+solaris_ld_bool=`if test $ld_flavor = solaris; then echo 1; else echo 0; fi`
 AC_DEFINE_UNQUOTED(HAVE_SOLARIS_LD, $solaris_ld_bool,
 	[Define to 1 if using the Solaris linker.])
 
@@ -2875,27 +2863,26 @@ AC_ARG_WITH(plugin-ld,
 AC_SUBST(ORIGINAL_PLUGIN_LD_FOR_TARGET)
 AC_DEFINE_UNQUOTED(PLUGIN_LD_SUFFIX, "$PLUGIN_LD_SUFFIX", [Specify plugin linker])
 
-# Check if we are using GNU ld if not already set.
-if test -z "$gnu_ld_flag"; then
-  if $gcc_cv_ld --version 2>/dev/null | grep GNU > /dev/null; then
-    gnu_ld_flag=yes
-  else
-    gnu_ld_flag=no
-  fi
-fi
+# Settings that depend on ld_flavor must be done here instead of config.gcc.
 
-case "$target:$gnu_ld_flag" in
-  *-*-solaris2*:no)
+case "$target:$ld_flavor" in
+  *-*-solaris2*:solaris)
     # While Solaris ld has -m32/-m64 it usually determines the ELF class
     # from the input objects.
     ;;
-  i?86-*-solaris2*:yes | x86_64-*-solaris2*:yes)
+  i?86-*-solaris2*:gnu | x86_64-*-solaris2*:gnu)
     ld_32_opt=-melf_i386_sol2
     ld_64_opt=-melf_x86_64_sol2
     ;;
-  i?86-*-*:yes | x86_64-*-*:yes)
+  i?86-*-*:gnu | x86_64-*-*:gnu)
     ld_32_opt=-melf_i386
     ld_64_opt=-melf_x86_64
+    ;;
+esac
+
+case "$target:$ld_flavor" in
+  hppa*64*-*-hpux11*:gnu)
+    target_cpu_default="${target_cpu_default}|MASK_GNU_LD"
     ;;
 esac
 
@@ -3236,9 +3223,10 @@ Valid choices are 'yes' and 'no'.]) ;;
   esac],
  [enable_gnu_indirect_function="$default_gnu_indirect_function"])
 
+gcc_cv_irelative_reloc=
 case "${target}" in
   riscv*-*-linux*)
-    AC_MSG_CHECKING(linker ifunc IRELATIVE support)
+    gcc_cv_irelative_reloc=R_RISCV_IRELATIVE
     cat > conftest.s <<EOF
 	.text
 	.type	foo_resolver, @function
@@ -3257,19 +3245,46 @@ bar:
 	ret
 	.size	bar, .-bar
 EOF
-    if test x"$gcc_cv_as" != x \
-       && test x"$gcc_cv_ld" != x \
-       && test x"$gcc_cv_readelf" != x \
-       && $gcc_cv_as -o conftest.o conftest.s > /dev/null 2>&1 \
-       && $gcc_cv_ld -o conftest conftest.o > /dev/null 2>&1 \
-       && $gcc_cv_readelf --relocs --wide conftest \
-	  | grep R_RISCV_IRELATIVE > /dev/null 2>&1; then
-      enable_gnu_indirect_function=yes
-    fi
-    rm -f conftest conftest.o conftest.s
-    AC_MSG_RESULT($enable_gnu_indirect_function)
+    ;;
+  alpha*-*-linux*)
+    # Alpha gas reserves .set for setting assembler modes, so the alias is
+    # spelled with '=' instead, matching the target's ASM_OUTPUT_DEF.
+    gcc_cv_irelative_reloc=R_ALPHA_IRELATIVE
+    cat > conftest.s <<EOF
+	.text
+	.type	foo_resolver, @function
+foo_resolver:
+	ret
+	.size	foo_resolver, .-foo_resolver
+
+	.globl	foo
+	.type	foo, %gnu_indirect_function
+	foo = foo_resolver
+
+	.globl	bar
+	.type	bar, @function
+bar:
+	jsr	\$26, foo
+	ret
+	.size	bar, .-bar
+EOF
     ;;
 esac
+
+if test x"$gcc_cv_irelative_reloc" != x; then
+  AC_MSG_CHECKING(linker ifunc IRELATIVE support)
+  if test x"$gcc_cv_as" != x \
+     && test x"$gcc_cv_ld" != x \
+     && test x"$gcc_cv_readelf" != x \
+     && $gcc_cv_as -o conftest.o conftest.s > /dev/null 2>&1 \
+     && $gcc_cv_ld -o conftest conftest.o > /dev/null 2>&1 \
+     && $gcc_cv_readelf --relocs --wide conftest \
+	| grep $gcc_cv_irelative_reloc > /dev/null 2>&1; then
+    enable_gnu_indirect_function=yes
+  fi
+  rm -f conftest conftest.o conftest.s
+  AC_MSG_RESULT($enable_gnu_indirect_function)
+fi
 
 gif=`if test x$enable_gnu_indirect_function = xyes; then echo 1; else echo 0; fi`
 AC_DEFINE_UNQUOTED(HAVE_GNU_INDIRECT_FUNCTION, $gif,
@@ -3340,11 +3355,31 @@ changequote(,)dnl
 fi
 changequote([,])dnl
 
+# Check if an in-tree gld is at least at version major, minor.
+gcc_fn_gld_min_version () {
+  if test "$gcc_cv_gld_major_version" -eq $1 \
+          -a "$gcc_cv_gld_minor_version" -ge $2 \
+          -o "$gcc_cv_gld_major_version" -gt $1; then
+    return 0;
+  fi
+  return 1;
+}
+
+# Check if an in-tree gld is ELF and at least at version major, minor.
+gcc_fn_gld_elf_min_version ()
+{
+  if gcc_fn_gld_min_version "$1" "$2"; then
+    if test $in_tree_ld_is_elf = yes; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
 AC_CACHE_CHECK(linker for .hidden support, gcc_cv_ld_hidden,
 [[if test $in_tree_ld = yes ; then
   gcc_cv_ld_hidden=no
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 13 -o "$gcc_cv_gld_major_version" -gt 2 \
-     && test $in_tree_ld_is_elf = yes; then
+  if gcc_fn_gld_elf_min_version 2 13; then
      gcc_cv_ld_hidden=yes
   fi
 else
@@ -3406,11 +3441,28 @@ if test $gcc_cv_as_hidden = yes && test $gcc_cv_ld_hidden = yes; then
   [Define if your assembler and linker support .hidden.])
 fi
 
+AC_MSG_CHECKING(linker supports GNU style response files)
+gcc_cv_ld_at_file=no
+if test $in_tree_ld = yes ; then
+  gcc_cv_ld_at_file=yes
+elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x; then
+  echo '.byte 0' > conftest.s
+  echo conftest.o > conftest.at
+  if $gcc_cv_as -o conftest.o conftest.s > /dev/null 2>&1 \
+     && $gcc_cv_ld -r -o conftest2.o @conftest.at > /dev/null 2>&1; then
+    gcc_cv_ld_at_file=yes
+  fi
+  rm -f conftest.* conftest2.*
+fi
+AC_DEFINE_UNQUOTED(HAVE_LD_AT_FILE,
+  [`if test $gcc_cv_ld_at_file = yes; then echo 1; else echo 0; fi`],
+  [Define if your linker supports GNU style response files.])
+AC_MSG_RESULT($gcc_cv_ld_at_file)
+
 AC_MSG_CHECKING(linker read-only and read-write section mixing)
 gcc_cv_ld_ro_rw_mix=unknown
 if test $in_tree_ld = yes ; then
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 10 -o "$gcc_cv_gld_major_version" -gt 2 \
-     && test $in_tree_ld_is_elf = yes; then
+  if gcc_fn_gld_elf_min_version 2 10; then
     gcc_cv_ld_ro_rw_mix=read-write
   fi
 elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x -a x"$gcc_cv_objdump" != x ; then
@@ -3525,6 +3577,14 @@ gcc_GAS_CHECK_FEATURE([cfi directives], gcc_cv_as_cfi_directive,,
 	.cfi_escape 1, 2, 3, 4, 5
 	.cfi_endproc],
 [case "$target" in
+  hppa*-*-hpux*)
+    # The HP dynamic linker relocates text and data separately, so
+    # differences between text and data don't work.  As a result,
+    # gas defines CFI_DIFF_EXPR_OK to 0.  We want to use difference
+    # expressions for symbols in the data segment, so we need to
+    # make sure CFI directives aren't emitted.
+    gcc_cv_as_cfi_directive=no
+    ;;
   *-*-solaris*)
     # If the linker used on Solaris (like Sun ld) isn't capable of merging
     # read-only and read-write sections, we need to make sure that the
@@ -3747,7 +3807,7 @@ case "${target}" in
 esac
 AC_DEFINE_UNQUOTED(HAVE_GAS_SHF_GNU_RETAIN,
   [`if test $gcc_cv_as_shf_gnu_retain = yes; then echo 1; else echo 0; fi`],
-  [Define 0/1 if your assembler supports marking sections with SHF_GNU_RETAIN flag.])
+  [Define 0/1 if your assembler and linker support SHF_GNU_RETAIN.])
 
 # Test if the assembler supports the section flag 'o' for specifying
 # section with link-order.
@@ -3769,7 +3829,7 @@ case "${target}" in
 esac
 AC_DEFINE_UNQUOTED(HAVE_GAS_SECTION_LINK_ORDER,
   [`if test $gcc_cv_as_section_link_order = yes; then echo 1; else echo 0; fi`],
-  [Define 0/1 if your assembler supports 'o' flag in .section directive.])
+  [Define 0/1 if your assembler and linker support SHF_LINK_ORDER.])
 
 gcc_GAS_CHECK_FEATURE(section merging support, gcc_cv_as_shf_merge,
  [$fw_as_opt],
@@ -3839,8 +3899,7 @@ elif test x"$ld_is_wild" = xyes; then
   comdat_group=yes
 elif test $in_tree_ld = yes ; then
   comdat_group=no
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 16 -o "$gcc_cv_gld_major_version" -gt 2 \
-     && test $in_tree_ld_is_elf = yes; then
+  if gcc_fn_gld_elf_min_version 2 16; then
      comdat_group=yes
   fi
 elif echo "$ld_ver" | grep GNU > /dev/null; then
@@ -3993,22 +4052,19 @@ foo:	.long	25
 .word foo(tlsldo)'
 	;;
   i?86-*-* | x86_64-*-*)
-    case "$target:$gas_flag" in
-      i?86-*-solaris2*:no | x86_64-*-solaris2*:no)
-	tls_section_flag=t
+    if test x$as_flavor = xsolaris; then
+      tls_section_flag=t
 changequote([,])dnl
-	AC_DEFINE(TLS_SECTION_ASM_FLAG, 't',
+      AC_DEFINE(TLS_SECTION_ASM_FLAG, 't',
 [Define to the flag used to mark TLS sections if the default (`T') doesn't work.])
 changequote(,)dnl
-	;;
-      *:*)
-	tls_section_flag=T
-	;;
-    esac
+    else
+      tls_section_flag=T
+    fi
     conftest_s='
       .section .tdata,"aw'$tls_section_flag'",@progbits'
     case "$target" in
-      i?86-*-*)
+      i?86-*-* | x86_64-*-linux-gnuabi32 | x86_64-*-mingw32abi32)
 	tls_as_opt="$tls_as_opt $as_32_opt"
 	conftest_s="$conftest_s
 foo:	.long	25
@@ -4200,23 +4256,6 @@ x:	.word 2
 	la.tls.gd a0,x
         call __tls_get_addr'
 	;;
-  s390-*-*)
-    conftest_s='
-	.section ".tdata","awT",@progbits
-foo:	.long	25
-	.text
-	.long	foo@TLSGD
-	.long	foo@TLSLDM
-	.long	foo@DTPOFF
-	.long	foo@NTPOFF
-	.long	foo@GOTNTPOFF
-	.long	foo@INDNTPOFF
-	l	%r1,foo@GOTNTPOFF(%r12)
-	l	%r1,0(%r1):tls_load:foo
-	bas	%r14,0(%r1,%r13):tls_gdcall:foo
-	bas	%r14,0(%r1,%r13):tls_ldcall:foo'
-	tls_as_opt="-m31"
-	;;
   s390x-*-*)
     conftest_s='
 	.section ".tdata","awT",@progbits
@@ -4245,16 +4284,13 @@ foo:	.long	25
 	.long	foo@TPOFF'
 	;;
   sparc*-*-*)
-    case "$target:$gas_flag" in
-      sparc*-sun-solaris2.*:no)
-	conftest_s='
-	.section ".tdata",#alloc,#write,#tls'
-	;;
-       *:*)
-	 conftest_s='
-	.section ".tdata","awT",@progbits'
-	;;
-    esac
+    if test x$as_flavor = xsolaris; then
+      conftest_s='
+      .section ".tdata",#alloc,#write,#tls'
+    else
+      conftest_s='
+      .section ".tdata","awT",@progbits'
+    fi
     tls_as_opt=$as_32_opt
     conftest_s="$conftest_s
 foo:	.long	25
@@ -4306,7 +4342,7 @@ case $target_os in
     if test $set_have_as_tls = yes; then
       # Hack to check whether ld breaks on @secrel32 for Windows
       if test $in_tree_ld = yes; then
-	if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 44 -o "$gcc_cv_gld_major_version" -gt 2; then
+        if gcc_fn_gld_min_version 2 44; then
 	  : # ld support for @secrel32 was fixed in this version
 	else
 	  AC_MSG_ERROR([ld version is known to have broken secrel32 relocations, configure without --enable-tls or with --disable-tls to remove this error. See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=80881 for more information.])
@@ -4342,7 +4378,7 @@ gcc_cv_ld_static_dynamic=no
 gcc_cv_ld_static_option='-Bstatic'
 gcc_cv_ld_dynamic_option='-Bdynamic'
 if test $in_tree_ld = yes ; then
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 10 -o "$gcc_cv_gld_major_version" -gt 2; then
+  if gcc_fn_gld_min_version 2 10; then
     gcc_cv_ld_static_dynamic=yes
   fi
 elif test x$gcc_cv_ld != x; then
@@ -4360,11 +4396,9 @@ elif test x$gcc_cv_ld != x; then
 	;;
       # HP-UX ld uses -a flags to select between shared and archive.
       *-*-hpux*)
-	if test x"$gnu_ld_flag" = xno; then
-	  gcc_cv_ld_static_dynamic=yes
-	  gcc_cv_ld_static_option="-aarchive_shared"
-	  gcc_cv_ld_dynamic_option="-adefault"
-	fi
+	gcc_cv_ld_static_dynamic=yes
+	gcc_cv_ld_static_option="-aarchive_shared"
+	gcc_cv_ld_dynamic_option="-adefault"
 	;;
       # Solaris 2 ld always supports -Bstatic/-Bdynamic.
       *-*-solaris2*)
@@ -4383,47 +4417,53 @@ if test x"$gcc_cv_ld_static_dynamic" = xyes; then
 fi
 AC_MSG_RESULT($gcc_cv_ld_static_dynamic)
 
-AC_MSG_CHECKING(linker --version-script option)
+AC_MSG_CHECKING(linker version script option)
 gcc_cv_ld_version_script=no
 ld_version_script_option=''
-if test $in_tree_ld = yes || test x"$gnu_ld_flag" = xyes; then
+if test $in_tree_ld = yes; then
   gcc_cv_ld_version_script=yes
   ld_version_script_option='--version-script'
 elif test x$gcc_cv_ld != x; then
-  case "$target" in
-    # Solaris 2 ld always supports -M.  It also supports a subset of
-    # --version-script since Solaris 11.4, but requires
-    # -z gnu-version-script-compat to activate.
-    *-*-solaris2*)
-      gcc_cv_ld_version_script=yes
-      ld_version_script_option='-M'
-      ;;
-  esac
+  # Check if linker supports --version-script option
+  if $gcc_cv_ld --help 2>&1 | grep -- --version-script > /dev/null; then
+    gcc_cv_ld_version_script=yes
+    ld_version_script_option='--version-script'
+  fi
 fi
-# Don't AC_DEFINE result, only used in jit/Make-lang.in so far.
+if test x$ld_flavor = xsolaris; then
+  # Solaris 2 ld always supports -M.  It also supports a subset of
+  # --version-script since Solaris 11.4, but requires
+  # -z gnu-version-script-compat to activate.
+  gcc_cv_ld_version_script=yes
+  ld_version_script_option='-M'
+fi
 AC_MSG_RESULT($gcc_cv_ld_version_script)
 AC_SUBST(ld_version_script_option)
 
 AC_MSG_CHECKING(linker soname option)
 gcc_cv_ld_soname=no
-if test $in_tree_ld = yes || test x"$gnu_ld_flag" = xyes; then
+if test $in_tree_ld = yes; then
   gcc_cv_ld_soname=yes
   ld_soname_option='-soname'
 elif test x$gcc_cv_ld != x; then
-  case "$target" in
-    *-*-darwin*)
-      gcc_cv_ld_soname=yes
-      ld_soname_option='-install_name'
-      ;;
-    # Solaris 2 ld always supports -h.  It also supports --soname for GNU
-    # ld compatiblity since some Solaris 10 update.
-    *-*-solaris2*)
-      gcc_cv_ld_soname=yes
-      ld_soname_option='-h'
-      ;;
-  esac
+  # Check if linker supports -soname option
+  if $gcc_cv_ld --help 2>&1 | grep -- -soname > /dev/null; then
+    gcc_cv_ld_soname=yes
+    ld_soname_option='-soname'
+  fi
 fi
-# Don't AC_DEFINE result, only used in jit/Make-lang.in so far.
+case "$target:$ld_flavor" in
+  *-*-darwin*:*)
+    gcc_cv_ld_soname=yes
+    ld_soname_option='-install_name'
+    ;;
+  # Solaris 2 ld always supports -h.  It also supports --soname for GNU
+  # ld compatiblity since some Solaris 10 update.
+  *-*-solaris2*:solaris)
+    gcc_cv_ld_soname=yes
+    ld_soname_option='-h'
+    ;;
+esac
 AC_MSG_RESULT($gcc_cv_ld_soname)
 AC_SUBST(ld_soname_option)
 
@@ -4431,10 +4471,10 @@ if test x"$demangler_in_ld" = xyes; then
   AC_MSG_CHECKING(linker --demangle support)
   gcc_cv_ld_demangle=no
   if test $in_tree_ld = yes; then
-    if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 14 -o "$gcc_cv_gld_major_version" -gt 2; then \
+    if gcc_fn_gld_min_version 2 14; then
       gcc_cv_ld_demangle=yes
     fi
-  elif test x$gcc_cv_ld != x -a x"$gnu_ld_flag" = xyes; then
+  elif test x$gcc_cv_ld != x; then
     # Check if the GNU linker supports --demangle option
     if $gcc_cv_ld --help 2>&1 | grep no-demangle > /dev/null; then
       gcc_cv_ld_demangle=yes
@@ -4488,6 +4528,8 @@ changequote([,])dnl
     if test "$ld_vers_major" -eq 2 -a "$ld_vers_minor" -ge 21; then
       gcc_cv_lto_plugin=2
     elif test "$ld_is_mold" = yes; then
+      gcc_cv_lto_plugin=2
+    elif test "$ld_is_wild" = yes; then
       gcc_cv_lto_plugin=2
     # Allow -fuse-linker-plugin to enable plugin support in GNU gold 2.20.
     elif test "$ld_is_gold" = yes -a "$ld_vers_major" -eq 2 -a "$ld_vers_minor" -eq 20; then
@@ -4570,6 +4612,12 @@ case "$target" in
 	.aeabi_attribute Tag_Feature_GCS, 1
     ],,[AC_DEFINE(HAVE_AS_AEABI_BUILD_ATTRIBUTES, 1,
 	[Define if your assembler supports AEABI build attributes.])])
+    # Check if we have binutils support for DTPREL relocation.
+    gcc_GAS_CHECK_FEATURE([support of DTPREL relocation], gcc_cv_as_aarch64_dtprel_relocation,,
+    [
+	.xword %dtprel(expr)
+    ],,[AC_DEFINE(HAVE_AS_DTPREL_RELOC, 1,
+	[Define if your assembler supports DTPREL relocation.])])
     # Enable Branch Target Identification Mechanism and Return Address
     # Signing by default.
     AC_ARG_ENABLE(standard-branch-protection,
@@ -4690,6 +4738,11 @@ AS_HELP_STRING([--disable-fix-cortex-a53-843419],
       		   ],,
       [AC_DEFINE(HAVE_AS_AVR_MGCCISR_OPTION, 1,
 		[Define if your avr assembler supports -mgcc-isr option.])])
+
+    gcc_GAS_CHECK_FEATURE([.gnu_attribute], gcc_cv_as_avr_gnu_attribute,
+      [], [.gnu_attribute 4,1],,
+      [AC_DEFINE(HAVE_AS_AVR_GNU_ATTRIBUTE, 1,
+		[Define if your avr assembler supports .gnu_attribute.])])
 
     avr_ld_ver="`$gcc_cv_ld -v | sed -e 's:^.* ::'`"
     # Check how default linker description file implements .rodata for
@@ -4902,12 +4955,6 @@ foo:	nop
       [AC_DEFINE(HAVE_AS_IX86_FFREEP, 1,
         [Define if your assembler supports the ffreep mnemonic.])])
 
-    gcc_GAS_CHECK_FEATURE([.quad directive],
-      gcc_cv_as_ix86_quad,,
-      [.quad 0],,
-      [AC_DEFINE(HAVE_AS_IX86_QUAD, 1,
-        [Define if your assembler supports the .quad directive.])])
-
     gcc_GAS_CHECK_FEATURE([sahf mnemonic],
       gcc_cv_as_ix86_sahf,,
       [.code64
@@ -4935,18 +4982,6 @@ foo:	nop
       [movl.s %esp, %ebp],,
       [AC_DEFINE(HAVE_AS_IX86_SWAP, 1,
         [Define if your assembler supports the swap suffix.])])
-
-    gcc_GAS_CHECK_FEATURE([different section symbol subtraction],
-      gcc_cv_as_ix86_diff_sect_delta,,
-      [.section .rodata
-.L1:
-        .long .L2-.L1
-        .long .L3-.L1
-        .text
-.L3:    nop
-.L2:    nop],,
-      [AC_DEFINE(HAVE_AS_IX86_DIFF_SECT_DELTA, 1,
-        [Define if your assembler supports the subtraction of symbols in different sections.])])
 
     gcc_GAS_CHECK_FEATURE([rep and lock prefix],
         gcc_cv_as_ix86_rep_lock_prefix,,
@@ -5349,8 +5384,7 @@ x:
     gcc_cv_as_ld_jalr_reloc=no
     if test $gcc_cv_as_mips_explicit_relocs = yes; then
       if test $in_tree_ld = yes ; then
-        if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 20 -o "$gcc_cv_gld_major_version" -gt 2 \
-           && test $in_tree_ld_is_elf = yes; then
+        if gcc_fn_gld_elf_min_version 2 20; then
           gcc_cv_as_ld_jalr_reloc=yes
         fi
       elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x -a x"$gcc_cv_objdump" != x; then
@@ -5385,9 +5419,7 @@ x:
       [gcc_cv_ld_mips_personality_relaxation],
       [gcc_cv_ld_mips_personality_relaxation=no
        if test $in_tree_ld = yes ; then
-	 if test "$gcc_cv_gld_major_version" -eq 2 \
-		 -a "$gcc_cv_gld_minor_version" -ge 21 \
-		 -o "$gcc_cv_gld_major_version" -gt 2; then
+         if gcc_fn_gld_min_version 2 21; then
 	   gcc_cv_ld_mips_personality_relaxation=yes
 	 fi
        elif test x"$gcc_cv_as" != x \
@@ -5537,7 +5569,7 @@ x:
       [AC_DEFINE(HAVE_AS_16B_ATOMIC, 1,
 	  [Define if your assembler supports LSX and SCQ for 16B atomic.])])
     ;;
-    s390*-*-*)
+    s390x-*-*)
     gcc_GAS_CHECK_FEATURE([.gnu_attribute support],
       gcc_cv_as_s390_gnu_attribute,,
       [.gnu_attribute 8,1],,
@@ -5575,8 +5607,7 @@ esac
 
 case "$target" in
   mips*-*-* | loongarch*-*-* | *-*-hpux* )
-    if test x$gas_flag = xyes \
-       || test x"$host" != x"$build" \
+    if test x"$host" != x"$build" \
        || test ! -x "$gcc_cv_as" \
        || "$gcc_cv_as" -v < /dev/null 2>&1 | grep GNU > /dev/null; then
       :
@@ -5629,7 +5660,7 @@ esac
 # ??? Once 2.11 is released, probably need to add first known working
 # version to the per-target configury.
 case "$cpu_type" in
-  aarch64 | alpha | arc | arm | avr | bfin | cris | csky | i386 | loongarch | m32c \
+  aarch64 | alpha | arc | arm | avr | bfin | cris | csky | i386 | loongarch \
   | m68k | microblaze | mips | nds32 | pa | riscv | rs6000 | score | sparc \
   | visium | xstormy16 | xtensa | ft32)
     insn="nop"
@@ -5939,7 +5970,7 @@ foo:
      [changequote(,)dnl
       if test x$gcc_cv_objdump != x \
 	 && $gcc_cv_objdump -W conftest.o 2>&1 \
-		| grep conftest.s > /dev/null 2>&1; then
+		| grep 'conftest\.s' > /dev/null 2>&1; then
 	gcc_cv_as_working_gdwarf_n_flag=no
       else
 	gcc_cv_as_working_gdwarf_n_flag=yes
@@ -6080,8 +6111,7 @@ AC_SUBST(thin_archive_support)
 AC_MSG_CHECKING(linker PT_GNU_EH_FRAME support)
 gcc_cv_ld_eh_frame_hdr=no
 if test $in_tree_ld = yes ; then
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 12 -o "$gcc_cv_gld_major_version" -gt 2 \
-     && test $in_tree_ld_is_elf = yes; then
+  if gcc_fn_gld_elf_min_version 2 12; then
     gcc_cv_ld_eh_frame_hdr=yes
   fi
 elif test x$gcc_cv_ld != x; then
@@ -6108,9 +6138,7 @@ AC_MSG_RESULT($gcc_cv_ld_eh_frame_hdr)
 AC_MSG_CHECKING(linker position independent executable support)
 gcc_cv_ld_pie=no
 if test $in_tree_ld = yes ; then
-  gcc_gld_pie_min_version=15
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge "$gcc_gld_pie_min_version" -o "$gcc_cv_gld_major_version" -gt 2 \
-     && test $in_tree_ld_is_elf = yes; then
+  if gcc_fn_gld_elf_min_version 2 15; then
     gcc_cv_ld_pie=yes
   fi
 elif test x$gcc_cv_ld != x; then
@@ -6136,7 +6164,7 @@ AC_MSG_CHECKING(linker PIE support with copy reloc)
 gcc_cv_ld_pie_copyreloc=no
 if test $gcc_cv_ld_pie = yes ; then
   if test $in_tree_ld = yes ; then
-    if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 25 -o "$gcc_cv_gld_major_version" -gt 2; then
+    if gcc_fn_gld_min_version 2 25; then
       gcc_cv_ld_pie_copyreloc=yes
     fi
   elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x ; then
@@ -6183,8 +6211,7 @@ AC_MSG_RESULT($gcc_cv_ld_pie_copyreloc)
 AC_MSG_CHECKING(linker EH-compatible garbage collection of sections)
 gcc_cv_ld_eh_gc_sections=no
 if test $in_tree_ld = yes ; then
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 17 -o "$gcc_cv_gld_major_version" -gt 2 \
-     && test $in_tree_ld_is_elf = yes; then
+  if gcc_fn_gld_elf_min_version 2 17; then
     gcc_cv_ld_eh_gc_sections=yes
   fi
 elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x -a x"$gcc_cv_objdump" != x ; then
@@ -6264,8 +6291,9 @@ AC_MSG_RESULT($gcc_cv_ld_eh_gc_sections)
 AC_MSG_CHECKING(linker EH garbage collection of sections bug)
 gcc_cv_ld_eh_gc_sections_bug=no
 if test $in_tree_ld = yes ; then
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -lt 19 -o "$gcc_cv_gld_major_version" -lt 2 \
-     && test $in_tree_ld_is_elf = yes; then
+  if gcc_fn_gld_elf_min_version 2 19; then
+    :
+  else
     gcc_cv_ld_eh_gc_sections_bug=yes
   fi
 elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x -a x"$gcc_cv_objdump" != x -a x$gcc_cv_as_comdat_group = xyes; then
@@ -6347,7 +6375,7 @@ gcc_cv_ld_ctf=no
 # Check for Solaris ld 1.3315 introduced in Solaris 11.4 SRU 84.  ld -z ctf
 # already went in in SRU 81, but lacked GNU CTF to Solaris CTF conversion.
 if $gcc_cv_ld --help 2>&1 | grep -- '-z ctf' > /dev/null \
-  && test x$gnu_ld_flag = xno && test "$ld_vers_minor" -ge 3315; then
+  && test x$ld_flavor = xsolaris && test "$ld_vers_minor" -ge 3315; then
   gcc_cv_ld_ctf=yes
   AC_DEFINE(HAVE_LD_CTF, 1, [Define if your linker supports -z ctf.])
 fi
@@ -6528,7 +6556,7 @@ case $target_os in
     AC_MSG_CHECKING(PE linker --disable-dynamicbase support)
     gcc_cv_ld_disable_dynamicbase=no
     if test $in_tree_ld = yes; then
-      if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 36 -o "$gcc_cv_gld_major_version" -gt 2; then \
+      if gcc_fn_gld_min_version 2 36; then
         gcc_cv_ld_disable_dynamicbase=yes
       fi
     else
@@ -6555,11 +6583,10 @@ gcc_cv_ld_as_needed_option='--as-needed'
 gcc_cv_ld_no_as_needed_option='--no-as-needed'
 gcc_cv_ld_use_as_needed_ldscript=no
 if test $in_tree_ld = yes ; then
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 16 -o "$gcc_cv_gld_major_version" -gt 2 \
-     && test $in_tree_ld_is_elf = yes; then
+  if gcc_fn_gld_elf_min_version 2 16; then
     gcc_cv_ld_as_needed=yes
     gcc_cv_ld_use_as_needed_ldscript=yes
-    if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 28; then
+    if gcc_fn_gld_min_version 2 28; then
       gcc_cv_ld_as_needed_option='--push-state --as-needed'
       gcc_cv_ld_no_as_needed_option='--pop-state'
     fi
@@ -6580,16 +6607,14 @@ elif test x$gcc_cv_ld != x; then
       gcc_cv_ld_no_as_needed_option='--pop-state'
     fi
   fi
-  case "$target:$gnu_ld_flag" in
-    *-*-solaris2*:no)
-      # Solaris 2 ld always supports -z ignore/-z record.  Prefer the native
-      # forms.
-      gcc_cv_ld_as_needed=yes
-      gcc_cv_ld_as_needed_option="-z ignore"
-      gcc_cv_ld_no_as_needed_option="-z record"
-      gcc_cv_ld_use_as_needed_ldscript=no
-      ;;
-  esac
+  if test x$ld_flavor = xsolaris; then
+    # Solaris 2 ld always supports -z ignore/-z record.  Prefer the native
+    # forms.
+    gcc_cv_ld_as_needed=yes
+    gcc_cv_ld_as_needed_option="-z ignore"
+    gcc_cv_ld_no_as_needed_option="-z record"
+    gcc_cv_ld_use_as_needed_ldscript=no
+  fi
 fi
 ])
 if test x"$gcc_cv_ld_as_needed" = xyes; then
@@ -6605,20 +6630,9 @@ if test x"$gcc_cv_ld_use_as_needed_ldscript" = xyes; then
 [Define if your linker supports AS_NEEDED in linker scripts.])
 fi
 
-AC_MSG_CHECKING(linker mapfile support for clearing hardware capabilities)
-saved_LDFLAGS="$LDFLAGS"
-for clearcap_map in sol2-clearcapv2.map sol2-clearcap.map; do
-  LDFLAGS="$saved_LDFLAGS -Wl,-M,${srcdir}/config/$clearcap_map"
-  AC_LINK_IFELSE([AC_LANG_SOURCE([int main(void) {return 0;}])],
-    [gcc_cv_ld_clearcap=yes; break], [gcc_cv_ld_clearcap=no])
-done
-LDFLAGS="$saved_LDFLAGS"
-if test "x$gcc_cv_ld_clearcap" = xyes; then
-  AC_DEFINE([HAVE_LD_CLEARCAP], 1,
-[Define if the linker supports clearing hardware capabilities via mapfile.])
-  AC_CONFIG_LINKS([clearcap.map:${srcdir}/config/$clearcap_map])
+if test x$ld_flavor = xsolaris; then
+  AC_CONFIG_LINKS([clearcap.map:${srcdir}/config/sol2-clearcap.map])
 fi
-AC_MSG_RESULT($gcc_cv_ld_clearcap)
 
 case "$target" in
   powerpc*-*-*)
@@ -6636,9 +6650,7 @@ case "$target" in
     if test x"$ld_is_gold" = xyes; then
       gcc_cv_ld_ppc_attr=yes
     elif test $in_tree_ld = yes ; then
-      if test "$gcc_cv_gld_major_version" -eq 2 \
-		-a "$gcc_cv_gld_minor_version" -ge 28 \
-		-o "$gcc_cv_gld_major_version" -gt 2; then
+      if gcc_fn_gld_min_version 2 28; then
         gcc_cv_ld_ppc_attr=yes
       fi
     elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x ; then
@@ -6687,7 +6699,7 @@ case "$target:$tm_file" in
     if test x"$ld_is_gold" = xyes; then
       gcc_cv_ld_no_dot_syms=yes
     elif test $in_tree_ld = yes ; then
-      if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 16 -o "$gcc_cv_gld_major_version" -gt 2; then
+      if gcc_fn_gld_min_version 2 16; then
         gcc_cv_ld_no_dot_syms=yes
       fi
     elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x ; then
@@ -6726,7 +6738,7 @@ EOF
     if test x"$ld_is_gold" = xyes; then
       gcc_cv_ld_large_toc=yes
     elif test $in_tree_ld = yes ; then
-      if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 21 -o "$gcc_cv_gld_major_version" -gt 2; then
+      if gcc_fn_gld_min_version 2 21; then
         gcc_cv_ld_large_toc=yes
       fi
     elif test x"$gcc_cv_as" != x -a x"$gcc_cv_ld" != x ; then
@@ -6812,10 +6824,7 @@ AC_CACHE_CHECK(linker --build-id support,
   gcc_cv_ld_buildid,
   [gcc_cv_ld_buildid=no
   if test $in_tree_ld = yes ; then
-    if test "$gcc_cv_gld_major_version" -eq 2 -a \
-       "$gcc_cv_gld_minor_version" -ge 18 -o \
-       "$gcc_cv_gld_major_version" -gt 2 \
-       && test $in_tree_ld_is_elf = yes; then
+    if gcc_fn_gld_elf_min_version 2 18; then
       gcc_cv_ld_buildid=yes
     fi
   elif test x$gcc_cv_ld != x; then
@@ -6847,7 +6856,7 @@ AC_CACHE_CHECK(linker --sysroot support,
   gcc_cv_ld_sysroot,
   [gcc_cv_ld_sysroot=no
   if test $in_tree_ld = yes ; then
-      if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 16 -o "$gcc_cv_gld_major_version" -gt 2 ; then
+      if gcc_fn_gld_min_version 2 16; then
         gcc_cv_ld_sysroot=yes
       fi
   elif test x$gcc_cv_ld != x; then 
@@ -6967,14 +6976,14 @@ AS_IF([test x$gcc_cv_sys_sdt_h = xyes], [
 case "$target" in
   powerpc*-*-linux* | \
   sparc*-*-linux* | \
-  s390*-*-linux* | \
+  s390x-*-linux* | \
   alpha*-*-linux*)
     AC_ARG_WITH(long-double-128,
       [AS_HELP_STRING([--with-long-double-128],
 		      [use 128-bit long double by default])],
       gcc_cv_target_ldbl128="$with_long_double_128", [
       case "$target" in
-	s390*-*-linux-musl*)
+	s390x-*-linux-musl*)
 	  gcc_cv_target_ldbl128=yes
 	  ;;
 	powerpc*-*-linux-musl*)
@@ -7590,7 +7599,7 @@ fi
 
 # Specify what hash style to use by default.
 AC_ARG_WITH([linker-hash-style],
-[AC_HELP_STRING([--with-linker-hash-style={sysv,gnu,both}],
+[AS_HELP_STRING([--with-linker-hash-style={sysv,gnu,both}],
                 [specify the linker hash style])],
 [case x"$withval" in
    xsysv)
@@ -7614,7 +7623,7 @@ fi
 
 # Specify what should be the default of -fdiagnostics-color option.
 AC_ARG_WITH([diagnostics-color],
-[AC_HELP_STRING([--with-diagnostics-color={never,auto,auto-if-env,always}],
+[AS_HELP_STRING([--with-diagnostics-color={never,auto,auto-if-env,always}],
                 [specify the default of -fdiagnostics-color option
                  auto-if-env stands for -fdiagnostics-color=auto if
                  GCC_COLOR environment variable is present and
@@ -7642,7 +7651,7 @@ AC_DEFINE_UNQUOTED(DIAGNOSTICS_COLOR_DEFAULT, $DIAGNOSTICS_COLOR_DEFAULT,
 
 # Specify what should be the default of -fdiagnostics-urls option.
 AC_ARG_WITH([diagnostics-urls],
-[AC_HELP_STRING([--with-diagnostics-urls={never,auto,auto-if-env,always}],
+[AS_HELP_STRING([--with-diagnostics-urls={never,auto,auto-if-env,always}],
                 [specify the default of -fdiagnostics-urls option
                  auto-if-env stands for -fdiagnostics-urls=auto if
                  GCC_URLS or TERM_URLS environment variable is present and
@@ -7764,7 +7773,7 @@ ld_bndplt_support=no
 AC_MSG_CHECKING(linker -z bndplt option)
 if test x"$ld_is_gold" = xno; then
   if test $in_tree_ld = yes ; then
-    if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 25 -o "$gcc_cv_gld_major_version" -gt 2; then
+    if gcc_fn_gld_min_version 2 25; then
       ld_bndplt_support=yes
     fi
   elif test x$gcc_cv_ld != x; then
@@ -7785,7 +7794,7 @@ ld_pushpopstate_support=no
 AC_MSG_CHECKING(linker --push-state/--pop-state options)
 if test x"$ld_is_gold" = xno; then
   if test $in_tree_ld = yes ; then
-    if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 25 -o "$gcc_cv_gld_major_version" -gt 2; then
+    if gcc_fn_gld_min_version 2 25; then
       ld_pushpopstate_support=yes
     fi
   elif test x$gcc_cv_ld != x; then
@@ -7819,7 +7828,7 @@ AC_ARG_ENABLE(s390-excess-float-precision,
   [],[enable_s390_excess_float_precision=auto])
 
 case $target in
-  s390*-linux*)
+  s390x-linux*)
   if test x"$enable_s390_excess_float_precision" = xauto; then
     # Can we autodetect the behavior of the target libc?
     if test "$target" = "$host" -a "$host" = "$build"; then
@@ -7904,13 +7913,37 @@ gif=`if test x$enable_x86_64_mfentry = xyes; then echo 1; else echo 0; fi`
 AC_DEFINE_UNQUOTED(ENABLE_X86_64_MFENTRY, $gif,
 [Define to enable -mfentry by default on x86-64.])
 
+AC_PATH_PROG(PERF, perf, no)
+AFDO_PROFILER=perf
+if test x$PERF != xno; then
+  case "$cpu_type" in
+    aarch64)
+      AC_MSG_CHECKING(AArch64 build supports SPE profiling for autoprofiledbootstrap)
+      aarch64_spe_support=no
+      if test -x $PERF; then
+	# Do not use perf_spe if BRBE is supported
+	if test ! -n "$($PERF record -j any,u -o /dev/null /bin/true 2>&1 | grep "PMU Hardware or event type doesn't support branch stack sampling.")"; then
+	  AFDO_PROFILER=perf
+	  aarch64_spe_support="using BRBE instead"
+	elif test -n "$($PERF list pmu | grep arm_spe)"; then
+	  AFDO_PROFILER=perf_spe
+	  aarch64_spe_support=yes
+	fi
+      fi
+      AC_MSG_RESULT($aarch64_spe_support)
+      ;;
+  esac
+fi
+AC_SUBST(PERF)
+AC_SUBST(AFDO_PROFILER)
+
 # Check if the linker supports '-z now'
 ld_now_support=no
 AC_MSG_CHECKING(linker -z now option)
 if test x"$ld_is_gold" = xyes; then
   ld_now_support=yes
 elif test $in_tree_ld = yes ; then
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 14 -o "$gcc_cv_gld_major_version" -gt 2; then
+  if gcc_fn_gld_min_version 2 14; then
     ld_now_support=yes
   fi
 elif test x$gcc_cv_ld != x; then
@@ -7930,7 +7963,7 @@ AC_MSG_CHECKING(linker -z relro option)
 if test x"$ld_is_gold" = xyes; then
   ld_relro_support=yes
 elif test $in_tree_ld = yes ; then
-  if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 15 -o "$gcc_cv_gld_major_version" -gt 2; then
+  if gcc_fn_gld_min_version 2 15; then
     ld_relro_support=yes
   fi
 elif test x$gcc_cv_ld != x; then

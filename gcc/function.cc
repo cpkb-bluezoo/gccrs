@@ -708,7 +708,7 @@ temp_address_hasher::equal (temp_slot_address_entry *t1,
   return exp_equiv_p (t1->address, t2->address, 0, true);
 }
 
-/* Add ADDRESS as an alias of TEMP_SLOT to the addess -> temp slot mapping.  */
+/* Add ADDRESS as an alias of TEMP_SLOT to the address -> temp slot mapping.  */
 static void
 insert_temp_slot_address (rtx address, class temp_slot *temp_slot)
 {
@@ -2825,7 +2825,7 @@ assign_parm_remove_parallels (struct assign_parm_data_one *data)
    always valid and properly aligned.  */
 
 static void
-assign_parm_adjust_stack_rtl (struct assign_parm_data_one *data)
+assign_parm_adjust_stack_rtl (tree parm, struct assign_parm_data_one *data)
 {
   rtx stack_parm = data->stack_parm;
 
@@ -2840,7 +2840,14 @@ assign_parm_adjust_stack_rtl (struct assign_parm_data_one *data)
 						 MEM_ALIGN (stack_parm))))
 	  || (data->nominal_type
 	      && TYPE_ALIGN (data->nominal_type) > MEM_ALIGN (stack_parm)
-	      && MEM_ALIGN (stack_parm) < PREFERRED_STACK_BOUNDARY)))
+	      && ((MEM_ALIGN (stack_parm)
+		   < MIN (BIGGEST_ALIGNMENT, MAX_SUPPORTED_STACK_ALIGNMENT))
+		  /* If its address is taken, make a local copy whose
+		     maximum alignment is MAX_SUPPORTED_STACK_ALIGNMENT.
+		   */
+		  || (TREE_ADDRESSABLE (parm)
+		      && (MEM_ALIGN (stack_parm)
+			  < MAX_SUPPORTED_STACK_ALIGNMENT))))))
     stack_parm = NULL;
 
   /* If parm was passed in memory, and we need to convert it on entry,
@@ -3714,7 +3721,7 @@ assign_parms (tree fndecl)
       else
 	set_decl_incoming_rtl (parm, data.entry_parm, false);
 
-      assign_parm_adjust_stack_rtl (&data);
+      assign_parm_adjust_stack_rtl (parm, &data);
 
       if (assign_parm_setup_block_p (&data))
 	assign_parm_setup_block (&all, parm, &data);
@@ -4971,6 +4978,10 @@ prepare_function_start (void)
   /* Reset the cache of the "extended" flag in the target's
      _BitInt info struct.  */
   bitint_extended = -1;
+
+  /* Reset the divisor of the last division expanded, so that a function's
+     code does not depend on what was expanded before it.  */
+  last_div_const = 0;
 }
 
 void
@@ -5925,7 +5936,7 @@ gen_call_used_regs_seq (rtx_insn *ret, unsigned int zero_regs_type)
 	    1. it is a call-used register;
 	and 2. it is not a fixed register;
 	and 3. it is not live at the return of the routine;
-	and 4. it is general registor if only_gpr is true;
+	and 4. it is general register if only_gpr is true;
 	and 5. it is used in the routine if only_used is true;
 	and 6. it is a register that passes parameter if only_arg is true.  */
 

@@ -40,7 +40,12 @@
 
 #include <bits/requires_hosted.h> // iostreams
 
-#include <ios>
+#include <bits/iosfwd.h>	// For declarations of default template args.
+#include <bits/char_traits.h> 	// For char_traits, streamoff, streamsize, fpos
+#include <bits/localefwd.h>	// For class locale
+#include <bits/ios_base.h>	// For ios_base declarations.
+#include <streambuf>
+#include <bits/basic_ios.h>
 #include <bits/ostream_insert.h>
 
 # define __glibcxx_want_print
@@ -657,6 +662,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     inline basic_ostream<char, _Traits>&
     operator<<(basic_ostream<char, _Traits>& __out, unsigned char __c)
     { return (__out << static_cast<char>(__c)); }
+  ///@}
 
 #if __cplusplus > 201703L
   // The following deleted overloads prevent formatting character values as
@@ -696,7 +702,6 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     operator<<(basic_ostream<wchar_t, _Traits>&, char32_t) = delete;
 #endif // _GLIBCXX_USE_WCHAR_T
 #endif // C++20
-  ///@}
 
   ///@{
   /**
@@ -751,6 +756,7 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     inline basic_ostream<char, _Traits> &
     operator<<(basic_ostream<char, _Traits>& __out, const unsigned char* __s)
     { return (__out << reinterpret_cast<const char*>(__s)); }
+  ///@}
 
 #if __cplusplus > 201703L
    // The following deleted overloads prevent formatting strings as
@@ -790,7 +796,6 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
     operator<<(basic_ostream<wchar_t, _Traits>&, const char32_t*) = delete;
 #endif // _GLIBCXX_USE_WCHAR_T
 #endif // C++20
-  ///@}
 
 #if __cplusplus >= 201103L
   // C++11 27.7.3.9 Rvalue stream insertion [ostream.rvalue]

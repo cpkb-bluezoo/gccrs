@@ -33,6 +33,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "trans-array.h"
 #include "trans-types.h"
 #include "trans-const.h"
+#include "trans-descriptor.h"
 
 /* Naming convention for backend interface code:
 
@@ -388,6 +389,27 @@ gfc_build_addr_expr (tree type, tree t)
 }
 
 
+/* Return the descriptor that carries the span of DECL, which is marked as a
+   pointer array.  Such a decl usually is a descriptor.  The local decl of a
+   descriptorless dummy array is not, so its span comes from the descriptor it
+   was built from, which is the saved one.  */
+
+tree
+gfc_get_span_descriptor (tree decl)
+{
+  if (DECL_P (decl)
+      && GFC_ARRAY_TYPE_P (TREE_TYPE (decl))
+      && DECL_LANG_SPECIFIC (decl)
+      && GFC_DECL_SAVED_DESCRIPTOR (decl))
+    decl = GFC_DECL_SAVED_DESCRIPTOR (decl);
+
+  if (POINTER_TYPE_P (TREE_TYPE (decl)))
+    decl = build_fold_indirect_ref_loc (input_location, decl);
+
+  return decl;
+}
+
+
 static tree
 get_array_span (tree type, tree decl)
 {
@@ -408,7 +430,9 @@ get_array_span (tree type, tree decl)
       && (TREE_CODE (type) == ARRAY_TYPE || TREE_CODE (type) == INTEGER_TYPE)
       && TYPE_STRING_FLAG (type))
     {
-      if (TREE_CODE (decl) == PARM_DECL)
+      if (DECL_P (decl) && GFC_DECL_PTR_ARRAY_P (decl))
+	decl = gfc_get_span_descriptor (decl);
+      else if (TREE_CODE (decl) == PARM_DECL)
 	decl = build_fold_indirect_ref_loc (input_location, decl);
       if (GFC_DESCRIPTOR_TYPE_P (TREE_TYPE (decl)))
 	span = gfc_conv_descriptor_span_get (decl);
@@ -447,12 +471,11 @@ get_array_span (tree type, tree decl)
 	     to be multiplied with the size.  */
 	  span = gfc_resize_class_size_with_len (NULL, decl, span);
 	}
+      else if (tree cached = GFC_DECL_GET_SPAN (decl))
+	/* A span addressed dummy loaded its span on entry.  */
+	span = cached;
       else if (GFC_DECL_PTR_ARRAY_P (decl))
-	{
-	  if (TREE_CODE (decl) == PARM_DECL)
-	    decl = build_fold_indirect_ref_loc (input_location, decl);
-	  span = gfc_conv_descriptor_span_get (decl);
-	}
+	span = gfc_conv_descriptor_span_get (gfc_get_span_descriptor (decl));
       else
 	span = NULL_TREE;
     }
@@ -1570,7 +1593,10 @@ gfc_assignment_finalizer_call (gfc_se *lse, gfc_expr *expr1, bool init_flag)
 	  gfc_init_se (&se, NULL);
 	  if (expr1->rank)
 	    {
-	      gfc_conv_expr_descriptor (&se, expr1);
+	      /* Avoid calling trans-array.cc(set_factored_descriptor_value) by
+		 not using gfc_conv_expr_descriptor.  */
+	      se.descriptor_only = 1;
+	      gfc_conv_expr (&se, expr1);
 	      ptr = gfc_conv_descriptor_data_get (se.expr);
 	    }
 	  else
@@ -1609,7 +1635,7 @@ gfc_assignment_finalizer_call (gfc_se *lse, gfc_expr *expr1, bool init_flag)
 
 void
 gfc_finalize_tree_expr (gfc_se *se, gfc_symbol *derived,
-			symbol_attribute attr, int rank)
+			const symbol_attribute &attr, int rank)
 {
   tree vptr, final_fndecl, desc, tmp, size, is_final;
   tree data_ptr, data_null, cond;
@@ -1621,7 +1647,7 @@ gfc_finalize_tree_expr (gfc_se *se, gfc_symbol *derived,
     return;
 
   /* Derived type function results with components that have defined
-     assignements are handled in resolve.cc(generate_component_assignments),
+     assignments are handled in resolve.cc(generate_component_assignments),
      unless the assignment was replaced by a subroutine call to the
      subroutine associated with the assignment operator. */
   if ( ! is_assign_call
@@ -1928,7 +1954,7 @@ gfc_deallocate_with_status (tree pointer, tree status, tree errmsg, tree errlen,
 	  tree cond, omp_tmp;
 	  if (descr)
 	    cond = fold_build2_loc (input_location, EQ_EXPR, boolean_type_node,
-				    gfc_conv_descriptor_version (descr),
+				    gfc_conv_descriptor_version_get (descr),
 				    integer_one_node);
 	  else
 	    cond = gfc_omp_call_is_alloc (pointer);
@@ -1942,8 +1968,7 @@ gfc_deallocate_with_status (tree pointer, tree status, tree errmsg, tree errlen,
       gfc_add_modify (&non_null, pointer, build_int_cst (TREE_TYPE (pointer),
 							 0));
       if (flag_openmp_allocators && descr)
-	gfc_add_modify (&non_null, gfc_conv_descriptor_version (descr),
-			integer_zero_node);
+	gfc_conv_descriptor_version_set (&non_null, descr, integer_zero_node);
 
       if (status != NULL_TREE && !integer_zerop (status))
 	{
@@ -2682,6 +2707,9 @@ trans_code (gfc_code * code, tree cond)
 	case EXEC_OACC_EXIT_DATA:
 	case EXEC_OACC_ATOMIC:
 	case EXEC_OACC_DECLARE:
+	case EXEC_OACC_INIT:
+	case EXEC_OACC_SHUTDOWN:
+	case EXEC_OACC_SET:
 	  res = gfc_trans_oacc_directive (code);
 	  break;
 
@@ -2693,7 +2721,9 @@ trans_code (gfc_code * code, tree cond)
 
       if (res != NULL_TREE && ! IS_EMPTY_STMT (res))
 	{
-	  if (TREE_CODE (res) != STATEMENT_LIST)
+	  /* Don't try to set location for trees that don't have one,
+	     e.g. STATEMENT_LIST or error_mark_node.  */
+	  if (EXPR_P (res))
 	    SET_EXPR_LOCATION (res, input_location);
 
 	  /* Add the new statement to the block.  */

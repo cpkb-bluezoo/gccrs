@@ -128,7 +128,7 @@ struct GTY((chain_next ("%h.level_chain"))) binding_level
   binding_level *level_chain;
 
   /* The kind of scope this object represents.  */
-  ENUM_BITFIELD (level_kind) kind : 4;
+  enum level_kind kind : 4;
 };
 
 /* The binding level currently in effect.  */
@@ -608,6 +608,7 @@ extern tree build_bounds_index_condition (IndexExp *, tree, tree);
 extern tree build_bounds_slice_condition (SliceExp *, tree, tree, tree);
 extern bool array_bounds_check (void);
 extern bool checkaction_trap_p (void);
+extern tree build_trap_call (void);
 extern TypeFunction *get_function_type (Type *);
 extern bool call_side_effect_free_p (FuncDeclaration *, Type *);
 extern bool call_by_alias_p (FuncDeclaration *, FuncDeclaration *);

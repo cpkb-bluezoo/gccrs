@@ -841,6 +841,15 @@ fprintf_indent (FILE *f, unsigned int indent, const char *format, ...)
   va_end (ap);
 }
 
+// Prints INDENT spaces to F.
+static void
+fprint_indent (FILE *f, unsigned int indent)
+{
+  for (; indent >= 8; indent -= 8)
+    fputc ('\t', f);
+  fprintf (f, "%*s", indent, "");
+}
+
 /* Secondary stream for fp_decl.  */
 static FILE *header_file;
 
@@ -999,7 +1008,7 @@ choose_output (const vec<FILE *> &parts)
    definition files.  */
 
 #define DEFTREECODE(SYM, STRING, TYPE, NARGS)   SYM,
-enum tree_code {
+enum tree_code : unsigned {
 #include "tree.def"
 MAX_TREE_CODES
 };
@@ -1121,7 +1130,7 @@ comparison_code_p (enum tree_code code)
 class id_base : public nofree_ptr_hash<id_base>
 {
 public:
-  enum id_kind { CODE, FN, PREDICATE, USER, NULL_ID } kind;
+  enum id_kind { CODE, FN, PREDICATE, USER, C_CODE_ID, NULL_ID } kind;
 
   id_base (id_kind, const char *, int = -1);
 
@@ -1175,6 +1184,18 @@ public:
   const char *tcc;
 };
 
+/* Helper for easy comparing ID with tree code CODE.  */
+
+static bool
+operator==(id_base &id, enum tree_code code)
+{
+  if (operator_id *oid = dyn_cast <operator_id *> (&id))
+    return oid->code == code;
+  return false;
+}
+
+/* Lookup the identifier ID.  Allow "null" if ALLOW_NULL.  */
+
 /* Identifier that maps to a builtin or internal function code.  */
 
 class fn_id : public id_base
@@ -1198,6 +1219,102 @@ public:
     : id_base (id_base::PREDICATE, id_), matchers (vNULL) {}
   vec<simplify *> matchers;
 };
+
+// Identifier that maps to a operator defined by a 'C' identifier.
+// Contains code in the id
+// Defined in the `with` expressions.
+
+class c_code_id : public id_base
+{
+public:
+  c_code_id (const char *id_, location_t loc)
+    : id_base (id_base::C_CODE_ID, xstrdup (id_)), m_loc (loc) {}
+  static id_base *get_c_code_id (const char *);
+  ~c_code_id() { delete const_cast<char*>(id); }
+  vec<id_base*> possible_values{vNULL};
+  // These are cached values based on possible_values.
+  // This contains just coparisons.
+  bool m_cmp = false;
+  // Possible values are tree code only.
+  bool m_code_only = false;
+  // Possible values are (combined) functions only.
+  bool m_fn_only = false;
+
+  // Marking so we can detect if the declaration was done in C code.
+  bool used = false;
+  location_t m_loc;
+  void gen_checking (FILE *, int);
+};
+
+
+/* Generates the checking code to make sure that the value of the identifier
+   is only one of the possible values.
+   F is where the printed to.  INDENT is the initial indentation of the
+   code.  */
+
+void
+c_code_id::gen_checking (FILE *f, int indent)
+{
+  // This checking is only done when checking is enabled.
+  fprintf_indent (f, indent, "if (flag_checking)\n");
+  indent+=2;
+
+  fprintf_indent (f, indent, "{\n");
+  indent+=2;
+
+  // For cases were there are possible codes, emit
+  // an assert that the identifier is not an ERROR_MARK.
+  if (!m_fn_only)
+    fprintf_indent (f, indent, "gcc_assert (%s != ERROR_MARK);\n", id);
+
+  // For comparisons, emit an quick assert first.
+  if (m_cmp)
+    fprintf_indent (f, indent, "gcc_assert (TREE_CODE_CLASS (%s) == tcc_comparison);\n", id);
+
+  // Currently only support the case where there is only either functions
+  // or tree codes; not both.
+
+  if (m_code_only)
+    fprintf_indent (f, indent, "switch ((tree_code)%s)\n", id);
+  else
+    fprintf_indent (f, indent, "switch ((combined_fn)%s)\n", id);
+
+  indent+=2;
+  fprintf_indent (f, indent, "{\n");
+  int t = 0;
+
+  // Emit the possible values as a case.
+  for (id_base *i : possible_values)
+    {
+      if (t == 0)
+	fprint_indent (f, indent);
+      if (*i == CONVERT_EXPR || *i == NOP_EXPR)
+	fprintf (f, "CASE_CONVERT:");
+      else
+	fprintf (f, "case %s:", i->id);
+      t++;
+      // Putting 4 on each line for more compact source.
+      if (t < 4)
+	fprintf (f, " ");
+      else
+	{
+	  fprintf (f, "\n");
+	  t = 0;
+	}
+    }
+  if (t != 0)
+    fprintf (f, "\n");
+  fprintf_indent (f, indent, "  break;\n");
+  fprintf_indent (f, indent, "default:\n");
+  fprintf_indent (f, indent, "  gcc_unreachable ();\n");
+  fprintf_indent (f, indent, "}\n");
+  indent-=2;
+
+  indent-=2;
+  fprintf_indent (f, indent, "}\n");
+  indent-=2;
+}
+
 
 /* Identifier that maps to a operator defined by a 'for' directive.  */
 
@@ -1244,6 +1361,14 @@ is_a_helper <user_id *>::test (id_base *id)
   return id->kind == id_base::USER;
 }
 
+template<>
+template<>
+inline bool
+is_a_helper <c_code_id *>::test (id_base *id)
+{
+  return id->kind == id_base::C_CODE_ID;
+}
+
 /* If ID has a pair of consecutive, commutative operands, return the
    index of the first, otherwise return -1.  */
 
@@ -1268,6 +1393,7 @@ commutative_op (id_base *id, bool compares_are_commutative = false)
       case CFN_FNMS:
       case CFN_ADD_OVERFLOW:
       case CFN_MUL_OVERFLOW:
+      case CFN_SAT_ADD:
 	return 0;
 
       case CFN_COND_ADD:
@@ -1372,18 +1498,6 @@ add_function (T code, const char *id)
   *slot = fn;
 }
 
-/* Helper for easy comparing ID with tree code CODE.  */
-
-static bool
-operator==(id_base &id, enum tree_code code)
-{
-  if (operator_id *oid = dyn_cast <operator_id *> (&id))
-    return oid->code == code;
-  return false;
-}
-
-/* Lookup the identifier ID.  Allow "null" if ALLOW_NULL.  */
-
 id_base *
 get_operator (const char *id, bool allow_null = false)
 {
@@ -1397,6 +1511,11 @@ get_operator (const char *id, bool allow_null = false)
     {
       /* If this is a user-defined identifier track whether it was used.  */
       if (user_id *uid = dyn_cast<user_id *> (op))
+	uid->used = true;
+
+      // If this was an C code id, we track to make sure it was declared
+      //  in the C part of the expression.
+      if (c_code_id *uid = dyn_cast<c_code_id *> (op))
 	uid->used = true;
       return op;
     }
@@ -1616,8 +1735,9 @@ class with_expr : public operand
 public:
   with_expr (location_t loc)
     : operand (OP_WITH, loc), with (NULL), subexpr (NULL) {}
-  c_expr *with;
+  c_expr *with{NULL};
   operand *subexpr;
+  vec<c_code_id*> m_ids{};
 };
 
 template<>
@@ -2300,6 +2420,8 @@ lower_for (simplify *sin, vec<simplify *>& simplifiers)
 	      }
 	    else if (is_a <fn_id *> (ids[i]->substitutes[j]))
 	      ;
+	    else if (is_a <c_code_id *> (ids[i]->substitutes[j]))
+	      ;
 	    else
 	      can_delay_subst = false;
 	}
@@ -2449,11 +2571,11 @@ public:
 
   virtual void gen (FILE *, int, bool, int) {}
 
-  void gen_kids (FILE *, int, bool, int);
+  void gen_kids (FILE *, int, bool, int, bool);
   void gen_kids_1 (FILE *, int, bool, int,
 		   const vec<dt_operand *> &, const vec<dt_operand *> &,
 		   const vec<dt_operand *> &, const vec<dt_operand *> &,
-		   const vec<dt_operand *> &, const vec<dt_node *> &);
+		   const vec<dt_operand *> &, const vec<dt_node *> &, bool);
 
   void analyze (sinfo_map_t &);
 };
@@ -2544,6 +2666,91 @@ public:
   static void print_node (dt_node *, FILE *f = stderr, unsigned = 0);
 };
 
+/* Return true if ID is a tree-code conversion dispatch key.  */
+
+static bool
+case_convert_id_p (id_base *id)
+{
+  if (id->kind != id_base::CODE)
+    return false;
+  enum tree_code code = as_a <operator_id *> (id)->code;
+  return code == NOP_EXPR || code == CONVERT_EXPR;
+}
+
+/* Return true if concrete operations ID1 and ID2 use the same case label.  */
+
+static bool
+same_case_p (id_base *id1, id_base *id2)
+{
+  if (id1->kind != id2->kind)
+    return false;
+
+  if (id1->kind == id_base::CODE)
+    return ((case_convert_id_p (id1) && case_convert_id_p (id2))
+	    || (as_a <operator_id *> (id1)->code
+		== as_a <operator_id *> (id2)->code));
+
+  if (id1->kind == id_base::FN)
+    return (as_a <fn_id *> (id1)->fn == as_a <fn_id *> (id2)->fn);
+
+  return false;
+}
+
+/* Return true if OPERATION dispatches on CASE_ID.  */
+
+static bool
+operation_has_case_p (id_base *operation, id_base *case_id)
+{
+  if (user_id *u = dyn_cast <user_id *> (operation))
+    {
+      for (auto id : u->substitutes)
+	if (same_case_p (id, case_id))
+	  return true;
+      return false;
+    }
+
+  return same_case_p (operation, case_id);
+}
+
+/* Return true if OP1 and OP2 have a common dispatch case.  */
+
+static bool
+operations_overlap_p (id_base *op1, id_base *op2)
+{
+  if (user_id *u = dyn_cast <user_id *> (op1))
+    {
+      for (auto id : u->substitutes)
+	if (operation_has_case_p (op2, id))
+	  return true;
+      return false;
+    }
+
+  return operation_has_case_p (op2, op1);
+}
+
+/* Return true if OPERATION denotes a function.  */
+
+static bool
+function_operation_p (id_base *operation)
+{
+  if (user_id *u = dyn_cast <user_id *> (operation))
+    operation = u->substitutes[0];
+  return operation->kind == id_base::FN;
+}
+
+/* Return true if O1 and O2 can use the same expression dispatch case.  */
+
+static bool
+operand_cases_overlap_p (operand *o1, operand *o2)
+{
+  expr *e1 = dyn_cast <expr *> (o1);
+  expr *e2 = dyn_cast <expr *> (o2);
+  if (!e1 || !e2)
+    return false;
+
+  return operations_overlap_p (e1->operation, e2->operation);
+}
+
 /* Compare two AST operands O1 and O2 and return true if they are equal.  */
 
 bool
@@ -2562,11 +2769,13 @@ cmp_operand (operand *o1, operand *o2)
     {
       expr *e1 = static_cast<expr *>(o1);
       expr *e2 = static_cast<expr *>(o2);
-      if (e1->operation != e2->operation
+      if ((e1->operation != e2->operation
+	   && !(case_convert_id_p (e1->operation)
+		&& case_convert_id_p (e2->operation)))
 	  || e1->is_generic != e2->is_generic
 	  || e1->match_phi != e2->match_phi)
 	return false;
-      if (e1->operation->kind == id_base::FN
+      if (function_operation_p (e1->operation)
 	  /* For function calls also compare number of arguments.  */
 	  && e1->ops.length () != e2->ops.length ())
 	return false;
@@ -2602,6 +2811,25 @@ decision_tree::cmp_node (dt_node *n1, dt_node *n2)
   return false;
 }
 
+/* Return true if N1 and N2 can match at the same decision-tree point.  */
+
+static bool
+nodes_overlap_p (dt_node *n1, dt_node *n2)
+{
+  if (!is_a <dt_operand *> (n1) || !is_a <dt_operand *> (n2))
+    return false;
+
+  /* A DT_MATCH is emitted as an ordering barrier by gen_kids, so it
+     can be reached by anything that reaches its siblings.  */
+  if (n1->type == dt_node::DT_TRUE || n2->type == dt_node::DT_TRUE)
+    return false;
+  if (n1->type == dt_node::DT_MATCH || n2->type == dt_node::DT_MATCH)
+    return true;
+
+  return operand_cases_overlap_p (as_a <dt_operand *> (n1)->op,
+				  as_a <dt_operand *> (n2)->op);
+}
+
 /* Search OPS for a decision tree node like P and return it if found.  */
 
 dt_node *
@@ -2613,6 +2841,7 @@ decision_tree::find_node (vec<dt_node *>& ops, dt_node *p)
       && ops.last ()->type == dt_node::DT_TRUE)
     return ops.last ();
   dt_operand *true_node = NULL;
+  dt_operand *overlap_node = NULL;
   for (int i = ops.length () - 1; i >= 0; --i)
     {
       /* But we can't merge across DT_TRUE nodes as they serve as
@@ -2628,25 +2857,28 @@ decision_tree::find_node (vec<dt_node *>& ops, dt_node *p)
 	{
 	  /* Unless we are processing the same pattern or the blocking
 	     pattern is before the one we are going to merge with.  */
-	  if (true_node
-	      && true_node->for_id != current_id
-	      && true_node->for_id > as_a <dt_operand *> (ops[i])->for_id)
+	  if ((true_node
+	       && true_node->for_id != current_id
+	       && true_node->for_id > as_a <dt_operand *> (ops[i])->for_id)
+	      || overlap_node)
 	    {
 	      if (verbose >= 1)
 		{
+		  dt_operand *barrier = overlap_node ? overlap_node : true_node;
 		  location_t p_loc = 0;
-		  if (p->type == dt_node::DT_OPERAND)
+		  if (is_a <dt_operand *> (p)
+		      && as_a <dt_operand *> (p)->op)
 		    p_loc = as_a <dt_operand *> (p)->op->location;
 		  location_t op_loc = 0;
-		  if (ops[i]->type == dt_node::DT_OPERAND)
+		  if (is_a <dt_operand *> (ops[i])
+		      && as_a <dt_operand *> (ops[i])->op)
 		    op_loc = as_a <dt_operand *> (ops[i])->op->location;
-		  location_t true_loc = 0;
-		  true_loc = true_node->op->location;
+		  location_t barrier_loc = barrier->op->location;
 		  warning_at (p_loc,
 			      "failed to merge decision tree node");
 		  warning_at (op_loc,
 			      "with the following");
-		  warning_at (true_loc,
+		  warning_at (barrier_loc,
 			      "because of the following which serves as ordering "
 			      "barrier");
 		}
@@ -2654,6 +2886,10 @@ decision_tree::find_node (vec<dt_node *>& ops, dt_node *p)
 	    }
 	  return ops[i];
 	}
+      if (is_a <dt_operand *> (ops[i])
+	  && as_a <dt_operand *> (ops[i])->for_id != current_id
+	  && nodes_overlap_p (ops[i], p))
+	overlap_node = as_a <dt_operand *> (ops[i]);
     }
   return NULL;
 }
@@ -2818,6 +3054,7 @@ decision_tree::insert_operand (dt_node *p, operand *o, dt_operand **indexes,
 	    }
 
 at_assert_elm:
+	  gcc_assert (elm);
 	  gcc_assert (elm->type == dt_node::DT_TRUE
 		      || elm->type == dt_node::DT_OPERAND
 		      || elm->type == dt_node::DT_MATCH);
@@ -3184,7 +3421,7 @@ capture_info::walk_c_expr (c_expr *e)
    code generation.  */
 static char *fail_label;
 
-/* Code generation off the decision tree and the refered AST nodes.  */
+/* Code generation off the decision tree and the referred AST nodes.  */
 
 bool
 is_conversion (id_base *op)
@@ -3221,8 +3458,10 @@ get_operand_type (id_base *op, unsigned pos,
   else if (*op == REALPART_EXPR
 	   || *op == IMAGPART_EXPR)
     return other_oprnd_type;
-  else if (is_a <operator_id *> (op)
-	   && strcmp (as_a <operator_id *> (op)->tcc, "tcc_comparison") == 0)
+  else if ((is_a <operator_id *> (op)
+	    && strcmp (as_a <operator_id *> (op)->tcc, "tcc_comparison") == 0)
+	   || (is_a <c_code_id *> (op)
+	       && as_a <c_code_id *>(op)->m_cmp))
     return other_oprnd_type;
   else if (*op == COND_EXPR
 	   && pos == 0)
@@ -3284,8 +3523,10 @@ expr::gen_transform (FILE *f, int indent, const char *dest, bool gimple,
 		depth);
       type = optype;
     }
-  else if (is_a <operator_id *> (opr)
-	   && !strcmp (as_a <operator_id *> (opr)->tcc, "tcc_comparison"))
+  else if ((is_a <operator_id *> (opr)
+	     && !strcmp (as_a <operator_id *> (opr)->tcc, "tcc_comparison"))
+	   || (is_a <c_code_id *> (opr)
+	       && as_a <c_code_id *> (opr)->m_cmp))
     {
       /* comparisons use boolean_type_node (or what gets in), but
          their operands need to figure out the types themselves.  */
@@ -3353,6 +3594,10 @@ expr::gen_transform (FILE *f, int indent, const char *dest, bool gimple,
   else
     opr_name = operation->id;
 
+  // For C code ID, emit the checking for possible values.
+  if (c_code_id *op_c = dyn_cast<c_code_id*> (operation))
+    op_c->gen_checking (f, indent);
+
   if (gimple)
     {
       if (child_in_place)
@@ -3417,7 +3662,7 @@ expr::gen_transform (FILE *f, int indent, const char *dest, bool gimple,
 	      indent += 4;
 	    }
 	  /* ???  Building a stmt can fail for various reasons here, seq being
-	     NULL or the stmt referencing SSA names occuring in abnormal PHIs.
+	     NULL or the stmt referencing SSA names occurring in abnormal PHIs.
 	     So if we fail here we should continue matching other patterns.  */
 	  fprintf_indent (f, indent, "gimple_match_op tem_op "
 			  "(res_op->cond.any_else (), %s, %s", opr_name, type);
@@ -3443,6 +3688,7 @@ expr::gen_transform (FILE *f, int indent, const char *dest, bool gimple,
     }
   else
     {
+      c_code_id *cid = dyn_cast <c_code_id *> (opr);
       if (possible_noop_convert (opr))
 	{
 	  fprintf_indent (f, indent, "if (TREE_TYPE (_o%d[0]) != %s)\n",
@@ -3450,7 +3696,8 @@ expr::gen_transform (FILE *f, int indent, const char *dest, bool gimple,
 	  fprintf_indent (f, indent + 2, "{\n");
 	  indent += 4;
 	}
-      if (opr->kind == id_base::CODE)
+      if (opr->kind == id_base::CODE
+	  || (cid && cid->m_code_only))
 	fprintf_indent (f, indent, "_r%d = fold_build%d_loc (loc, %s, %s",
 			depth, ops.length(), opr_name, type);
       else
@@ -3459,7 +3706,8 @@ expr::gen_transform (FILE *f, int indent, const char *dest, bool gimple,
       for (unsigned i = 0; i < ops.length (); ++i)
 	fprintf (f, ", _o%d[%u]", depth, i);
       fprintf (f, ");\n");
-      if (opr->kind != id_base::CODE)
+      if (opr->kind != id_base::CODE
+	  && !(cid && cid->m_code_only))
 	{
 	  fprintf_indent (f, indent, "if (!_r%d)\n", depth);
 	  fprintf_indent (f, indent, "  goto %s;\n", fail_label);
@@ -3821,30 +4069,200 @@ dt_operand::gen_generic_expr (FILE *f, int indent, const char *opname)
   return 0;
 }
 
-/* Compare 2 fns or generic_fns vector entries for vector sorting.
-   Same operation entries with different number of arguments should
-   be adjacent.  */
+/* A connected set of decision-tree operands with overlapping dispatch
+   cases.  */
 
-static int
-fns_cmp (const void *p1, const void *p2)
+struct dt_operand_group
 {
-  dt_operand *op1 = *(dt_operand *const *) p1;
-  dt_operand *op2 = *(dt_operand *const *) p2;
-  expr *e1 = as_a <expr *> (op1->op);
-  expr *e2 = as_a <expr *> (op2->op);
-  id_base *b1 = e1->operation;
-  id_base *b2 = e2->operation;
-  if (b1->hashval < b2->hashval)
-    return -1;
-  if (b1->hashval > b2->hashval)
-    return 1;
-  return strcmp (b1->id, b2->id);
+  auto_vec<id_base *> cases;
+  auto_vec<dt_operand *> operands;
+};
+
+/* Add the concrete cases for OPERATION to CASES.  */
+
+static void
+add_operation_cases (vec<id_base *> &cases, id_base *operation)
+{
+  if (user_id *u = dyn_cast <user_id *> (operation))
+    {
+      for (auto id : u->substitutes)
+	add_operation_cases (cases, id);
+      return;
+    }
+
+  for (auto id : cases)
+    if (same_case_p (id, operation))
+      return;
+  cases.safe_push (operation);
+}
+
+/* Find the representative of INDEX in PARENTS.  */
+
+static unsigned
+find_group (const vec<unsigned> &parents, unsigned index)
+{
+  while (parents[index] != index)
+    index = parents[index];
+  return index;
+}
+
+/* Partition OPS into overlap-connected GROUPS.  */
+
+static void
+collect_operand_groups (const vec<dt_operand *> &ops,
+			vec<dt_operand_group *> &groups)
+{
+  auto_vec<unsigned> parents;
+  for (unsigned i = 0; i < ops.length (); ++i)
+    parents.safe_push (i);
+
+  for (unsigned i = 0; i < ops.length (); ++i)
+    for (unsigned j = 0; j < i; ++j)
+      if (operand_cases_overlap_p (ops[i]->op, ops[j]->op))
+	{
+	  unsigned root1 = find_group (parents, i);
+	  unsigned root2 = find_group (parents, j);
+	  if (root1 != root2)
+	    parents[MAX (root1, root2)] = MIN (root1, root2);
+	}
+
+  auto_vec<unsigned> roots;
+  for (unsigned i = 0; i < ops.length (); ++i)
+    {
+      unsigned root = find_group (parents, i);
+      unsigned group_index;
+      for (group_index = 0; group_index < roots.length (); ++group_index)
+	if (roots[group_index] == root)
+	  break;
+      if (group_index == roots.length ())
+	{
+	  roots.safe_push (root);
+	  groups.safe_push (new dt_operand_group ());
+	}
+
+      dt_operand_group *group = groups[group_index];
+      group->operands.safe_push (ops[i]);
+      expr *e = as_a <expr *> (ops[i]->op);
+      add_operation_cases (group->cases, e->operation);
+    }
+}
+
+/* Return true if OPERATION covers all cases in GROUP.  */
+
+static bool
+operation_covers_group_p (id_base *operation, dt_operand_group *group)
+{
+  for (auto id : group->cases)
+    if (!operation_has_case_p (operation, id))
+      return false;
+  return true;
+}
+
+/* Emit an if condition that tests CODE against OPERATION.  */
+
+static void
+emit_operation_test (FILE *f, int indent, const char *code,
+		     id_base *operation)
+{
+  auto_vec<id_base *> cases;
+  add_operation_cases (cases, operation);
+
+  fprintf_indent (f, indent, "if (");
+  for (unsigned i = 0; i < cases.length (); ++i)
+    {
+      if (i)
+	fprintf (f, "\n%*s|| ", indent + 4, "");
+      if (case_convert_id_p (cases[i]))
+	fprintf (f, "CONVERT_EXPR_CODE_P (%s)", code);
+      else
+	fprintf (f, "%s == %s", code, cases[i]->id);
+    }
+  fprintf (f, ")\n");
+}
+
+/* Emit the labels for GROUP.  */
+
+static void
+emit_group_labels (FILE *f, int indent, dt_operand_group *group)
+{
+  for (auto id : group->cases)
+    if (case_convert_id_p (id))
+      fprintf_indent (f, indent, "CASE_CONVERT:\n");
+    else
+      fprintf_indent (f, indent, "case %s:\n", id->id);
+}
+
+/* Emit an expression GROUP.  CODE is the dispatched tree code.  */
+
+static void
+emit_expr_group (FILE *f, int indent, bool gimple, int depth,
+		 const char *code, dt_operand_group *group)
+{
+  fprintf_indent (f, indent, "  {\n");
+  bool multiple_p = group->operands.length () > 1;
+  for (auto op : group->operands)
+    {
+      expr *e = as_a <expr *> (op->op);
+      bool test_p = !operation_covers_group_p (e->operation, group);
+      if (test_p)
+	{
+	  emit_operation_test (f, indent + 4, code, e->operation);
+	  fprintf_indent (f, indent + 4, "  {\n");
+	}
+      else if (multiple_p)
+	fprintf_indent (f, indent + 4, "{\n");
+
+      op->gen (f, indent + ((test_p || multiple_p) ? 6 : 4),
+	       gimple, depth);
+
+      if (test_p)
+	fprintf_indent (f, indent + 4, "  }\n");
+      else if (multiple_p)
+	fprintf_indent (f, indent + 4, "}\n");
+    }
+  fprintf_indent (f, indent, "    break;\n");
+  fprintf_indent (f, indent, "  }\n");
+}
+
+/* Emit a function GROUP.  CODE is the dispatched combined function.  */
+
+static void
+emit_fn_group (FILE *f, int indent, bool gimple, int depth,
+	       const char *opname, const char *code, dt_operand_group *group)
+{
+  for (auto op : group->operands)
+    {
+      expr *e = as_a <expr *> (op->op);
+      bool test_p = !operation_covers_group_p (e->operation, group);
+      if (test_p)
+	{
+	  emit_operation_test (f, indent + 2, code, e->operation);
+	  fprintf_indent (f, indent + 2, "  {\n");
+	}
+
+      int inner_indent = indent + (test_p ? 4 : 0);
+      if (gimple)
+	fprintf_indent (f, inner_indent,
+			"  if (gimple_call_num_args (_c%d) == %d)\n",
+			depth, e->ops.length ());
+      else
+	fprintf_indent (f, inner_indent,
+			"  if (call_expr_nargs (%s) == %d)\n",
+			opname, e->ops.length ());
+      fprintf_indent (f, inner_indent, "    {\n");
+      op->gen (f, inner_indent + 6, gimple, depth);
+      fprintf_indent (f, inner_indent, "    }\n");
+
+      if (test_p)
+	fprintf_indent (f, indent + 2, "  }\n");
+    }
+  fprintf_indent (f, indent, "  break;\n");
 }
 
 /* Generate matching code for the children of the decision tree node.  */
 
 void
-dt_node::gen_kids (FILE *f, int indent, bool gimple, int depth)
+dt_node::gen_kids (FILE *f, int indent, bool gimple, int depth, bool in_gcond)
 {
   auto_vec<dt_operand *> gimple_exprs;
   auto_vec<dt_operand *> generic_exprs;
@@ -3914,10 +4332,8 @@ dt_node::gen_kids (FILE *f, int indent, bool gimple, int depth)
 	     Like DT_TRUE, DT_MATCH serves as a barrier as it can cause
 	     dependent matches to get out-of-order.  Generate code now
 	     for what we have collected sofar.  */
-	  fns.qsort (fns_cmp);
-	  generic_fns.qsort (fns_cmp);
 	  gen_kids_1 (f, indent, gimple, depth, gimple_exprs, generic_exprs,
-		      fns, generic_fns, preds, others);
+		      fns, generic_fns, preds, others, in_gcond);
 	  /* And output the true operand itself.  */
 	  kids[i]->gen (f, indent, gimple, depth);
 	  gimple_exprs.truncate (0);
@@ -3932,10 +4348,8 @@ dt_node::gen_kids (FILE *f, int indent, bool gimple, int depth)
     }
 
   /* Generate code for the remains.  */
-  fns.qsort (fns_cmp);
-  generic_fns.qsort (fns_cmp);
   gen_kids_1 (f, indent, gimple, depth, gimple_exprs, generic_exprs,
-	      fns, generic_fns, preds, others);
+	      fns, generic_fns, preds, others, in_gcond);
 }
 
 /* Generate matching code for the children of the decision tree node.  */
@@ -3947,7 +4361,8 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
 		     const vec<dt_operand *> &fns,
 		     const vec<dt_operand *> &generic_fns,
 		     const vec<dt_operand *> &preds,
-		     const vec<dt_node *> &others)
+		     const vec<dt_node *> &others,
+		     bool in_gcond)
 {
   char buf[128];
   char *kid_opname = buf;
@@ -3956,8 +4371,18 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
   unsigned gexprs_len = generic_exprs.length ();
   unsigned fns_len = fns.length ();
   unsigned gfns_len = generic_fns.length ();
+  bool gimple_match_p = exprs_len || fns_len;
 
-  if (exprs_len || fns_len || gexprs_len || gfns_len)
+  auto_delete_vec<dt_operand_group> gimple_expr_groups;
+  auto_delete_vec<dt_operand_group> generic_expr_groups;
+  auto_delete_vec<dt_operand_group> fn_groups;
+  auto_delete_vec<dt_operand_group> generic_fn_groups;
+  collect_operand_groups (gimple_exprs, gimple_expr_groups);
+  collect_operand_groups (generic_exprs, generic_expr_groups);
+  collect_operand_groups (fns, fn_groups);
+  collect_operand_groups (generic_fns, generic_fn_groups);
+
+  if (gimple_match_p || gexprs_len || gfns_len)
     {
       if (exprs_len)
 	gimple_exprs[0]->get_name (kid_opname);
@@ -3973,7 +4398,9 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
       indent += 2;
     }
 
-  if (exprs_len || fns_len)
+  // Don't emit the SSA name check for gcond case as
+  // it will not match ever.
+  if (!in_gcond && gimple_match_p)
     {
       depth++;
       fprintf_indent (f, indent,
@@ -3998,24 +4425,15 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
 	  for (unsigned i = 0; i < exprs_len; ++i)
 	    {
 	      expr *e = as_a <expr *> (gimple_exprs[i]->op);
-	      if (user_id *u = dyn_cast <user_id *> (e->operation))
-		{
-		  for (auto id : u->substitutes)
-		    fprintf_indent (f, indent, "case %s:\n", id->id);
-		}
-	      else
-		{
-		  id_base *op = e->operation;
-		  cond_expr_p |= (*op == COND_EXPR && e->match_phi);
-		  if (*op == CONVERT_EXPR || *op == NOP_EXPR)
-		    fprintf_indent (f, indent, "CASE_CONVERT:\n");
-		  else
-		    fprintf_indent (f, indent, "case %s:\n", op->id);
-		}
-	      fprintf_indent (f, indent, "  {\n");
-	      gimple_exprs[i]->gen (f, indent + 4, true, depth);
-	      fprintf_indent (f, indent, "    break;\n");
-	      fprintf_indent (f, indent, "  }\n");
+	      cond_expr_p |= (*e->operation == COND_EXPR && e->match_phi);
+	    }
+	  char code[64];
+	  snprintf (code, sizeof (code),
+		    "gimple_assign_rhs_code (_a%d)", depth);
+	  for (auto group : gimple_expr_groups)
+	    {
+	      emit_group_labels (f, indent, group);
+	      emit_expr_group (f, indent, true, depth, code, group);
 	    }
 	  fprintf_indent (f, indent, "default:;\n");
 	  fprintf_indent (f, indent, "}\n");
@@ -4054,32 +4472,14 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
 
 	  indent += 4;
 	  fprintf_indent (f, indent, "{\n");
-	  id_base *last_op = NULL;
-	  for (unsigned i = 0; i < fns_len; ++i)
+	  char code[64];
+	  snprintf (code, sizeof (code),
+		    "gimple_call_combined_fn (_c%d)", depth);
+	  for (auto group : fn_groups)
 	    {
-	      expr *e = as_a <expr *>(fns[i]->op);
-	      if (e->operation != last_op)
-		{
-		  if (i)
-		    fprintf_indent (f, indent, "  break;\n");
-		  if (user_id *u = dyn_cast <user_id *> (e->operation))
-		    for (auto id : u->substitutes)
-		      fprintf_indent (f, indent, "case %s:\n", id->id);
-		  else
-		    fprintf_indent (f, indent, "case %s:\n", e->operation->id);
-		}
-	      last_op = e->operation;
-	      /* We need to be defensive against bogus prototypes allowing
-		 calls with not enough arguments.  */
-	      fprintf_indent (f, indent,
-			      "  if (gimple_call_num_args (_c%d) == %d)\n",
-			      depth, e->ops.length ());
-	      fprintf_indent (f, indent, "    {\n");
-	      fns[i]->gen (f, indent + 6, true, depth);
-	      fprintf_indent (f, indent, "    }\n");
+	      emit_group_labels (f, indent, group);
+	      emit_fn_group (f, indent, true, depth, NULL, code, group);
 	    }
-
-	  fprintf_indent (f, indent, "  break;\n");
 	  fprintf_indent (f, indent, "default:;\n");
 	  fprintf_indent (f, indent, "}\n");
 	  indent -= 4;
@@ -4090,42 +4490,36 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
       fprintf_indent (f, indent, "    }\n");
       /* See if there is SSA_NAME among generic_exprs and if yes, emit it
 	 here rather than in the next loop.  */
-      for (unsigned i = 0; i < generic_exprs.length (); ++i)
-	{
-	  expr *e = as_a <expr *>(generic_exprs[i]->op);
-	  id_base *op = e->operation;
-	  if (*op == SSA_NAME && (exprs_len || fns_len))
+      for (auto group : generic_expr_groups)
+	for (auto id : group->cases)
+	  if (*id == SSA_NAME)
 	    {
-	      fprintf_indent (f, indent + 4, "{\n");
-	      generic_exprs[i]->gen (f, indent + 6, gimple, depth);
-	      fprintf_indent (f, indent + 4, "}\n");
+	      gcc_checking_assert (group->cases.length () == 1);
+	      for (auto op : group->operands)
+		{
+		  fprintf_indent (f, indent + 4, "{\n");
+		  op->gen (f, indent + 6, gimple, depth);
+		  fprintf_indent (f, indent + 4, "}\n");
+		}
 	    }
-	}
 
       fprintf_indent (f, indent, "  break;\n");
     }
 
-  for (unsigned i = 0; i < generic_exprs.length (); ++i)
+  if (gexprs_len)
     {
-      expr *e = as_a <expr *>(generic_exprs[i]->op);
-      id_base *op = e->operation;
-      if (*op == CONVERT_EXPR || *op == NOP_EXPR)
-	fprintf_indent (f, indent, "CASE_CONVERT:\n");
-      else if (*op == SSA_NAME && (exprs_len || fns_len))
-	/* Already handled above.  */
-	continue;
-      else
+      char generic_code[160];
+      snprintf (generic_code, sizeof (generic_code), "TREE_CODE (%s)",
+		kid_opname);
+      for (auto group : generic_expr_groups)
 	{
-	  if (user_id *u = dyn_cast <user_id *> (op))
-	    for (auto id : u->substitutes)
-	      fprintf_indent (f, indent, "case %s:\n", id->id);
-	  else
-	    fprintf_indent (f, indent, "case %s:\n", op->id);
+	  if (gimple_match_p
+	      && group->cases.length () == 1
+	      && *group->cases[0] == SSA_NAME)
+	    continue;
+	  emit_group_labels (f, indent, group);
+	  emit_expr_group (f, indent, gimple, depth, generic_code, group);
 	}
-      fprintf_indent (f, indent, "  {\n");
-      generic_exprs[i]->gen (f, indent + 4, gimple, depth);
-      fprintf_indent (f, indent, "    break;\n");
-      fprintf_indent (f, indent, "  }\n");
     }
 
   if (gfns_len)
@@ -4139,25 +4533,14 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
 		      "    {\n");
       indent += 4;
 
-      id_base *last_op = NULL;
-      for (unsigned j = 0; j < generic_fns.length (); ++j)
+      char code[160];
+      snprintf (code, sizeof (code), "get_call_combined_fn (%s)",
+		kid_opname);
+      for (auto group : generic_fn_groups)
 	{
-	  expr *e = as_a <expr *>(generic_fns[j]->op);
-	  gcc_assert (e->operation->kind == id_base::FN);
-
-	  if (e->operation != last_op)
-	    {
-	      if (j)
-		fprintf_indent (f, indent, "  break;\n");
-	      fprintf_indent (f, indent, "case %s:\n", e->operation->id);
-	    }
-	  last_op = e->operation;
-	  fprintf_indent (f, indent, "  if (call_expr_nargs (%s) == %d)\n"
-				     "    {\n", kid_opname, e->ops.length ());
-	  generic_fns[j]->gen (f, indent + 6, false, depth);
-	  fprintf_indent (f, indent, "    }\n");
+	  emit_group_labels (f, indent, group);
+	  emit_fn_group (f, indent, false, depth, kid_opname, code, group);
 	}
-      fprintf_indent (f, indent, "  break;\n");
       fprintf_indent (f, indent, "default:;\n");
 
       indent -= 4;
@@ -4166,7 +4549,7 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
     }
 
   /* Close switch (TREE_CODE ()).  */
-  if (exprs_len || fns_len || gexprs_len || gfns_len)
+  if (gimple_match_p || gexprs_len || gfns_len)
     {
       indent -= 4;
       fprintf_indent (f, indent, "    default:;\n");
@@ -4193,7 +4576,7 @@ dt_node::gen_kids_1 (FILE *f, int indent, bool gimple, int depth,
 	  fprintf_indent (f, indent + 4, "tree %s = %s_pops[%d];\n",
 			  child_opname, kid_opname, j);
 	}
-      preds[i]->gen_kids (f, indent + 4, gimple, depth);
+      preds[i]->gen_kids (f, indent + 4, gimple, depth, false);
       fprintf_indent (f, indent, "  }\n");
       indent -= 2;
       fprintf_indent (f, indent, "}\n");
@@ -4238,7 +4621,7 @@ dt_operand::gen (FILE *f, int indent, bool gimple, int depth)
     gcc_unreachable ();
 
   indent += 4 * n_braces;
-  gen_kids (f, indent, gimple, depth);
+  gen_kids (f, indent, gimple, depth, false);
 
   for (unsigned i = 0; i < n_braces; ++i)
     {
@@ -4284,7 +4667,7 @@ dt_operand::gen_phi_on_cond (FILE *f, int indent, int depth)
     "boolean_type_node, _cond_lhs_%d, _cond_rhs_%d);\n",
     opname_0, depth, depth, depth);
 
-  gen_kids (f, indent, true, depth);
+  gen_kids (f, indent, true, depth, true);
 
   indent -= 2;
   fprintf_indent (f, indent, "}\n");
@@ -4462,6 +4845,8 @@ dt_simplify::gen_1 (FILE *f, int indent, bool gimple, operand *result)
 	    opr = uid->substitutes[0];
 	  else if (is_a <predicate_id *> (opr))
 	    is_predicate = true;
+	  if (c_code_id *cid = dyn_cast <c_code_id *> (opr))
+	    cid->gen_checking (f, indent);
 	  if (!is_predicate)
 	    fprintf_indent (f, indent, "res_op->set_op (%s, type, %d);\n",
 			    *e->operation == CONVERT_EXPR
@@ -4629,7 +5014,10 @@ dt_simplify::gen_1 (FILE *f, int indent, bool gimple, operand *result)
 				"_r = non_lvalue_loc (loc, res_op0);\n");
 	      else
 		{
-		  if (is_a <operator_id *> (opr))
+		  c_code_id *cid = dyn_cast <c_code_id *> (opr);
+		  if (cid)
+		    cid->gen_checking (f, indent);
+		  if (is_a <operator_id *> (opr) || (cid && cid->m_code_only))
 		    fprintf_indent (f, indent,
 				    "_r = fold_build%d_loc (loc, %s, type",
 				    e->ops.length (),
@@ -4643,7 +5031,7 @@ dt_simplify::gen_1 (FILE *f, int indent, bool gimple, operand *result)
 		  for (unsigned j = 0; j < e->ops.length (); ++j)
 		    fprintf (f, ", res_op%d", j);
 		  fprintf (f, ");\n");
-		  if (!is_a <operator_id *> (opr))
+		  if (!is_a <operator_id *> (opr) && !is_a<c_code_id *> (opr))
 		    {
 		      fprintf_indent (f, indent, "if (!_r)\n");
 		      fprintf_indent (f, indent, "  goto %s;\n", fail_label);
@@ -4978,7 +5366,7 @@ decision_tree::gen (vec <FILE *> &files, bool gimple)
 	  fprintf (f, "{\n");
 	  fprintf_indent (f, 2, "const bool debug_dump = "
 				"dump_file && (dump_flags & TDF_FOLDING);\n");
-	  dop->gen_kids (f, 2, gimple, 0);
+	  dop->gen_kids (f, 2, gimple, 0, false);
 	  if (gimple)
 	    fprintf (f, "  return false;\n");
 	  else
@@ -5101,7 +5489,7 @@ write_predicate (FILE *f, predicate_id *p, decision_tree &dt, bool gimple)
 
   if (!gimple)
     fprintf_indent (f, 2, "if (TREE_SIDE_EFFECTS (t)) return false;\n");
-  dt.root->gen_kids (f, 2, gimple, 0);
+  dt.root->gen_kids (f, 2, gimple, 0, false);
 
   fprintf_indent (f, 2, "return false;\n"
 	   "}\n");
@@ -5149,6 +5537,7 @@ private:
   operand *parse_capture (operand *, bool);
   operand *parse_expr ();
   c_expr *parse_c_expr (cpp_ttype);
+  void parse_c_with_ids (vec<c_code_id*> *);
   operand *parse_op ();
 
   void record_operlist (location_t, user_id *);
@@ -5541,6 +5930,100 @@ parser::parse_expr ()
   while (1);
 }
 
+// Parse the C identifiers part of the `with` expressions.
+// `id (id+)`
+
+void
+parser::parse_c_with_ids (vec<c_code_id*> *ids)
+{
+  const cpp_token *token;
+  while (1)
+    {
+      token = peek ();
+      if (token->type != CPP_NAME)
+	break;
+
+      // Insert the C defined operators into the operator hash.
+      const char *id = get_ident ();
+      if (get_operator (id, true) != NULL)
+	fatal_at (token, "operator already defined");
+      c_code_id *op = new c_code_id (id, token->src_loc);
+      id_base **slot = operators->find_slot_with_hash (op, op->hashval, INSERT);
+      *slot = op;
+      ids->safe_push (op);
+
+      eat_token (CPP_OPEN_PAREN);
+      while ((token = peek_ident ()) != 0)
+	{
+	  const char *oper = get_ident ();
+	  id_base *idb = get_operator (oper, true);
+	  if (idb == NULL)
+	    fatal_at (token, "no such operator '%s'", oper);
+	  if (idb == null_id)
+	    fatal_at (token, "null operator not allowed in possible opperators");
+	  if (is_a<predicate_id*> (idb))
+	    fatal_at (token, "predicate oeprator not allowed in possible opperators");
+	  if (is_a<c_code_id*> (idb))
+	    fatal_at (token, "A value operator is not in possible opperators");
+	  if (user_id *p = dyn_cast<user_id*> (idb))
+	    {
+	      if (p->is_oper_list)
+		op->possible_values.safe_splice (p->substitutes);
+	      else
+		fatal_at (token, "iterators cannot be used as possible opperators");
+	    }
+	  else
+	    op->possible_values.safe_push (idb);
+	}
+      token = expect (CPP_CLOSE_PAREN);
+      if (!op->possible_values.length ())
+	fatal_at (token, "possible operator-list should be non empty");
+      bool cmps = true;
+      bool code_only = true;
+      bool fn_only = true;
+      // Remove duplicates.
+      // Add a warning?
+      for (size_t i = 0; i < op->possible_values.length (); i++)
+	{
+	  for (size_t j = i + 1; j < op->possible_values.length (); j++)
+	    {
+	      if (op->possible_values[i] == op->possible_values[j]
+		  || (*op->possible_values[i] == CONVERT_EXPR
+		      && *op->possible_values[j] == NOP_EXPR)
+		  || (*op->possible_values[j] == CONVERT_EXPR
+		      && *op->possible_values[i] == NOP_EXPR))
+		{
+		  op->possible_values.unordered_remove (j);
+		  j--;
+		}
+	    }
+	}
+
+      // Cache some information about the possible operators:
+      // compares, functions only, tree code only.
+      for (id_base *i : op->possible_values)
+	{
+	  if (operator_id *ii = dyn_cast <operator_id *> (i))
+	    {
+	      fn_only = false;
+	      if (strcmp (ii->tcc, "tcc_comparison") != 0)
+		cmps = false;
+	    }
+	  else if (is_a <fn_id*>(i))
+	    cmps = code_only = false;
+	  else
+	    gcc_unreachable ();
+	}
+      op->m_cmp = cmps;
+      op->m_code_only = code_only;
+      op->m_fn_only = fn_only;
+      // FIXME: Add support for a mixed case,
+      // generic handling is more complex
+      if (!code_only && !fn_only)
+	fatal_at (token, "Cannot support a mix of functions and tree codes at this point.");
+    }
+}
+
 /* Lex native C code delimited by START recording the preprocessing tokens
    for later processing.
      c_expr = ('{'|'(') <pp token>... ('}'|')')  */
@@ -5733,11 +6216,24 @@ parser::parse_result (operand *result, predicate_id *matcher)
     {
       eat_ident ("with");
       with_expr *withe = new with_expr (token->src_loc);
+      parse_c_with_ids (&withe->m_ids);
       /* Parse (with c-expr expr) as (if-with (true) expr).  */
       withe->with = parse_c_expr (CPP_OPEN_BRACE);
+      // Check to see if the id was declared in the with statement.
+      // This is a basic check; there can be false positives
+      for (c_code_id *id : withe->m_ids)
+	{
+	  if (!id->used)
+	    {
+	      fatal_at (id->m_loc, "operator %s declared inside 'with' but not in C expression", id->id);
+	    }
+	}
       withe->with->nr_stmts = 0;
       withe->subexpr = parse_result (result, matcher);
       eat_token (CPP_CLOSE_PAREN);
+      // Remove operators from the hash as they are now out of scope.
+      for (c_code_id *id : withe->m_ids)
+	operators->remove_elt (id);
       return withe;
     }
   else if (peek_ident ("switch"))
@@ -6274,7 +6770,7 @@ usage ()
   fprintf (stderr, usage, progname, progname);
 }
 
-/* Write out the correct include to the match-head fle containing the helper
+/* Write out the correct include to the match-head file containing the helper
    files.  */
 
 static void

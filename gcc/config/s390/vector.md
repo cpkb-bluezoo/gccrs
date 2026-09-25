@@ -358,7 +358,7 @@
 (define_split
   [(set (match_operand:V_128 0 "register_operand" "")
         (match_operand:V_128 1 "memory_operand" ""))]
-  "TARGET_ZARCH && reload_completed
+  "reload_completed
    && !VECTOR_REG_P (operands[0])
    && !s_operand (operands[1], VOIDmode)"
   [(set (match_dup 0) (match_dup 1))]
@@ -473,7 +473,7 @@
          "=f,f,f,R,T,v,v,d,v,R,  f,  v,  v,  v,  v,  v,  Q,  Q,  d,  d,f,d,d,d,d,T,b")
         (match_operand:V_64 1 "general_operand"
          " f,R,T,f,f,v,d,v,R,v,j00,j00,jm1,jyy,jxx,jzz,j00,jm1,j00,jm1,d,f,b,d,T,d,d"))]
-  "TARGET_ZARCH"
+  ""
   "@
    ldr\t%0,%1
    ld\t%0,%1
@@ -524,7 +524,7 @@
 (define_mode_iterator VEC_SET_NONFLOAT
   [V1QI V2QI V4QI V8QI V16QI V1HI V2HI V4HI V8HI V1SI V2SI V4SI V1DI V2DI V2HF V4HF V8HF V2SF V4SF])
 ; Iterator for single element float vectors
-(define_mode_iterator VEC_SET_SINGLEFLOAT [V1HF V1SF V1DF (V1TF "TARGET_VXE")])
+(define_mode_iterator VEC_SET_SINGLEFLOAT [V1HF V1SF V1DF])
 
 ; FIXME: Support also vector mode operands for 1
 ; FIXME: A target memory operand seems to be useful otherwise we end
@@ -3183,7 +3183,7 @@
 ; operand in a VR, therefore load it into a FPR pair first.
 (define_expand "floatuns<mode>tf2_vr"
   [(set (match_dup 2)
-	(unsigned_float:FPRX2 (match_operand:GPR 1 "register_operand" "")))
+	(unsigned_float:FPRX2 (match_operand:DSI 1 "register_operand" "")))
    (set (match_operand:TF                        0 "register_operand" "")
 	(subreg:TF (match_dup 2) 0))]
   "TARGET_VXE"
@@ -3193,7 +3193,7 @@
 
 (define_expand "floatuns<mode>tf2"
   [(match_operand:TF  0 "register_operand" "")
-   (match_operand:GPR 1 "register_operand" "")]
+   (match_operand:DSI 1 "register_operand" "")]
   "HAVE_TF (floatuns<mode>tf2)"
   { EXPAND_TF (floatuns<mode>tf2, 2); })
 
@@ -3214,9 +3214,9 @@
 (define_expand "fix_trunctf<mode>2_vr"
   [(set (match_dup 2)
 	(unspec:FPRX2 [(match_operand:TF 1 "register_operand")] UNSPEC_TF_TO_FPRX2))
-   (parallel [(set (match_operand:GPR 0 "register_operand" "")
-		   (fix:GPR (match_dup 2)))
-	      (unspec:GPR [(const_int BFP_RND_TOWARD_0)] UNSPEC_ROUND)
+   (parallel [(set (match_operand:DSI 0 "register_operand" "")
+		   (fix:DSI (match_dup 2)))
+	      (unspec:DSI [(const_int BFP_RND_TOWARD_0)] UNSPEC_ROUND)
 	      (clobber (reg:CC CC_REGNUM))])]
   "TARGET_VXE"
 {
@@ -3224,7 +3224,7 @@
 })
 
 (define_expand "fix_trunctf<mode>2"
-  [(match_operand:GPR 0 "register_operand" "")
+  [(match_operand:DSI 0 "register_operand" "")
    (match_operand:TF  1 "register_operand" "")]
   "HAVE_TF (fix_trunctf<mode>2)"
   { EXPAND_TF (fix_trunctf<mode>2, 2); })
@@ -3246,9 +3246,9 @@
 (define_expand "fixuns_trunctf<mode>2_vr"
   [(set (match_dup 2)
 	(unspec:FPRX2 [(match_operand:TF 1 "register_operand")] UNSPEC_TF_TO_FPRX2))
-   (parallel [(set (match_operand:GPR 0 "register_operand" "")
-		   (unsigned_fix:GPR (match_dup 2)))
-	      (unspec:GPR [(const_int BFP_RND_TOWARD_0)] UNSPEC_ROUND)
+   (parallel [(set (match_operand:DSI 0 "register_operand" "")
+		   (unsigned_fix:DSI (match_dup 2)))
+	      (unspec:DSI [(const_int BFP_RND_TOWARD_0)] UNSPEC_ROUND)
 	      (clobber (reg:CC CC_REGNUM))])]
   "TARGET_VXE"
 {
@@ -3256,7 +3256,7 @@
 })
 
 (define_expand "fixuns_trunctf<mode>2"
-  [(match_operand:GPR 0 "register_operand" "")
+  [(match_operand:DSI 0 "register_operand" "")
    (match_operand:TF  1 "register_operand" "")]
   "HAVE_TF (fixuns_trunctf<mode>2)"
   { EXPAND_TF (fixuns_trunctf<mode>2, 2); })
@@ -3566,7 +3566,7 @@
    (match_operand:QI 3 "register_operand")
    (match_operand:QI 4 "vll_bias_operand")
   ]
-  "TARGET_VX && TARGET_64BIT"
+  "TARGET_VX"
 {
   rtx mem = adjust_address (operands[1], BLKmode, 0);
 
@@ -3582,7 +3582,7 @@
    (match_operand:QI 2 "register_operand")
    (match_operand:QI 3 "vll_bias_operand")
   ]
-  "TARGET_VX && TARGET_64BIT"
+  "TARGET_VX"
 {
   rtx mem = adjust_address (operands[0], BLKmode, 0);
 
@@ -3966,4 +3966,64 @@
   operands[7] = gen_reg_rtx (V16QImode);
   operands[8] = gen_reg_rtx (V16QImode);
   operands[9] = gen_reg_rtx (V16QImode);
+})
+
+(define_expand "vec_cbranch_any<mode>"
+  [(set (pc)
+	(if_then_else (match_operator 0 "comparison_operator"
+		       [(match_operand:VIT_HW_VXE3_T 1 "register_operand" "")
+		        (match_operand:VIT_HW_VXE3_T 2 "register_operand" "")])
+		      (label_ref (match_operand 3 "" ""))
+		      (pc)))]
+  "TARGET_VX"
+{
+  s390_emit_jump (operands[3],
+    s390_expand_vec_compare_gen_cc (GET_CODE (operands[0]),
+				    operands[1], operands[2], false));
+  DONE;
+})
+
+(define_expand "vec_cbranch_all<mode>"
+  [(set (pc)
+	(if_then_else (match_operator 0 "comparison_operator"
+		       [(match_operand:VIT_HW_VXE3_T 1 "register_operand" "")
+		        (match_operand:VIT_HW_VXE3_T 2 "register_operand" "")])
+		      (label_ref (match_operand 3 "" ""))
+		      (pc)))]
+  "TARGET_VX"
+{
+  s390_emit_jump (operands[3],
+    s390_expand_vec_compare_gen_cc (GET_CODE (operands[0]),
+				    operands[1], operands[2], true));
+  DONE;
+})
+
+(define_expand "vec_cbranch_any<mode>"
+  [(set (pc)
+	(if_then_else (match_operator 0 "comparison_operator"
+		       [(match_operand:VECF_HW 1 "register_operand" "")
+		        (match_operand:VECF_HW 2 "register_operand" "")])
+		      (label_ref (match_operand 3 "" ""))
+		      (pc)))]
+  "TARGET_VX"
+{
+  s390_emit_jump (operands[3],
+    s390_expand_vec_compare_gen_cc (GET_CODE (operands[0]),
+				    operands[1], operands[2], false));
+  DONE;
+})
+
+(define_expand "vec_cbranch_all<mode>"
+  [(set (pc)
+	(if_then_else (match_operator 0 "comparison_operator"
+		       [(match_operand:VECF_HW 1 "register_operand" "")
+		        (match_operand:VECF_HW 2 "register_operand" "")])
+		      (label_ref (match_operand 3 "" ""))
+		      (pc)))]
+  "TARGET_VX"
+{
+  s390_emit_jump (operands[3],
+    s390_expand_vec_compare_gen_cc (GET_CODE (operands[0]),
+				    operands[1], operands[2], true));
+  DONE;
 })

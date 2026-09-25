@@ -450,7 +450,7 @@ build_capture_proxy (tree member, tree init, bool early_p)
        constness of the closure doesn't matter just like it doesn't matter to
        other by-ref capture.  It's simpler to handle this special case here
        than in lambda_proxy_type.  */
-    type = TREE_TYPE (member);
+    type = cp_build_qualified_type (TREE_TYPE (member), TYPE_QUAL_CONST);
   else
     {
       type = lambda_proxy_type (object);
@@ -729,8 +729,19 @@ add_capture (tree lambda, tree id, tree orig_init, bool by_reference_p,
       && current_class_type == LAMBDA_EXPR_CLOSURE (lambda))
     {
       if (COMPLETE_TYPE_P (current_class_type))
-	internal_error ("trying to capture %qD in instantiation of "
-			"generic lambda", id);
+	{
+	  /* This can happen for code like [&]<auto e> { [:e:]; } where
+	     we can't figure out what the splice will designate while parsing;
+	     we'll only know it after we've substituted the splice, but then
+	     it's too late to capture anything.  This code is ill-formed as
+	     per [expr.prim.splice]/2.1.4.1: The expression is ill-formed if
+	     S is ... a local entity such that ... there is a lambda scope that
+	     intervenes between the expression and the point at which S was
+	     introduced and the expression would be potentially evaluated.  */
+	  error ("trying to capture %qD in instantiation of generic lambda",
+		 id);
+	  return error_mark_node;
+	}
       finish_member_declaration (member);
     }
 
@@ -836,8 +847,10 @@ lambda_expr_this_capture (tree lambda, int add_capture_p)
 	this_capture = spec;
       }
 
-  /* In unevaluated context this isn't an odr-use, so don't capture.  */
-  if (cp_unevaluated_operand)
+  /* In unevaluated context this isn't an odr-use, so don't capture.
+     A typeid operand's own probe is capture-transparent
+     ([expr.prim.lambda.capture]/7).  */
+  if (cp_unevaluated_operand > cp_unevaluated_typeid_cutoff)
     add_capture_p = false;
 
   /* If we captured 'this' but don't have a capture proxy yet, look up the

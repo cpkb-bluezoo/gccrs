@@ -420,10 +420,8 @@ s390_cpu_cpp_builtins (cpp_reader *pfile)
   cpp_assert (pfile, "cpu=s390");
   cpp_assert (pfile, "machine=s390");
   cpp_define (pfile, "__s390__");
-  if (TARGET_ZARCH)
-    cpp_define (pfile, "__zarch__");
-  if (TARGET_64BIT)
-    cpp_define (pfile, "__s390x__");
+  cpp_define (pfile, "__zarch__");
+  cpp_define (pfile, "__s390x__");
   if (TARGET_LONG_DOUBLE_128)
     cpp_define (pfile, "__LONG_DOUBLE_128__");
   cl_target_option_save (&opts, &global_options, &global_options_set);
@@ -508,7 +506,7 @@ s390_expand_overloaded_builtin (location_t loc,
 		    "vec_step");
 	  return error_mark_node;
 	}
-      return build_int_cst (NULL_TREE,
+      return build_int_cst (integer_type_node,
 			    TYPE_VECTOR_SUBPARTS (TREE_TYPE ((*arglist)[0])));
     case S390_OVERLOADED_BUILTIN_s390_vec_xl:
     case S390_OVERLOADED_BUILTIN_s390_vec_xld2:
@@ -1110,7 +1108,7 @@ s390_resolve_overloaded_builtin (location_t loc, tree ob_fndecl,
 	  gcc_assert (type == integer_type_node);
 	  (*arglist)[i] = build2 (BIT_AND_EXPR, integer_type_node,
 				  fold_convert (integer_type_node, arg),
-				  build_int_cst (NULL_TREE, n_elem - 1));
+				  build_int_cst (integer_type_node, n_elem - 1));
 	}
 
       if (TREE_CODE (arg) != INTEGER_CST || !O_IMM_P (op_flags))

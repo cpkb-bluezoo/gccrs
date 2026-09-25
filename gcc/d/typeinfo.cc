@@ -195,7 +195,7 @@ make_internal_typeinfo (tinfo_kind tk, Identifier *ident, ...)
 static Module *object_module;
 
 /* Helper for create_frontend_tinfo_types.  Creates a typeinfo class
-   declaration incase one wasn't supplied by reading `object.d'.  */
+   declaration in case one wasn't supplied by reading `object.d'.  */
 
 static void
 make_frontend_typeinfo (Identifier *ident, ClassDeclaration *base = NULL)
@@ -925,13 +925,10 @@ public:
 
 	for (ClassDeclaration *bcd = cd; bcd; bcd = bcd->baseClass)
 	  {
-	    if (!bcd->members)
-	      continue;
-
-	    for (size_t i = 0; i < bcd->members->length; i++)
+	    for (size_t i = 0; i < bcd->fields.length; i++)
 	      {
-		Dsymbol *sm = (*bcd->members)[i];
-		if (dmd::hasPointers (sm))
+		VarDeclaration *vd = bcd->fields[i];
+		if (dmd::hasPointers (vd))
 		  goto Lhaspointers;
 	      }
 	  }

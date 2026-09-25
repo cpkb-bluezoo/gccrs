@@ -1,7 +1,12 @@
 /* { dg-require-effective-target mmap } */
+/* { dg-require-effective-target sysconf } */
 /* { dg-add-options vect_early_break } */
 
 #include <sys/mman.h>
+
+#if defined(__APPLE__) && !defined(MAP_ANONYMOUS)
+#define MAP_ANONYMOUS MAP_ANON
+#endif
 #include <unistd.h>
 #include <stdio.h>
 #include <stdint.h>

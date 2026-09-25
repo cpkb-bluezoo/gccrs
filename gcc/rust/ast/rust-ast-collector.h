@@ -291,7 +291,6 @@ public:
   // rust-expr.h
   void visit (LiteralExpr &expr);
   void visit (AttrInputLiteral &attr_input);
-  void visit (AttrInputMacro &attr_input);
   void visit (AttrInputExpr &attr_input);
   void visit (MetaItemLitExpr &meta_item);
   void visit (MetaItemPathExpr &meta_item);
@@ -425,8 +424,6 @@ public:
   void visit (TuplePatternItemsHasRest &tuple_items);
   void visit (TuplePattern &pattern);
   void visit (GroupedPattern &pattern);
-  void visit (SlicePatternItemsNoRest &items);
-  void visit (SlicePatternItemsHasRest &items);
   void visit (SlicePattern &pattern);
   void visit (AltPattern &pattern);
 

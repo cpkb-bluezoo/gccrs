@@ -2,6 +2,7 @@
 
 #include <inplace_vector>
 
+#include <ranges>
 #include <span>
 #include <testsuite_hooks.h>
 #include <testsuite_iterators.h>
@@ -54,16 +55,6 @@ test_add_to_full_it()
 
   std::inplace_vector<T, N> v(std::from_range, std::span(a, a+N));
 
-  Range r1(a, a);
-  auto rit1 = v.try_append_range(r1);
-  VERIFY( eq<T>(v, {a, N}) );
-  VERIFY( rit1.base() == a );
-
-  SizedRange r2(a, a);
-  auto rit2 = v.try_append_range(r2);
-  VERIFY( eq<T>(v, {a, N}) );
-  VERIFY( rit2.base() == a );
-
   v.append_range(Range(a, a));
   VERIFY( eq<T>(v, {a, N}) );
   v.append_range(SizedRange(a, a));
@@ -92,17 +83,6 @@ test_add_to_full_it()
   it = v.insert(v.begin(), It(a, &bounds), It(a, &bounds));
   VERIFY( eq<T>(v, {a, N}) );
   VERIFY( it == v.begin() );
-
-  // Inserting non-empty range
-  Range r3(a+3, a+5);
-  auto rit3 = v.try_append_range(r3);
-  VERIFY( eq<T>(v, {a, N}) );
-  VERIFY( rit3.base() == a+3 );
-
-  SizedRange r4(a+2, a+5);
-  auto rit4 = v.try_append_range(r4);
-  VERIFY( eq<T>(v, {a, N}) );
-  VERIFY( rit4.base() == a+2 );
 
 #ifdef __cpp_exceptions
 #ifndef __cpp_lib_constexpr_exceptions
@@ -267,30 +247,6 @@ test_append_range()
 
 template<typename Range>
 constexpr void
-test_try_append_range()
-{
-  using T = std::ranges::range_value_t<Range>;
-  T a[]{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25};
-
-  std::inplace_vector<T, 20> v;
-  Range r1 = Range(a, a+10);
-  auto it1 = v.try_append_range(r1);
-  VERIFY( eq<T>(v, {a, 10}) );
-  VERIFY( it1.base() == a+10 );
-
-  Range r2 = Range(a+10, a+15);
-  auto it2 = v.try_append_range(r2);
-  VERIFY( eq<T>(v, {a, 15}) );
-  VERIFY( it2.base() == a+15 );
-
-  Range r3 = Range(a+15, a+25);
-  auto it3 = v.try_append_range(r3);
-  VERIFY( eq<T>(v, {a, 20}) );
-  VERIFY( it3.base() == a+20 );
-}
-
-template<typename Range>
-constexpr void
 test_insert_range()
 {
   using T = std::ranges::range_value_t<Range>;
@@ -357,7 +313,6 @@ constexpr void
 do_test_ranges()
 {
   test_append_range<Range>();
-  test_try_append_range<Range>();
   test_insert_range<Range>();
 }
 
@@ -552,6 +507,8 @@ test_insert_repeated()
 #endif
 }
 
+
+
 template<typename T>
 constexpr void
 test_inserts()
@@ -572,25 +529,110 @@ test_inserts()
   test_insert_iterators<T, forward_iterator_wrapper>();
   test_insert_iterators<T, random_access_iterator_wrapper>();
 
-test_insert_initializer_list<T>();
-test_insert_repeated<T>();
+  test_insert_initializer_list<T>();
+  test_insert_repeated<T>();
+}
+
+template<typename T>
+constexpr void
+test_iota()
+{
+  T a[]{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+
+  std::inplace_vector<T, 20> v;
+  auto it = v.insert_range(v.begin(), std::views::iota(T(1), T(11)));
+  VERIFY( eq<T>(v, {a, a+10}) );
+  VERIFY( it == v.begin() );
+
+  v.append_range(std::views::iota(T(11), T(16)));
+  VERIFY( eq<T>(v, {a, 15}) );
+
+  v.clear();
+  it = v.insert_range(v.begin(),
+    std::views::iota(T(1))
+    | std::views::as_input
+    | std::views::take_while([](T t) { return t <= 10; }));
+  VERIFY( eq<T>(v, {a, a+10}) );
+  VERIFY( it == v.begin() );
+
+  v.append_range(
+    std::views::iota(T(11))
+    | std::views::as_input
+    | std::views::take_while([](T t) { return t <= 15; }));
+  VERIFY( eq<T>(v, {a, 15}) );
+
+#ifdef __cpp_exceptions
+# ifndef __cpp_lib_constexpr_exceptions
+  if consteval {
+    return;
+  }
+# endif
+  constexpr T max = std::numeric_limits<T>::max();
+  try
+  {
+    v.insert_range(v.end(), std::views::iota(T(0), max));
+    VERIFY(false);
+  }
+  catch (std::bad_alloc const&)
+  {
+  }
+  VERIFY( eq<T>(v, {a, 15}) );
+
+  try
+  {
+    v.append_range(std::views::iota(T(0), max));
+    VERIFY(false);
+  }
+  catch (std::bad_alloc const&)
+  {
+  }
+  VERIFY( eq<T>(v, {a, 15}) );
+
+  auto vc = v;
+  try
+  {
+    vc.insert_range(vc.end(),
+      std::views::iota(T(1))
+      | std::views::as_input
+      | std::views::take_while([](T t) { return t <= 20; }));
+    VERIFY(false);
+  }
+  catch (std::bad_alloc const&)
+  {
+  }
+  VERIFY( prefix<T>(vc, {a, 15}) );
+
+  vc = v;
+  try
+  {
+    vc.append_range(
+      std::views::iota(T(1))
+      | std::views::as_input
+      | std::views::take_while([](T t) { return t <= 20; }));
+    VERIFY(false);
+  }
+  catch (std::bad_alloc const&)
+  {
+  }
+  VERIFY( prefix<T>(vc, {a, 15}) );
+#endif
 }
 
 int main()
 {
-auto test_all = []{
-  test_add_to_full<0, int>();
-  test_add_to_full<0, X>();
-  test_add_to_full<4, int>();
+  auto test_all = []{
+    test_add_to_full<0, int>();
+    test_add_to_full<0, X>();
+    test_add_to_full<4, int>();
+    test_add_to_full<4, X>();
 
     test_inserts<int>();
-#ifdef __cpp_lib_constexpr_inplace_vector
-#error uncomemnt test_inserts<X>()
+    test_inserts<X>();
+
+    test_iota<long long>();
+#ifdef __SIZEOF_INT128__
+    test_iota<__int128>();
 #endif
-    if !consteval {
-      test_add_to_full<4, X>();
-      test_inserts<X>();
-    }
     return true;
   };
 

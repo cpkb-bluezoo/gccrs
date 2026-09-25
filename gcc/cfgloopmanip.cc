@@ -559,7 +559,7 @@ loop_exit_for_scaling (class loop *loop)
    If DESIRED_COUNT is NULL, loop entry count will be used.
    In consistent profile usually loop exists as many times as it is entred.
 
-   Return updated exit if successfull and NULL otherwise. */
+   Return updated exit if successful and NULL otherwise. */
 
 edge
 update_loop_exit_probability_scale_dom_bbs (class loop *loop,
@@ -619,7 +619,7 @@ update_loop_exit_probability_scale_dom_bbs (class loop *loop,
 
       If B2 count is smaller than desired exit edge count
       the profile was inconsistent with the newly discovered upper bound.
-      Probablity of edge B1->B2 is too low.  We do not attempt to fix
+      Probability of edge B1->B2 is too low.  We do not attempt to fix
       that (as it is hard in general).  */
   if (desired_count > exit_edge->src->count
       && exit_edge->src->count.differs_from_p (desired_count))
@@ -630,7 +630,7 @@ update_loop_exit_probability_scale_dom_bbs (class loop *loop,
 		   loop->num);
 	  exit_edge->src->count.dump (dump_file, cfun);
 	  fprintf (dump_file,
-		   " which is smaller then desired count of exitting loop ");
+		   " which is smaller then desired count of exiting loop ");
 	  desired_count.dump (dump_file, cfun);
 	  fprintf (dump_file, ". Profile update is impossible.\n");
 	}
@@ -689,9 +689,9 @@ update_loop_exit_probability_scale_dom_bbs (class loop *loop,
 /* Scale profile in LOOP by P.
    If ITERATION_BOUND is not -1, scale even further if loop is predicted
    to iterate too many times.
-   Before caling this function, preheader block profile should be already
+   Before calling this function, preheader block profile should be already
    scaled to final count.  This is necessary because loop iterations are
-   determined by comparing header edge count to latch ege count and thus
+   determined by comparing header edge count to latch edge count and thus
    they need to be scaled synchronously.  */
 
 void
@@ -1061,23 +1061,36 @@ static void
 fix_loop_placements (class loop *loop, bool *irred_invalidated,
 		     bitmap loop_closed_ssa_invalidated)
 {
-  class loop *outer;
+  if (!loop_outer (loop))
+    return;
 
+  auto_vec<edge> exits = get_loop_exit_edges (loop);
+  unsigned i;
+  edge e;
+
+  /* We might need to only re-parent an outer loop, but as the constraint
+     is that we removed an exit from LOOP, we have a limit for what level
+     of outer loop we eventually have to re-parent to.  */
+  class loop *outermost = loop;
+  FOR_EACH_VEC_ELT (exits, i, e)
+    outermost = find_common_loop (outermost, e->dest->loop_father);
+
+  class loop *outer;
   while (loop_outer (loop))
     {
       outer = loop_outer (loop);
-      if (!fix_loop_placement (loop, irred_invalidated,
-			       loop_closed_ssa_invalidated))
-	break;
-
-      /* Changing the placement of a loop in the loop tree may alter the
-	 validity of condition 2) of the description of fix_bb_placement
-	 for its preheader, because the successor is the header and belongs
-	 to the loop.  So call fix_bb_placements to fix up the placement
-	 of the preheader and (possibly) of its predecessors.  */
-      fix_bb_placements (loop_preheader_edge (loop)->src,
-			 irred_invalidated, loop_closed_ssa_invalidated);
+      if (fix_loop_placement (loop, irred_invalidated,
+			      loop_closed_ssa_invalidated))
+	/* Changing the placement of a loop in the loop tree may alter the
+	   validity of condition 2) of the description of fix_bb_placement
+	   for its preheader, because the successor is the header and belongs
+	   to the loop.  So call fix_bb_placements to fix up the placement
+	   of the preheader and (possibly) of its predecessors.  */
+	fix_bb_placements (loop_preheader_edge (loop)->src,
+			   irred_invalidated, loop_closed_ssa_invalidated);
       loop = outer;
+      if (outer == outermost)
+	break;
     }
 }
 
@@ -1627,14 +1640,14 @@ duplicate_loop_body_to_header_edge (class loop *loop, edge e,
 }
 
 /* A callback for make_forwarder block, to redirect all edges except for
-   MFB_KJ_EDGE to the entry part.  E is the edge for that we should decide
+   OTHER(DATA) to the entry part.  E is the edge for that we should decide
    whether to redirect it.  */
 
-edge mfb_kj_edge;
 bool
-mfb_keep_just (edge e)
+mfb_keep_just (edge e, void *data)
 {
-  return e != mfb_kj_edge;
+  edge other = (edge)data;
+  return e != other;
 }
 
 /* True when a candidate preheader BLOCK has predecessors from LOOP.  */
@@ -1716,15 +1729,16 @@ create_preheader (class loop *loop, int flags)
 	return NULL;
     }
 
-  mfb_kj_edge = loop_latch_edge (loop);
-  latch_edge_was_fallthru = (mfb_kj_edge->flags & EDGE_FALLTHRU) != 0;
+  edge latch;
+  latch = loop_latch_edge (loop);
+  latch_edge_was_fallthru = (latch->flags & EDGE_FALLTHRU) != 0;
   if (nentry == 1
       && ((flags & CP_FALLTHRU_PREHEADERS) == 0
   	  || (single_entry->flags & EDGE_CROSSING) == 0))
     dummy = split_edge (single_entry);
   else
     {
-      edge fallthru = make_forwarder_block (loop->header, mfb_keep_just, NULL);
+      edge fallthru = make_forwarder_block (loop->header, mfb_keep_just, latch);
       dummy = fallthru->src;
       loop->header = fallthru->dest;
     }

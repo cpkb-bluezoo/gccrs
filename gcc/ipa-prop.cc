@@ -63,6 +63,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "lto-streamer.h"
 #include "attribs.h"
 #include "attr-callback.h"
+#include "callback-info.h"
 
 /* Function summary where the parameter infos are actually stored. */
 ipa_node_params_t *ipa_node_params_sum = NULL;
@@ -83,7 +84,7 @@ struct ipa_vr_ggc_hash_traits : public ggc_cache_remove <ipa_vr *>
     {
       // This never get called, except in the verification code, as
       // ipa_get_value_range() calculates the hash itself.  This
-      // function is mostly here for completness' sake.
+      // function is mostly here for completeness' sake.
       value_range vr;
       p->get_vrange (vr);
       inchash::hash hstate;
@@ -148,7 +149,7 @@ ipa_vr::ipa_vr ()
 }
 
 ipa_vr::ipa_vr (const vrange &r)
-  : m_storage (ggc_alloc_vrange_storage (r)),
+  : m_storage (ggc_alloc_vrange_storage (r, false /* shared_p */)),
     m_type (r.type ())
 {
 }
@@ -177,7 +178,7 @@ ipa_vr::equal_p (const ipa_vr &o) const
 void
 ipa_vr::get_vrange (value_range &r) const
 {
-  r.set_type (m_type);
+  r.set_range_class (m_type);
   m_storage->get_vrange (r, m_type);
 }
 
@@ -320,7 +321,7 @@ noted_fnptr_hasher::equal (noted_fnptr_store *v1,
 }
 
 
-/* Structore holding the information that all stores to OFFSET of a particular
+/* Structure holding the information that all stores to OFFSET of a particular
    record type RECTYPE was storing a pointer to specific function or that there
    were multiple such functions. */
 
@@ -680,8 +681,8 @@ ipa_set_jf_unknown (struct ipa_jump_func *jfunc)
   jfunc->type = IPA_JF_UNKNOWN;
 }
 
-/* Set JFUNC to be a copy of another jmp (to be used by jump function
-   combination code).  The two functions will share their rdesc.  */
+/* Set DST to be a copy of another SRC.  The two functions will share their
+   rdesc.  */
 
 static void
 ipa_set_jf_cst_copy (struct ipa_jump_func *dst,
@@ -691,6 +692,36 @@ ipa_set_jf_cst_copy (struct ipa_jump_func *dst,
   gcc_checking_assert (src->type == IPA_JF_CONST);
   dst->type = IPA_JF_CONST;
   dst->value.constant = src->value.constant;
+}
+
+/* Set DST to be a copy of another jump function SRC but possibly adjust it to
+   a new passed type PARM_TYPE.  If the adjustment fails, the jump function can
+   end up being set to the unknown type.  If the conversion is not necessary or
+   it succeeds and if the destination rdesc has not been already used, the two
+   functions will share their rdesc.  */
+
+static void
+ipa_convert_prop_cst_jf (struct ipa_jump_func *dst,
+			 struct ipa_jump_func *src,
+			 tree parm_type)
+
+{
+  gcc_checking_assert (src->type == IPA_JF_CONST);
+  tree new_val = ipacp_value_safe_for_type (parm_type,
+					    ipa_get_jf_constant (src));
+  if (new_val)
+    {
+      bool rd = ipa_get_jf_pass_through_refdesc_decremented (dst);
+
+      dst->type = IPA_JF_CONST;
+      dst->value.constant.value = new_val;
+      if (!rd)
+	dst->value.constant.rdesc = src->value.constant.rdesc;
+      else
+	ipa_zap_jf_refdesc (dst);
+    }
+  else
+    ipa_set_jf_unknown (dst);
 }
 
 /* Set JFUNC to be a constant jmp function.  */
@@ -776,7 +807,7 @@ ipa_set_ancestor_jf (struct ipa_jump_func *jfunc, HOST_WIDE_INT offset,
   jfunc->value.ancestor.keep_null = keep_null;
 }
 
-/* Get IPA BB information about the given BB.  FBI is the context of analyzis
+/* Get IPA BB information about the given BB.  FBI is the context of analysis
    of this function body.  */
 
 static struct ipa_bb_info *
@@ -888,7 +919,7 @@ check_stmt_for_type_change (ao_ref *ao ATTRIBUTE_UNUSED, tree vdef, void *data)
 
 /* See if ARG is PARAM_DECl describing instance passed by pointer
    or reference in FUNCTION.  Return false if the dynamic type may change
-   in between beggining of the function until CALL is invoked.
+   in between beginning of the function until CALL is invoked.
 
    Generally functions are not allowed to change type of such instances,
    but they call destructors.  We assume that methods cannot destroy the THIS
@@ -899,10 +930,10 @@ static bool
 param_type_may_change_p (tree function, tree arg, gimple *call)
 {
   /* Pure functions cannot do any changes on the dynamic type;
-     that require writting to memory.  */
+     that require writing to memory.  */
   if (flags_from_decl_or_type (function) & (ECF_PURE | ECF_CONST))
     return false;
-  /* We need to check if we are within inlined consturctor
+  /* We need to check if we are within inlined constructor
      or destructor (ideally we would have way to check that the
      inline cdtor is actually working on ARG, but we don't have
      easy tie on this, so punt on all non-pure cdtors.
@@ -947,7 +978,7 @@ param_type_may_change_p (tree function, tree arg, gimple *call)
    returned by get_ref_base_and_extent, as is the offset.
 
    This is helper function for detect_type_change and detect_type_change_ssa
-   that does the heavy work which is usually unnecesary.  */
+   that does the heavy work which is usually unnecessary.  */
 
 static bool
 detect_type_change_from_memory_writes (ipa_func_body_info *fbi, tree arg,
@@ -1077,7 +1108,7 @@ find_dominating_aa_status (struct ipa_func_body_info *fbi, basic_block bb,
 }
 
 /* Get AA status structure for the given BB and parameter with INDEX.  Allocate
-   structures and/or intialize the result with a dominating description as
+   structures and/or initialize the result with a dominating description as
    necessary.  */
 
 static struct ipa_param_aa_status *
@@ -1217,8 +1248,8 @@ parm_ref_data_pass_through_p (struct ipa_func_body_info *fbi, int index,
   bool modified = false;
   ao_ref refd;
 
-  /* It's unnecessary to calculate anything about memory contnets for a const
-     function because it is not goin to use it.  But do not cache the result
+  /* It's unnecessary to calculate anything about memory contents for a const
+     function because it is not going to use it.  But do not cache the result
      either.  Also, no such calculations for non-pointers.  */
   if (!gimple_vuse (call)
       || !POINTER_TYPE_P (TREE_TYPE (parm)))
@@ -1878,7 +1909,7 @@ build_agg_jump_func_from_list (struct ipa_known_agg_contents_list *list,
 
       if (list->value.pass_through.formal_id >= 0)
 	{
-	  /* Content value is derived from some formal paramerter.  */
+	  /* Content value is derived from some formal parameter.  */
 	  if (list->value.offset >= 0)
 	    item.jftype = IPA_JF_LOAD_AGG;
 	  else
@@ -1982,7 +2013,7 @@ analyze_agg_content_value (struct ipa_func_body_info *fbi,
 	   __x_MOD_foo (&parm.6, b_31(D));
 
 	 The aggregate function describing parm.6.dim[0].stride is encoded as a
-	 PASS-THROUGH jump function with ASSERT_EXPR operation whith operand 1
+	 PASS-THROUGH jump function with ASSERT_EXPR operation with operand 1
 	 (the constant from the PHI node).  */
 
       if (gimple_phi_num_args (phi) != 2
@@ -2450,18 +2481,6 @@ skip_a_safe_conversion_op (tree t)
   return t;
 }
 
-/* Initializes ipa_edge_args summary of CBE given its callback-carrying edge.
-   This primarily means allocating the correct amount of jump functions.  */
-
-static inline void
-init_callback_edge_summary (struct cgraph_edge *cbe, tree attr)
-{
-  ipa_edge_args *cb_args = ipa_edge_args_sum->get_create (cbe);
-  size_t jf_vec_length = callback_num_args(attr);
-  vec_safe_grow_cleared (cb_args->jump_functions,
-			 jf_vec_length, true);
-}
-
 /* Compute jump function for all arguments of callsite CS and insert the
    information in the jump_functions array in the ipa_edge_args corresponding
    to this callsite.  */
@@ -2482,8 +2501,6 @@ ipa_compute_jump_functions_for_edge (struct ipa_func_body_info *fbi,
   if (flag_devirtualize)
     vec_safe_grow_cleared (args->polymorphic_call_contexts, arg_num, true);
 
-  if (gimple_call_internal_p (call))
-    return;
   if (ipa_func_spec_opts_forbid_analysis_p (cs->caller))
     return;
 
@@ -2513,8 +2530,7 @@ ipa_compute_jump_functions_for_edge (struct ipa_func_body_info *fbi,
 	      || vr.varying_p ()
 	      || vr.undefined_p ())
 	    {
-	      bool strict_overflow = false;
-	      if (tree_single_nonzero_warnv_p (arg, &strict_overflow))
+	      if (tree_single_nonzero_p (arg))
 		vr.set_nonzero (TREE_TYPE (arg));
 	      else
 		vr.set_varying (TREE_TYPE (arg));
@@ -2578,11 +2594,11 @@ ipa_compute_jump_functions_for_edge (struct ipa_func_body_info *fbi,
 		  /* Argument is a pointer to a function. Look for a callback
 		     attribute describing this argument.  */
 		  tree callback_attr
-		    = lookup_attribute (CALLBACK_ATTR_IDENT,
+		    = lookup_attribute ("callback_only",
 					DECL_ATTRIBUTES (cs->callee->decl));
 		  for (; callback_attr;
 		       callback_attr
-		       = lookup_attribute (CALLBACK_ATTR_IDENT,
+		       = lookup_attribute ("callback_only",
 					   TREE_CHAIN (callback_attr)))
 		    if (callback_get_fn_index (callback_attr) == n)
 		      break;
@@ -2602,16 +2618,14 @@ ipa_compute_jump_functions_for_edge (struct ipa_func_body_info *fbi,
 		    }
 
 		  /* If a callback attribute describing this pointer is found,
-			   create a callback edge to the pointee function to
+		     create a callback edge to the pointee function to
 		     allow for further optimizations.  */
 		  if (callback_attr)
 		    {
 		      cgraph_node *kernel_node
 			= cgraph_node::get_create (pointee);
-		      unsigned callback_id = n;
 		      cgraph_edge *cbe
-			= cs->make_callback (kernel_node, callback_id);
-		      init_callback_edge_summary (cbe, callback_attr);
+			= cs->make_callback (kernel_node, n, callback_attr);
 		      callback_edges.safe_push (cbe);
 		    }
 		}
@@ -2687,12 +2701,12 @@ ipa_compute_jump_functions_for_edge (struct ipa_func_body_info *fbi,
 	  cgraph_edge *callback_edge = callback_edges[j];
 	  ipa_edge_args *cb_summary
 	    = ipa_edge_args_sum->get_create (callback_edge);
-	  auto_vec<int> arg_mapping
-	    = callback_get_arg_mapping (callback_edge, cs);
+	  callback_info *ci = callback_info_sum->get (callback_edge);
+	  auto_vec<int> &arg_mapping = ci->arg_mapping;
 	  unsigned i;
 	  for (i = 0; i < arg_mapping.length (); i++)
 	    {
-	      if (arg_mapping[i] == -1)
+	      if (arg_mapping[i] == ARG_MAPPING_UNKNOWN_IDX)
 		continue;
 	      class ipa_jump_func *src
 		= ipa_get_ith_jump_func (args, arg_mapping[i]);
@@ -3319,7 +3333,7 @@ ipa_single_noted_fnptr_in_record (tree rec_type, unsigned fld_offset)
 }
 
 /* Free the hash table storing the information about function pointers stored
-   to a particular position in record typed strucutres.  */
+   to a particular position in record typed structures.  */
 
 void
 ipa_free_noted_fnptr_calls ()
@@ -3566,6 +3580,7 @@ ipa_analyze_node (struct cgraph_node *node)
 
   ipa_check_create_node_params ();
   ipa_check_create_edge_args ();
+  callback_info_sum_t::check_create_info_sum ();
   info = ipa_node_params_sum->get_create (node);
 
   if (info->analysis_done)
@@ -3863,13 +3878,9 @@ update_jump_functions_after_inlining (struct cgraph_edge *cs,
 		  ipa_set_jf_unknown (dst);
 		  break;
 		case IPA_JF_CONST:
-		  {
-		    bool rd = ipa_get_jf_pass_through_refdesc_decremented (dst);
-		    ipa_set_jf_cst_copy (dst, src);
-		    if (rd)
-		      ipa_zap_jf_refdesc (dst);
-		  }
-
+		  ipa_convert_prop_cst_jf (dst, src,
+					   ipa_get_type (old_inline_root_info,
+							 dst_fid));
 		  break;
 
 		case IPA_JF_PASS_THROUGH:
@@ -3998,7 +4009,7 @@ ipa_make_edge_direct_to_target (struct cgraph_edge *ie, tree target,
 	  /* Member pointer call that goes through a VMT lookup.  */
 	  if ((sii && sii->member_ptr)
 	      /* Or if target is not an invariant expression and we do not
-		 know if it will evaulate to function at runtime.
+		 know if it will evaluate to function at runtime.
 		 This can happen when folding through &VAR, where &VAR
 		 is IP invariant, but VAR itself is not.
 
@@ -4712,7 +4723,7 @@ combine_controlled_uses_counters (int c, int d)
     return c + d - 1;
 }
 
-/* Propagate number of controlled users from CS->caleee to the new root of the
+/* Propagate number of controlled users from CS->callee to the new root of the
    tree of inlined nodes.  */
 
 static void
@@ -5109,7 +5120,7 @@ ipa_duplicate_jump_function (cgraph_edge *src, cgraph_edge *dst,
 }
 
 /* Method invoked when an edge is duplicated.  Copy ipa_edge_args and adjust
-   reference count data strucutres accordingly.  */
+   reference count data structures accordingly.  */
 
 void
 ipa_edge_args_sum_t::duplicate (cgraph_edge *src, cgraph_edge *dst,
@@ -5126,6 +5137,18 @@ ipa_edge_args_sum_t::duplicate (cgraph_edge *src, cgraph_edge *dst,
       new_args->jump_functions = NULL;
       return;
     }
+
+  if (src->has_callback && dst->callback)
+    {
+      gcc_assert (src->caller == dst->caller);
+      tree attr = callback_fetch_attr_by_edge (dst, src);
+      unsigned arg_count = callback_num_args (attr);
+      vec_safe_grow_cleared (new_args->jump_functions, arg_count, true);
+      /* Duplication of jump functions is handled separately for callback
+	 pairs.  */
+      return;
+    }
+
   vec_safe_grow_cleared (new_args->jump_functions,
 			 old_args->jump_functions->length (), true);
 
@@ -5186,6 +5209,7 @@ ipa_register_cgraph_hooks (void)
 {
   ipa_check_create_node_params ();
   ipa_check_create_edge_args ();
+  callback_info_sum_t::check_create_info_sum ();
 
   function_insertion_hook_holder =
       symtab->add_cgraph_insertion_hook (&ipa_add_new_function, NULL);
@@ -5304,7 +5328,7 @@ ipa_write_jump_function (struct output_block *ob,
   int i, count;
   int flag = 0;
 
-  /* ADDR_EXPRs are very comon IP invariants; save some streamer data
+  /* ADDR_EXPRs are very common IP invariants; save some streamer data
      as well as WPA memory by handling them specially.  */
   if (jump_func->type == IPA_JF_CONST
       && TREE_CODE (jump_func->value.constant.value) == ADDR_EXPR)
@@ -5961,6 +5985,23 @@ ipa_prop_write_jump_functions (void)
 static void
 ipa_record_return_value_range_1 (cgraph_node *n, value_range val)
 {
+  // Remove local invariant from return values.
+  if (is_a<prange> (val))
+    {
+      const prange &pr = as_a <prange> (val);
+      tree t = pr.pt_invariant ();
+      if (t && !is_gimple_ip_invariant (t))
+        {
+	  if (dump_file && (dump_flags & TDF_DETAILS))
+	    {
+	      fprintf (dump_file, "Could not record return range of %s:", n->dump_name ());
+	      val.dump (dump_file);
+	      fprintf (dump_file, "\n");
+	      fprintf (dump_file, "Because uses non ipa invariant\n");
+	    }
+	  return;
+        }
+    }
   if (!ipa_return_value_sum)
     {
       if (!ipa_vr_hash_table)
@@ -6092,7 +6133,7 @@ useful_ipcp_transformation_info_p (ipcp_transformation *ts)
   return false;
 }
 
-/* Write into OB IPA-CP transfromation summary TS describing NODE.  */
+/* Write into OB IPA-CP transformation summary TS describing NODE.  */
 
 void
 write_ipcp_transformation_info (output_block *ob, cgraph_node *node,

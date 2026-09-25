@@ -1520,7 +1520,7 @@ tree
 build_boolop (tree_code code, tree arg0, tree arg1)
 {
   /* Aggregate comparisons may get lowered to a call to builtin memcmp,
-     so need to remove all side effects incase its address is taken.  */
+     so need to remove all side effects in case its address is taken.  */
   if (AGGREGATE_TYPE_P (TREE_TYPE (arg0)))
     arg0 = d_save_expr (arg0);
   if (AGGREGATE_TYPE_P (TREE_TYPE (arg1)))
@@ -2007,7 +2007,7 @@ build_array_bounds_call (const Loc &loc)
 {
   /* Terminate the program with a trap if no D runtime present.  */
   if (checkaction_trap_p ())
-    return build_call_expr (builtin_decl_explicit (BUILT_IN_TRAP), 0);
+    return build_trap_call ();
   else
     {
       return build_libcall (LIBCALL_ARRAYBOUNDSP, 2,
@@ -2036,7 +2036,7 @@ build_bounds_index_condition (IndexExp *ie, tree index, tree length)
   tree boundserr;
 
   if (checkaction_trap_p ())
-    boundserr = build_call_expr (builtin_decl_explicit (BUILT_IN_TRAP), 0);
+    boundserr = build_trap_call ();
   else
     {
       boundserr = build_libcall (LIBCALL_ARRAYBOUNDS_INDEXP, 4,
@@ -2082,10 +2082,7 @@ build_bounds_slice_condition (SliceExp *se, tree lower, tree upper, tree length)
 	  tree boundserr;
 
 	  if (checkaction_trap_p ())
-	    {
-	      boundserr =
-		build_call_expr (builtin_decl_explicit (BUILT_IN_TRAP), 0);
-	    }
+	    boundserr = build_trap_call ();
 	  else
 	    {
 	      boundserr = build_libcall (LIBCALL_ARRAYBOUNDS_SLICEP, 5,
@@ -2154,6 +2151,14 @@ checkaction_trap_p (void)
     default:
       gcc_unreachable ();
     }
+}
+
+/* Build a call to built-in trap().  */
+
+tree
+build_trap_call ()
+{
+  return build_call_expr (builtin_decl_explicit (BUILT_IN_TRAP), 0);
 }
 
 /* Returns the TypeFunction class for Type T.
@@ -2349,7 +2354,8 @@ d_build_call (TypeFunction *tf, tree callable, tree object,
 		 - The ABI of the function expects the callee to destroy its
 		 arguments; when the caller is handles destruction, then `targ'
 		 has already been made into a temporary. */
-	      if (!can_elide_copy_p (arg)
+	      if (TREE_CODE (targ) != TARGET_EXPR
+		  && !can_elide_copy_p (arg)
 		  && (arg->op == EXP::structLiteral
 		      || (!sd->postblit && !sd->dtor)
 		      || target.isCalleeDestroyingArgs (tf)))
@@ -2395,6 +2401,10 @@ d_build_call (TypeFunction *tf, tree callable, tree object,
 	  if (TYPE_MAIN_VARIANT (TREE_TYPE (arg)) == noreturn_type_node)
 	    break;
 	}
+
+      /* Trap after evaluating all call arguments, as it is not expected that
+	 we get to this point after the `noreturn' parameter.  */
+      saved_args = compound_expr (saved_args, build_trap_call ());
 
       /* Add a stub result type for the expression.  */
       tree result = build_zero_cst (TREE_TYPE (ctype));
@@ -2624,7 +2634,7 @@ get_frame_for_symbol (Dsymbol *sym)
 	  int offset;
 	  if (cdo->isBaseOf (cd, &offset) && offset != 0)
 	    {
-	      /* Generate a new frame to pass to the overriden function that
+	      /* Generate a new frame to pass to the overridden function that
 		 has the `this' pointer adjusted.  */
 	      gcc_assert (offset != OFFSET_RUNTIME);
 
@@ -2753,7 +2763,7 @@ build_vthis (AggregateDeclaration *decl)
 	{
 	  tree ffo = get_frameinfo (fdo);
 	  if (FRAMEINFO_CREATES_FRAME (ffo) || FRAMEINFO_STATIC_CHAIN (ffo)
-	      || fdo->hasNestedFrameRefs ())
+	      || dmd::hasNestedFrameRefs (fdo))
 	    vthis_value = get_frame_for_symbol (decl);
 	  else if (cd != NULL)
 	    {
@@ -2997,7 +3007,7 @@ get_frameinfo (FuncDeclaration *fd)
       FRAMEINFO_CREATES_FRAME (ffi) = 1;
       FRAMEINFO_IS_CLOSURE (ffi) = 1;
     }
-  else if (fd->hasNestedFrameRefs ())
+  else if (dmd::hasNestedFrameRefs (fd))
     {
       /* Functions with nested refs must create a static frame for local
 	 variables to be referenced from.  */

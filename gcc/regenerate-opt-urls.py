@@ -46,6 +46,12 @@ import unittest
 def canonicalize_option_name(option_name):
     if option_name.endswith('='):
         option_name = option_name[0:-1]
+    # Options starting with two dashes are listed with one dash in the
+    # .opt file, plus we have already added the implicit dash to option_name.
+    # But the index entries have zero dashes, so we have to remove one of the
+    # dashes again to match them.
+    if option_name[:2] == '--':
+        option_name = option_name[1:]
     return option_name
 
 
@@ -175,6 +181,8 @@ class TestParsingIndex(unittest.TestCase):
                          {'gcc/Optimize-Options.html#index-O0'})
         self.assertEqual(index.get_url_suffixes('-Wframe-larger-than='),
                          {'gcc/Warning-Options.html#index-Wframe-larger-than_003d'})
+        self.assertEqual(index.get_url_suffixes('--static-pie'),
+                         {'gcc/Link-Options.html#index-static-pie'})
 
         # Check an option with duplicates: '-march'
         # The url_suffixes will be of the form
@@ -237,7 +245,6 @@ TARGET_SPECIFIC_PAGES = {
     'gcc/HPPA-Options.html' : 'gcc/config/pa/',
     'gcc/IA-64-Options.html' : 'gcc/config/ia64/',
     'gcc/LoongArch-Options.html' : 'gcc/config/loongarch/',
-    'gcc/M32C-Options.html' : 'gcc/config/m32c/',
     'gcc/M32R_002fD-Options.html' : 'gcc/config/m32r/',
     'gcc/M680x0-Options.html' : 'gcc/config/m68k/',
     'gcc/MCore-Options.html' : 'gcc/config/mcore/',

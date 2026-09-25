@@ -33,7 +33,7 @@
    that are part of the external ABI, and the lower case prefix "gomp"
    is used group items that are completely private to the library.  */
 
-#ifndef LIBGOMP_H 
+#ifndef LIBGOMP_H
 #define LIBGOMP_H 1
 
 #ifndef _LIBGOMP_CHECKING_
@@ -405,7 +405,7 @@ extern char gomp_workshare_struct_check1
 extern char gomp_workshare_struct_check2
   [offsetof (struct gomp_work_share, lock) == 64 ? 1 : -1];
 
-/* This structure contains all of the thread-local data associated with 
+/* This structure contains all of the thread-local data associated with
    a thread team.  This is the data that must be saved when a thread
    encounters a nested PARALLEL construct.  */
 
@@ -415,7 +415,7 @@ struct gomp_team_state
   struct gomp_team *team;
 
   /* This is the work share construct which this thread is currently
-     processing.  Recall that with NOWAIT, not all threads may be 
+     processing.  Recall that with NOWAIT, not all threads may be
      processing the same construct.  */
   struct gomp_work_share *work_share;
 
@@ -494,7 +494,7 @@ enum gomp_device_num
    section 2.3.1.  Those described as having one copy per task are
    stored within the structure; those described as having one copy
    for the whole program are (naturally) global variables.  */
-   
+
 struct gomp_task_icv
 {
   unsigned long nthreads_var;
@@ -590,6 +590,13 @@ enum gomp_target_offload_t
   GOMP_TARGET_OFFLOAD_DISABLED
 };
 
+enum gomp_runtime_usm_t
+{
+  GOMP_RUNTIME_USM_DISABLED,
+  GOMP_RUNTIME_USM_AUTO,
+  GOMP_RUNTIME_USM_ENABLED
+};
+
 #define gomp_supported_active_levels UCHAR_MAX
 
 extern struct gomp_task_icv gomp_global_icv;
@@ -613,10 +620,14 @@ extern int gomp_debug_var;
 extern bool gomp_display_affinity_var;
 extern char *gomp_affinity_format_var;
 extern size_t gomp_affinity_format_len;
+extern int gomp_get_current_numa_node ();
+extern int gomp_get_numa_distance (int, int);
 extern uintptr_t gomp_def_allocator;
+extern const size_t gomp_omp_allocator_data_size;
 extern const struct gomp_default_icv gomp_default_icv_values;
 extern struct gomp_icv_list *gomp_initial_icv_list;
 extern struct gomp_offload_icv_list *gomp_offload_icv_list;
+extern enum gomp_runtime_usm_t gomp_runtime_usm_var;
 extern int goacc_device_num;
 extern char *goacc_device_type;
 extern int goacc_default_dims[GOMP_DIM_MAX];
@@ -772,8 +783,31 @@ struct gomp_target_task
   struct gomp_team *team;
   /* Device-specific target arguments.  */
   void **args;
+  /* Pointer to the offload session for this task.  */
+  struct gomp_offload_session *offload_session;
   void *hostaddrs[];
 };
+
+#ifdef __AMDGCN__
+/* Parameters needed to kick off new threads on AMD GCN.  They correspond to
+   various fields in gomp_thread.  This struct, and all its contents, should
+   only be modified by gomp_team_start, and stay untouched until the threads
+   of a team reach the final barrier.  */
+
+struct gomp_thread_start_data
+{
+  /* Team the new thread is part of.  */
+  struct gomp_team *team;
+  /* Active nesting level.  */
+  unsigned level, active_level;
+  /* Parent task.  */
+  struct gomp_task *parent_task;
+  /* Previous ICVs.  */
+  struct gomp_task_icv prev_icvs;
+  /* Task group for the new threads implicit task.  */
+  struct gomp_taskgroup *taskgroup;
+};
+#endif
 
 /* This structure describes a "team" of threads.  These are the threads
    that are spawned by a PARALLEL constructs, as well as the work sharing
@@ -857,6 +891,11 @@ struct gomp_team
   /* Number of tasks waiting for their completion event to be fulfilled.  */
   unsigned int task_detach_count;
 
+#ifdef __AMDGCN__
+  /* Used on AMD GCN to inform threads how to launch in a team.  */
+  struct gomp_thread_start_data thr_start_data;
+#endif
+
   /* This array contains structures for implicit tasks.  */
   struct gomp_task implicit_task[];
 };
@@ -869,6 +908,11 @@ struct gomp_thread
   /* This is the function that the thread should run upon launch.  */
   void (*fn) (void *data);
   void *data;
+
+#ifdef __AMDGCN__
+  /* And these are the parameters it should set.  */
+  struct gomp_thread_start_data *start_data;
+#endif
 
   /* This is the current team state for this thread.  The ts.team member
      is NULL only if the thread is idle.  */
@@ -1317,7 +1361,7 @@ struct target_mem_desc {
   reverse_splay_tree_node rev_array;
   /* Start of the target region.  */
   uintptr_t tgt_start;
-  /* End of the targer region.  */
+  /* End of the target region.  */
   uintptr_t tgt_end;
   /* Handle to free.  */
   void *to_free;
@@ -1344,7 +1388,7 @@ typedef struct acc_dispatch_t
   __typeof (GOMP_OFFLOAD_openacc_create_thread_data) *create_thread_data_func;
   __typeof (GOMP_OFFLOAD_openacc_destroy_thread_data)
     *destroy_thread_data_func;
-  
+
   struct {
     /* Once created and put into the "active" list, asyncqueues are then never
        destructed and removed from the "active" list, other than if the TODO
@@ -1413,7 +1457,11 @@ struct gomp_device_descr
   /* Function handlers.  */
   __typeof (GOMP_OFFLOAD_get_name) *get_name_func;
   __typeof (GOMP_OFFLOAD_get_uid) *get_uid_func;
+  __typeof (GOMP_OFFLOAD_get_numa_node) *get_numa_node_func;
+  __typeof (GOMP_OFFLOAD_supported_teams_dim) *supported_teams_dim_func;
+  __typeof (GOMP_OFFLOAD_supported_threads_dim) *supported_threads_dim_func;
   __typeof (GOMP_OFFLOAD_get_caps) *get_caps_func;
+  __typeof (GOMP_OFFLOAD_get_dev_caps) *get_dev_caps_func;
   __typeof (GOMP_OFFLOAD_get_type) *get_type_func;
   __typeof (GOMP_OFFLOAD_get_num_devices) *get_num_devices_func;
   __typeof (GOMP_OFFLOAD_init_device) *init_device_func;
@@ -1434,6 +1482,16 @@ struct gomp_device_descr
   __typeof (GOMP_OFFLOAD_memcpy2d) *memcpy2d_func;
   __typeof (GOMP_OFFLOAD_memcpy3d) *memcpy3d_func;
   __typeof (GOMP_OFFLOAD_memset) *memset_func;
+  __typeof (GOMP_OFFLOAD_memspace_validate) *memspace_validate_func;
+  struct {
+    __typeof (GOMP_OFFLOAD_session_start) *start_func;
+    __typeof (GOMP_OFFLOAD_session_allocate_target_var_table) *alloc_tvt_func;
+    __typeof (GOMP_OFFLOAD_session_set_target_var_table) *set_tvt_func;
+
+    /* Size of a single gomp_offload_session object, as returned by
+       GOMP_OFFLOAD_session_size.  */
+    size_t size;
+  } session;
   __typeof (GOMP_OFFLOAD_can_run) *can_run_func;
   __typeof (GOMP_OFFLOAD_run) *run_func;
   __typeof (GOMP_OFFLOAD_async_run) *async_run_func;
@@ -1459,6 +1517,16 @@ struct gomp_device_descr
   /* This is mutable because of its mutable target_data member.  */
   acc_dispatch_t openacc;
 };
+
+/* Allocate an offload session for the gomp_device_descr DEVICEP using ALLOC,
+   and initialize it.  Provided as a macro, so that 'alloca' can be used as
+   ALLOC. */
+#define gomp_offload_session_new(devicep, alloc)		\
+  ({								\
+    void *session = alloc (devicep->session.size);	\
+    devicep->session.start_func (session, devicep->target_id);	\
+    session;							\
+  })
 
 /* Kind of the pragma, for which gomp_map_vars () is called.  */
 enum gomp_map_vars_kind
@@ -1493,15 +1561,23 @@ extern struct target_mem_desc *goacc_map_vars (struct gomp_device_descr *,
 					       struct goacc_asyncqueue *,
 					       size_t, void **, void **,
 					       size_t *, void *, bool,
-					       enum gomp_map_vars_kind);
+					       enum gomp_map_vars_kind,
+					       struct gomp_offload_session *);
 extern void goacc_unmap_vars (struct target_mem_desc *, bool,
 			      struct goacc_asyncqueue *);
-extern void gomp_init_device (struct gomp_device_descr *);
+extern void gomp_init_device (struct gomp_device_descr *, bool);
 extern bool gomp_fini_device (struct gomp_device_descr *);
 extern void gomp_unload_device (struct gomp_device_descr *);
 extern bool gomp_remove_var (struct gomp_device_descr *, splay_tree_key);
 extern void gomp_remove_var_async (struct gomp_device_descr *, splay_tree_key,
 				   struct goacc_asyncqueue *);
+
+/* allocator.c */
+
+extern uintptr_t gomp_map_omp_init_allocator (struct gomp_device_descr *,
+					      struct goacc_asyncqueue *,
+					      struct gomp_coalesce_buf *,
+					      void *, void *);
 
 /* work.c */
 

@@ -59,4 +59,5 @@ contains
 
 end program test
 ! { dg-final { scan-tree-dump-times "__builtin_free" 16 "original" } }
-! { dg-final { scan-tree-dump-times "__builtin_malloc" 12 "original" } }
+! { dg-final { scan-tree-dump-times "__builtin_malloc" 8 "original" } }
+! { dg-final { scan-tree-dump-times "__builtin_calloc" 4 "original" } }

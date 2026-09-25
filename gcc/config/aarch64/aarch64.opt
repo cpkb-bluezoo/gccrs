@@ -103,6 +103,11 @@ mfix-cortex-a53-843419
 Target Var(aarch64_fix_a53_err843419) Init(2) Save
 Workaround for ARM Cortex-A53 Erratum number 843419.
 
+mnarrow-gp-writes
+Target Var(aarch64_narrow_gp_writes) Optimization Init(2) Save
+Enable narrowing of 64-bit general purpose register writes to 32-bit when
+upper 32 bits of the register are unused.
+
 mlittle-endian
 Target RejectNegative InverseMask(BIG_END)
 Assume target CPU is configured as little endian.
@@ -217,7 +222,7 @@ Enum(aarch64_abi) String(lp64) Value(AARCH64_ABI_LP64)
 
 mpc-relative-literal-loads
 Target Save Var(pcrelative_literal_loads) Init(2) Save
-PC relative literal loads.
+PC relative literal loads.  This option is deprecated.
 
 mbranch-protection=
 Target RejectNegative Joined Var(aarch64_branch_protection_string) Save
@@ -458,7 +463,7 @@ trailing destructive updates of the base register used by a pair.
 
 -param=aarch64-tag-memory-loop-threshold=
 Target Joined UInteger Var(aarch64_tag_memory_loop_threshold) Init(10) IntegerRange(0, 65536) Param
-Param to control the treshold in number of granules beyond which an
+Param to control the threshold in number of granules beyond which an
 explicit loop for tagging a memory block is emitted.
 
 Wexperimental-fmv-target
